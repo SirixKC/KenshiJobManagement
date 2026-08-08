@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{BDB54E92-25F2-4ADB-987E-D1FD3FA55190}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx</Extensions>
+    </Filter>
+    <Filter Include="Mod Package">
+      <UniqueIdentifier>{47AA7A18-1700-44AA-B591-586A51FC681F}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\KenshiJobManagement.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="src\RuntimeAccess.inl">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="src\JobView.inl">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="src\JobActions.inl">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="src\JobWindow.inl">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="src\Hooks.inl">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="mod\RE_Kenshi.json">
+      <Filter>Mod Package</Filter>
+    </None>
+    <None Include="mod\KenshiJobManagement.mod">
+      <Filter>Mod Package</Filter>
+    </None>
+    <None Include="mod\README.txt">
+      <Filter>Mod Package</Filter>
+    </None>
+  </ItemGroup>
+</Project>
