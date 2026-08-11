@@ -1,0 +1,34 @@
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+
+# Build output
+build/
+dist/
+Debug/
+Release/
+x64/
+*.obj
+*.pch
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib
+*.dll
+*.tlog
+*.lastbuildstate
+
+# Local dependency/build metadata
+compile_commands.json
+
+# OS/editor debris
+.DS_Store
+Thumbs.db
+*.swp
+*~
