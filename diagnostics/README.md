@@ -46,7 +46,9 @@ build/ScannerProbe/KenshiJobManagement.dll
 build/ScannerProbe/KenshiJobManagement.pdb
 ```
 
-The probe uses `/Od /Ob0 /Zi /Oy- /DKJM_SCANNER_PROBE` and does not use LTCG.
+The probe uses `/O2 /Oi /Gy /GL /Zi /Oy- /DKJM_SCANNER_PROBE` and links with
+`/LTCG`. KenshiLib's `GetRealAddress()` requires whole-program optimization;
+without it, Kenshi stops at an assertion during plugin startup.
 
 ## Install
 

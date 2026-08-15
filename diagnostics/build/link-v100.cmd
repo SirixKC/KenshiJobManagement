@@ -12,5 +12,5 @@ set "OUT=%REPO%\build\ScannerProbe"
 set "PATH=%VCROOT%\bin\x86_amd64;%VSIDE%;%VCRUNTIME%;%PATH%"
 set "LIB=%VCROOT%\lib\amd64;%SDKROOT%\Lib\x64;%DEPS%\KenshiLib\Libraries"
 
-"%VCROOT%\bin\x86_amd64\link.exe" /nologo /DLL /MACHINE:X64 /SUBSYSTEM:CONSOLE /INCREMENTAL:NO /DEBUG /OPT:NOREF /OPT:NOICF /OUT:"%OUT%\KenshiJobManagement.dll" /PDB:"%OUT%\KenshiJobManagement.pdb" "%OUT%\KenshiJobManagement.obj" KenshiLib.lib MyGUIEngine_x64.lib OgreMain_x64.lib User32.lib
+"%VCROOT%\bin\x86_amd64\link.exe" /nologo /DLL /MACHINE:X64 /SUBSYSTEM:CONSOLE /LTCG /INCREMENTAL:NO /DEBUG /OPT:NOREF /OPT:NOICF /OUT:"%OUT%\KenshiJobManagement.dll" /PDB:"%OUT%\KenshiJobManagement.pdb" "%OUT%\KenshiJobManagement.obj" KenshiLib.lib MyGUIEngine_x64.lib OgreMain_x64.lib User32.lib
 exit /b %errorlevel%

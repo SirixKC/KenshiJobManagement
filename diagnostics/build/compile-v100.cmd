@@ -14,5 +14,5 @@ set "INCLUDE=%VCROOT%\include;%SDKROOT%\Include;%DEPS%\KenshiLib\Include;%DEPS%\
 set "LIB=%VCROOT%\lib\amd64;%SDKROOT%\Lib\x64;%DEPS%\KenshiLib\Libraries"
 
 if not exist "%OUT%" mkdir "%OUT%"
-"%VCROOT%\bin\x86_amd64\cl.exe" /nologo /c /Od /Ob0 /Zi /Oy- /MD /EHsc /W4 /DKJM_SCANNER_PROBE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /DBOOST_ALL_NO_LIB /DBOOST_ERROR_CODE_HEADER_ONLY /DNDEBUG /D_CONSOLE /DUNICODE /D_UNICODE /Fd"%OUT%\KenshiJobManagement-compile.pdb" /Fo"%OUT%\KenshiJobManagement.obj" "%REPO%\src\KenshiJobManagement.cpp"
+"%VCROOT%\bin\x86_amd64\cl.exe" /nologo /c /O2 /Oi /Gy /GL /Zi /Oy- /MD /EHsc /W4 /DKJM_SCANNER_PROBE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /DBOOST_ALL_NO_LIB /DBOOST_ERROR_CODE_HEADER_ONLY /DNDEBUG /D_CONSOLE /DUNICODE /D_UNICODE /Fd"%OUT%\KenshiJobManagement-compile.pdb" /Fo"%OUT%\KenshiJobManagement.obj" "%REPO%\src\KenshiJobManagement.cpp"
 exit /b %errorlevel%
