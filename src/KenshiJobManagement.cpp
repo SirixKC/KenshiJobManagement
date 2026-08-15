@@ -84,6 +84,9 @@
 
 #include <algorithm>
 #include <cmath>
+#ifdef KJM_SCANNER_PROBE
+#include <stddef.h>
+#endif
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -502,6 +505,10 @@ namespace
 #include "StationSettings.inl"
 #include "StationAssets.inl"
 
+#ifdef KJM_SCANNER_PROBE
+#include "../diagnostics/OwnershipProbe.inl"
+#endif
+
     StationScanState g_stationScan;
 
 #include "JobView.inl"
@@ -510,6 +517,28 @@ namespace
 #include "JobWindow.inl"
 #include "Hooks.inl"
 }
+
+#ifdef KJM_SCANNER_PROBE
+extern "C" __declspec(dllexport) void KJM_ScannerProbe_RequestStage1()
+{
+    OwnershipProbeRequestStage(1);
+}
+
+extern "C" __declspec(dllexport) void KJM_ScannerProbe_RequestInspect()
+{
+    OwnershipProbeRequestStage(2);
+}
+
+extern "C" __declspec(dllexport) void KJM_ScannerProbe_RequestReadHandles()
+{
+    OwnershipProbeRequestStage(3);
+}
+
+extern "C" __declspec(dllexport) LONG KJM_ScannerProbe_GetState()
+{
+    return OwnershipProbeGetState();
+}
+#endif
 
 __declspec(dllexport) void startPlugin()
 {
@@ -546,6 +575,12 @@ __declspec(dllexport) void startPlugin()
     }
 
     g_enabled = true;
+
+#ifdef KJM_SCANNER_PROBE
+    DebugLog(
+        "[KJM OwnershipProbe] diagnostic build active; "
+        "each Ctrl+Shift+F10 press advances one stage");
+#endif
 
     std::ostringstream message;
     message << "[KenshiJobManagement] " << PLUGIN_NAME << " "

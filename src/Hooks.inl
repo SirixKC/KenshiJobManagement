@@ -30,12 +30,18 @@
         }
 
         g_playerInterface = player;
+#ifdef KJM_SCANNER_PROBE
+        TickOwnershipProbe(player);
+#endif
         TickHotkey();
         TickWindow();
     }
 
     void PlayerInterfaceClearAndResetHook(PlayerInterface* player)
     {
+#ifdef KJM_SCANNER_PROBE
+        OwnershipProbeOnWorldReset();
+#endif
         DestroyJobWindow(true);
         g_playerInterface = NULL;
         g_hotkeyWasDown = false;
