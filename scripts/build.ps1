@@ -24,16 +24,15 @@ if ([string]::IsNullOrWhiteSpace($env:KENSHILIB_DIR)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($env:BOOST_INCLUDE_PATH)) {
-    throw 'BOOST_INCLUDE_PATH is not set. Point it at the Boost 1.60 root containing boost and stage\lib.'
+    throw 'BOOST_INCLUDE_PATH is not set. Point it at the Boost root containing the boost headers.'
 }
 
 Require-Directory (Join-Path $env:KENSHILIB_DIR 'Include') 'KenshiLib Include directory'
 Require-Directory (Join-Path $env:KENSHILIB_DIR 'Libraries') 'KenshiLib Libraries directory'
 Require-Directory (Join-Path $env:BOOST_INCLUDE_PATH 'boost') 'Boost headers directory'
-Require-Directory (Join-Path $env:BOOST_INCLUDE_PATH 'stage\lib') 'Boost library directory'
-Require-File (Join-Path $env:KENSHILIB_DIR 'Libraries\kenshilib.lib') 'kenshilib.lib'
+Require-File (Join-Path $env:KENSHILIB_DIR 'Libraries\KenshiLib.lib') 'KenshiLib.lib'
 Require-File (Join-Path $env:KENSHILIB_DIR 'Libraries\MyGUIEngine_x64.lib') 'MyGUIEngine_x64.lib'
-Require-File (Join-Path $env:BOOST_INCLUDE_PATH 'stage\lib\libboost_thread-vc100-mt-1_60.lib') 'VC100 Boost thread library'
+Require-File (Join-Path $env:KENSHILIB_DIR 'Libraries\OgreMain_x64.lib') 'OgreMain_x64.lib'
 
 $msbuild = Get-Command msbuild.exe -ErrorAction SilentlyContinue
 if ($null -eq $msbuild) {
@@ -64,6 +63,10 @@ $requiredPackageFiles = @(
 
 foreach ($file in $requiredPackageFiles) {
     Require-File (Join-Path $packageDirectory $file) 'Build package file'
+}
+Require-Directory (Join-Path $packageDirectory 'gui') 'Station icon package directory'
+Get-ChildItem (Join-Path $repoRoot 'mod\gui\*.png') | ForEach-Object {
+    Require-File (Join-Path $packageDirectory ('gui\' + $_.Name)) 'Station icon package file'
 }
 
 if (Test-Path $packageArchive) {

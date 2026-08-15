@@ -30,8 +30,8 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(KENSHILIB_DIR)\Include;$(BOOST_INCLUDE_PATH);$(IncludePath)</IncludePath>
-    <LibraryPath>$(BOOST_INCLUDE_PATH)\stage\lib;$(KENSHILIB_DIR)\Libraries;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(KENSHILIB_DIR)\Include;$(KENSHILIB_DIR)\Include\ogre;$(BOOST_INCLUDE_PATH);$(IncludePath)</IncludePath>
+    <LibraryPath>$(KENSHILIB_DIR)\Libraries;$(LibraryPath)</LibraryPath>
     <OutDir>$(ProjectDir)dist\KenshiJobManagement\</OutDir>
     <IntDir>$(ProjectDir)build\$(Configuration)\</IntDir>
     <TargetName>KenshiJobManagement</TargetName>
@@ -42,8 +42,8 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(KENSHILIB_DIR)\Include;$(BOOST_INCLUDE_PATH);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;BOOST_ALL_NO_LIB;BOOST_ERROR_CODE_HEADER_ONLY;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(KENSHILIB_DIR)\Include;$(KENSHILIB_DIR)\Include\ogre;$(BOOST_INCLUDE_PATH);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <ExceptionHandling>Sync</ExceptionHandling>
       <ConformanceMode>true</ConformanceMode>
@@ -53,14 +53,16 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(KENSHILIB_DIR)\Libraries;$(BOOST_INCLUDE_PATH)\stage\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>kenshilib.lib;MyGUIEngine_x64.lib;User32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(KENSHILIB_DIR)\Libraries;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>KenshiLib.lib;MyGUIEngine_x64.lib;OgreMain_x64.lib;User32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>if not exist "$(OutDir)" mkdir "$(OutDir)"
 copy /Y "$(ProjectDir)mod\RE_Kenshi.json" "$(OutDir)RE_Kenshi.json"
 copy /Y "$(ProjectDir)mod\KenshiJobManagement.mod" "$(OutDir)KenshiJobManagement.mod"
-copy /Y "$(ProjectDir)mod\README.txt" "$(OutDir)README.txt"</Command>
+copy /Y "$(ProjectDir)mod\README.txt" "$(OutDir)README.txt"
+if not exist "$(OutDir)gui" mkdir "$(OutDir)gui"
+xcopy /Y /I "$(ProjectDir)mod\gui\*.png" "$(OutDir)gui\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -72,9 +74,31 @@ copy /Y "$(ProjectDir)mod\README.txt" "$(OutDir)README.txt"</Command>
     <None Include="src\JobActions.inl" />
     <None Include="src\JobWindow.inl" />
     <None Include="src\Hooks.inl" />
+    <None Include="src\StationAssets.inl" />
+    <None Include="src\StationScanner.inl" />
+    <None Include="src\StationSettings.inl" />
+    <None Include="src\StationView.inl" />
     <None Include="mod\RE_Kenshi.json" />
     <None Include="mod\KenshiJobManagement.mod" />
     <None Include="mod\README.txt" />
+    <None Include="mod\gui\station-crafting.png" />
+    <None Include="mod\gui\station-copper-alloy-plates.png" />
+    <None Include="mod\gui\station-copper-ore.png" />
+    <None Include="mod\gui\station-copper-plates.png" />
+    <None Include="mod\gui\station-crossbow.png" />
+    <None Include="mod\gui\station-defense.png" />
+    <None Include="mod\gui\station-electronics.png" />
+    <None Include="mod\gui\station-farming.png" />
+    <None Include="mod\gui\station-iron-ore.png" />
+    <None Include="mod\gui\station-iron-plates.png" />
+    <None Include="mod\gui\station-mining.png" />
+    <None Include="mod\gui\station-other.png" />
+    <None Include="mod\gui\station-refining.png" />
+    <None Include="mod\gui\station-research.png" />
+    <None Include="mod\gui\station-skeleton-limbs.png" />
+    <None Include="mod\gui\station-steel-bars.png" />
+    <None Include="mod\gui\station-storage.png" />
+    <None Include="mod\gui\station-training.png" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

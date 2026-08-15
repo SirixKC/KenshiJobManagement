@@ -30,6 +30,18 @@
     <None Include="src\Hooks.inl">
       <Filter>Source Files</Filter>
     </None>
+    <None Include="src\StationScanner.inl">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="src\StationSettings.inl">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="src\StationAssets.inl">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="src\StationView.inl">
+      <Filter>Source Files</Filter>
+    </None>
     <None Include="mod\RE_Kenshi.json">
       <Filter>Mod Package</Filter>
     </None>
@@ -39,5 +51,23 @@
     <None Include="mod\README.txt">
       <Filter>Mod Package</Filter>
     </None>
+    <None Include="mod\gui\station-crafting.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-copper-alloy-plates.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-copper-ore.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-copper-plates.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-crossbow.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-defense.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-electronics.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-farming.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-iron-ore.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-iron-plates.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-mining.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-other.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-refining.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-research.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-skeleton-limbs.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-steel-bars.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-storage.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\station-training.png"><Filter>Mod Package</Filter></None>
   </ItemGroup>
 </Project>
