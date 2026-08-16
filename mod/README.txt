@@ -48,9 +48,9 @@ editable if only its target is unavailable.
 
 STATIONS TAB
 ------------
-The `Stations` tab is an assignment view. It shows every readable
-loaded player character against station columns derived from exact targets in
-loaded members' permanent job queues.
+The `Stations` tab is a player-station and assignment view. It shows every
+readable loaded player character against verified player-owned station columns
+and exact targets in loaded members' permanent job queues.
 Rows keep Kenshi's vanilla squad and member order and can be collapsed by
 squad. The frozen roster shows each portrait, condition, Jobs state, permanent
 job count, and the same filtered top three skills as the squad tab. Each station
@@ -73,9 +73,14 @@ the queue changed outside the manager.
 The main manager backdrop is fully opaque. While the manager is open, the
 mouse wheel scrolls its views without also changing the game camera.
 
-No zones, ownership lists, towns, or unrelated city buildings are enumerated.
-Only live player-owned buildings appear. Assigned natural resource nodes are
-the deliberate exception because Kenshi does not make them player-owned.
+The station pass merges verified live player-owned station-relevant buildings
+from Kenshi's borrowed ownership records with exact targets from readable
+loaded-player permanent queues. It does not enumerate zones, towns, or
+unrelated city buildings. Assigned natural resource nodes are the deliberate
+exception because Kenshi does not make them player-owned; assigned unknown
+player targets may remain in `Other / Unclassified`.
+Player-owned work stations with no readable queue assignment remain visible
+and are marked `UNASSIGNED`.
 Loaded assigned targets remain visible when incomplete,
 unpowered, broken, disabled, or being dismantled; destroyed or invalid handles
 are excluded. `Other / Unclassified`
@@ -91,13 +96,16 @@ not used for this choice, so building-rename mods remain respected. An
 unmatched subtype falls back to its broad category icon. The same artwork is
 used on both tabs.
 
-The target pass starts when the tab is first opened. It copies exact building
+The target pass starts when the tab is first opened. It brackets the borrowed
+ownership source into scalar plugin-owned records and copies exact building
 targets referenced by loaded permanent jobs, then resolves at most one stable
-handle per UI update. An unloaded or unreadable target remains visible with a
-red warning on Squad Jobs, but Stations omits it because ownership cannot be
-verified and reports the target-read failure. While it runs, the tab says
-`READING ASSIGNED JOB TARGETS - RESULTS INCOMPLETE` and shows target progress.
-Failed targets and the 2,048-target cap are reported as visible warnings. The matrix
+candidate per UI update. An unloaded or unreadable assigned target remains
+visible with a red warning on Squad Jobs, but Stations omits it and reports the
+target-read failure. An unloaded ownership record is omitted without one red
+error per record; a validation fault reports one ownership-pass warning. While
+it runs, the tab says `READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE`
+and shows candidate progress. The final 2,048-station result cap and separate
+8,192-record ownership copy cap are visible warnings. The matrix
 uses frozen headers, vertical and horizontal scrolling, and virtualized rows
 and columns. Drag the station header strip left or right to pan without
 selecting a station. Global Engineer, Medic, Robotics, and Rescue jobs remain on the

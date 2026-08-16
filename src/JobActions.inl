@@ -1316,7 +1316,7 @@
             return false;
         }
         bool playerManaged = false;
-        if (!TryIsPlayerManagedStation(building, &playerManaged) ||
+        if (!TryIsPlayerManagedStation(building, true, &playerManaged) ||
             !playerManaged)
         {
             return false;
@@ -1429,7 +1429,7 @@
         else
         {
             // If the in-memory projection no longer contains both members,
-            // fall back to the normal fail-closed queue-derived rebuild.
+            // fall back to the normal fail-closed station projection rebuild.
             g_stationAssignmentsDirty = g_stationScan.started;
         }
         SetStatus(status);

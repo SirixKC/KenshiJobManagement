@@ -1819,7 +1819,7 @@
         {
             // The Stations tab joins against copied queue snapshots. Rebuild
             // that read-only join after any observed member/queue change; the
-            // queue-derived station target view can rebuild for this session.
+            // The player-station target view can rebuild for this session.
             g_stationAssignmentsDirty = true;
         }
         return true;

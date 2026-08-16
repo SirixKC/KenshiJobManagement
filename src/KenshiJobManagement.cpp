@@ -84,9 +84,7 @@
 
 #include <algorithm>
 #include <cmath>
-#ifdef KJM_SCANNER_PROBE
 #include <stddef.h>
-#endif
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>

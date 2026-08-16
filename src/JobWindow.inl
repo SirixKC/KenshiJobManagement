@@ -12,8 +12,9 @@
         }
     }
 
-    // Keep the assignment-derived Stations build fail-closed.  Only exact
-    // targets already present in loaded player queues are resolved here.
+    // Keep the player-station and assignment projection fail-closed. Ownership
+    // records are copied as scalar POD, and exact queue targets are resolved
+    // from loaded player queues; no borrowed or live engine pointer is cached.
     __declspec(noinline) bool TryBeginStationScanGuarded()
     {
         bool result = false;
@@ -28,7 +29,7 @@
         }
         if (faulted)
         {
-            ErrorLog("[KenshiJobManagement] Structured exception while building the station assignment view.");
+            ErrorLog("[KenshiJobManagement] Structured exception while building the station view.");
             g_stationScan.started = true;
             g_stationScan.complete = true;
             g_stationScan.rosterIncomplete = true;
@@ -51,7 +52,7 @@
         }
         if (faulted)
         {
-            ErrorLog("[KenshiJobManagement] Structured exception while resolving an assigned station target.");
+            ErrorLog("[KenshiJobManagement] Structured exception while resolving a station candidate.");
             g_stationScan.complete = true;
             g_stationScan.rosterIncomplete = true;
             return false;
@@ -234,14 +235,14 @@
             if (TryBeginStationScanGuarded())
             {
                 std::ostringstream scanReady;
-                scanReady << "[KenshiJobManagement] Stations roster and assigned target list captured: "
-                          << g_stationScan.assignedTargetHandles.size()
-                          << " exact queue target(s).";
+                scanReady << "[KenshiJobManagement] Stations roster, ownership records, and assigned targets captured: "
+                          << StationScanCandidateCount(g_stationScan)
+                          << " candidate(s).";
                 DebugLog(scanReady.str().c_str());
             }
             else
             {
-                DebugLog("[KenshiJobManagement] Stations assignment view failed safely during startup.");
+                DebugLog("[KenshiJobManagement] Stations player-station view failed safely during startup.");
             }
             g_stationAssignmentsDirty = false;
         }
@@ -804,16 +805,15 @@
             const bool completeBefore = g_stationScan.complete;
             HandleIdentity processedStationTarget;
             if (g_stationScan.nextTarget <
-                g_stationScan.assignedTargetHandles.size())
+                StationScanCandidateCount(g_stationScan))
             {
-                CaptureHandleIdentity(
-                    g_stationScan.assignedTargetHandles[
-                        g_stationScan.nextTarget],
+                TryGetStationScanCandidateIdentity(
+                    g_stationScan, g_stationScan.nextTarget,
                     &processedStationTarget);
             }
             if (firstStationTarget)
             {
-                DebugLog("[KenshiJobManagement] Resolving first assigned station target.");
+                DebugLog("[KenshiJobManagement] Resolving first player station target.");
             }
             TryStepStationScanGuarded();
             // StepStationScan sorts the complete column list after appending.
@@ -834,7 +834,7 @@
             }
             if (firstStationTarget)
             {
-                DebugLog("[KenshiJobManagement] First assigned station target resolved.");
+                DebugLog("[KenshiJobManagement] First player station target resolved.");
             }
             // A full virtual-matrix rebuild also rebinds visible portraits.
             // Refresh when a result or failure appears, when target loading ends,

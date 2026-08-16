@@ -44,6 +44,7 @@ REQUIRED_FILES = (
     "src/StationSettings.inl",
     "src/StationAssets.inl",
     "src/StationView.inl",
+    "diagnostics/evidence/2026-08-15-station-handle-resolution-success.md",
 )
 
 SOURCE_TOKENS = (
@@ -121,7 +122,7 @@ SOURCE_TOKENS = (
     "MODAL_CLEAR",
     "MODAL_OPTIONS",
     "WritePrivateProfileStringA",
-    # Queue-derived Stations tab and validated assignment transfer.
+    # Player-station/assignment tab and validated assignment transfer.
     "StationScanState",
     "STATION_SCAN_TARGET_LIMIT = 2048",
     "CollectAssignedStationTargets",
@@ -134,6 +135,38 @@ SOURCE_TOKENS = (
     "BeginStationScan",
     "StepStationScan",
     "RefreshStationAssignments",
+    "STATION_OWNERSHIP_COPY_LIMIT = 8192",
+    "sizeof(lektor<hand>) == 0x18",
+    "offsetof(lektor<hand>, count) == 0x08",
+    "offsetof(lektor<hand>, maxSize) == 0x0C",
+    "offsetof(lektor<hand>, stuff) == 0x10",
+    "sizeof(hand) == 0x20",
+    "offsetof(hand, type) == 0x08",
+    "offsetof(hand, container) == 0x0C",
+    "offsetof(hand, containerSerial) == 0x10",
+    "offsetof(hand, index) == 0x14",
+    "offsetof(hand, serial) == 0x18",
+    "TryCopyStationOwnershipRecords",
+    "TryReadStationOwnershipHeaderOnce",
+    "faction->factionOwnerships",
+    "StationOwnershipSpanFits",
+    "source->count",
+    "source->maxSize",
+    "source->stuff",
+    "SameStationOwnershipHeader(after, current)",
+    "output[index].vtable",
+    "output[index].type",
+    "output[index].container",
+    "output[index].containerSerial",
+    "output[index].index",
+    "output[index].serial",
+    "StationOwnedRecordMatchesHand",
+    "reconstructed->isValid()",
+    "reconstructed->getBuilding()",
+    "building->getHandle()",
+    "building->isThePlayer()",
+    "STATION_OWNED_RECORD_UNLOADED",
+    "STATION_OWNED_RECORD_FAULT",
     "STATION_OTHER",
     "GetStationCategoryName",
     "GetStationCategoryIconResource",
@@ -171,8 +204,9 @@ SOURCE_TOKENS = (
     "IsStationInteractionDragArmed",
     "WrapToolTipCaption",
     "STATION_OVERSCAN",
-    "READING ASSIGNED JOB TARGETS - RESULTS INCOMPLETE",
-    "ASSIGNED TARGET LIST TRUNCATED AT 2,048 - RESULTS INCOMPLETE",
+    "READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE",
+    "PLAYER STATION RESULT LIST TRUNCATED AT 2,048 - RESULTS INCOMPLETE",
+    'status->setCaption("UNASSIGNED")',
     '"JOBS UNAVAILABLE"',
 )
 
@@ -317,7 +351,7 @@ def validate_source(errors: list[str]) -> None:
         "getAllActiveZonesT",
     ):
         if token in source:
-            fail(errors, f"Queue-derived Stations view must not enumerate the world: {token}")
+            fail(errors, f"Station view must not use the forbidden world-discovery API: {token}")
 
     if source.count("KenshiLib::AddHook(") < 3:
         fail(
@@ -384,12 +418,12 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "field-test build",
         "disposable save",
         "Stations",
-        "2,048 assigned targets",
-        "does not enumerate zones",
+        "2,048 final-station cap",
+        "enumerate zones",
         "read-only",
         "33% opaque",
         "visual subtype icons",
-        "patches only the source and destination rows in place",
+        "patches only the\nsource and destination rows in place",
     ):
         if token not in readme:
             fail(errors, f"README must disclose or document: {token}")
@@ -399,11 +433,10 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "OutpostScanner",
         "AssignmentMatrix",
         "OptionalPriorityScheduler",
-        "Assignment-derived Stations tab milestone",
-        "one stable queue target",
-        "2,048 assigned targets",
+        "Player-station and assignment Stations tab milestone",
+        "one stable assigned target",
+        "2,048 unique stations",
         "Other / Unclassified",
-        "cannot show unassigned stations",
         "StationVisualSubtype",
         "ImageBox",
         "projection is patched in place",
@@ -417,9 +450,10 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "Same-row drag reorder",
         "Cross-member multi-select and drop-to-remove",
         "Clear Queue Yes/No/Esc modal and fingerprint",
-        "Stations tab: queue-derived assignment matrix",
-        "READING ASSIGNED JOB TARGETS - RESULTS INCOMPLETE",
-        "Assigned target list truncated at 2,048",
+        "Stations tab: player-station and assignment matrix",
+        "READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE",
+        "Player station result list truncated at 2,048",
+        "header says `UNASSIGNED`",
         "33%` opaque",
         "specific pictograms",
         "successful transfer, confirm only the source and destination rows change",
@@ -427,6 +461,20 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
     ):
         if token not in testing:
             fail(errors, f"Testing checklist is missing coverage for: {token}")
+
+    evidence = read_text(
+        "diagnostics/evidence/2026-08-15-station-handle-resolution-success.md",
+        errors,
+    )
+    for token in (
+        "complete allocation-free ownership path passed",
+        "hand.isValid=true",
+        "exact Building handle verified=true",
+        "isThePlayer=true",
+        "No engine pointer or reference escaped",
+    ):
+        if token not in evidence:
+            fail(errors, f"Stage 8 ownership evidence is missing: {token}")
 
 
 def main() -> int:

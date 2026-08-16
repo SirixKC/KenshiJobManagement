@@ -83,7 +83,7 @@ Before replacing the live DLL, confirm that `kenshi_x64.exe` is not running.
 After installation, compare the SHA-256 hashes of the build, package, and live
 DLL. They must be identical.
 
-## Required checks for the queue-derived Stations build
+## Required checks for the player-station and assignment Stations build
 
 Run all of these before reporting an installed build:
 
@@ -96,5 +96,11 @@ git diff --check
 Also inspect the final DLL strings. It must not contain
 `getOwnedBuildingsH`, `ZoneMapContent::findAllBuildings`,
 `SCANNING PLAYER STATIONS`, or `Player-owned station list`. Those belong to
-the removed crash-prone world-discovery implementations. The Stations view is
-derived only from exact targets in readable loaded-player permanent job queues.
+the removed crash-prone world-discovery implementations. The Stations view
+merges verified player-owned station-relevant BUILDING records from the
+bracketed borrowed ownership storage with exact targets in readable loaded-
+player permanent job queues. Ownership records are copied as scalar POD only,
+reconstructed one per UI tick, and never retain a borrowed source pointer or
+release engine memory. Assigned natural resource nodes remain the explicit
+non-owned exception. The final station result remains capped at 2,048; the
+source ownership copy uses its separate 8,192-record safety cap.

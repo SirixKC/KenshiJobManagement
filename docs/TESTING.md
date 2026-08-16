@@ -20,10 +20,11 @@ The test terms below are intentional:
 - **station** means one displayed world building/node column. Short clicks only
   select a column. Dragging an exact assignment card can move that job to a
   different loaded member.
-- **assignment view incomplete** means the matrix is still resolving known
-  queue targets, a target failed, or the 2,048-target safety cap was reached.
-  Treat the result as incomplete until the
-  banner clears and record any warning.
+- **station view incomplete** means the matrix is still resolving copied
+  ownership records or known queue targets, an assigned target failed, an
+  ownership validation fault occurred, or the 2,048-result safety cap was
+  reached. Treat the result as incomplete until the banner clears and record
+  any warning.
 
 ## Before launching
 
@@ -163,7 +164,7 @@ each member.
    preference remains after the update as well.
 10. Restore the default preference and record the result for the field report.
 
-## Stations tab: queue-derived assignment matrix
+## Stations tab: player-station and assignment matrix
 
 Use a save with at least one player outpost, several station types, multiple
 squads, and one permanent job aimed at a natural iron or copper node when
@@ -173,22 +174,25 @@ can be checked with a second save or rename mod.
 1. Open the manager with `Ctrl+J`. Confirm it opens on `Squad Jobs`. Click
    `Stations` and confirm the tab does not change the current squad or the
    selected character.
-2. Confirm the first station view starts a lazy assigned-target pass. While it
-   runs, the prominent banner says
-   `READING ASSIGNED JOB TARGETS - RESULTS INCOMPLETE`, shows `Target <N> of
-   <M>`, and fills station columns as exact queue targets resolve. Confirm the
-   pass consumes no more than one stable target per UI update. Switch to `Squad
-   Jobs`, then back; confirm target resolution pauses while hidden and resumes
-   later. Do not treat the matrix as complete while the banner is present.
-3. Confirm the matrix contains loaded building targets referenced by readable
+2. Confirm the first station view starts a lazy player-station candidate pass.
+   While it runs, the prominent banner says
+   `READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE`, shows `Candidate
+   <N> of <M>`, and fills station columns as exact ownership and queue targets
+   resolve. Confirm the pass consumes no more than one stable assigned target or
+   one copied ownership record per UI update. Switch to `Squad Jobs`, then back;
+   confirm target resolution pauses while hidden and resumes later. Do not treat
+   the matrix as complete while the banner is present.
+3. Confirm the matrix contains loaded, player-owned station-relevant buildings
+   from the ownership pass, plus loaded building targets referenced by readable
    permanent queues from every loaded player squad. Confirm an unrelated,
-   unassigned, public, or city building does not appear, even when a player
-   queue references it. Confirm an assigned natural resource node can appear as
-   the explicit non-owned exception. Confirm an unavailable target remains red
-   on Squad Jobs, is omitted from Stations, and increments the failed-target
-   warning because ownership cannot be verified. Confirm destroyed, incomplete, unpowered,
-   broken, disabled, and dismantling assigned targets also remain visible with
-   their blocking status.
+   public, or city building does not appear, even when a player queue references
+   it. Confirm an assigned natural resource node can appear as the explicit
+   non-owned exception and an assigned unknown player target can remain `Other /
+   Unclassified`. Confirm an unavailable assigned target remains red on Squad
+   Jobs, is omitted from Stations, and increments the failed-target warning.
+   Confirm destroyed, incomplete, unpowered, broken, disabled, and dismantling
+   assigned targets also remain visible with their blocking status. Confirm an
+   unloaded ownership record is omitted without one red error per record.
 4. Confirm station columns are grouped and ordered by area, category, and exact
    station name.
    Confirm a building renamed by a rename mod uses that exact name. If two
@@ -228,9 +232,9 @@ can be checked with a second save or rename mod.
    every job. Empty cells remain empty. Hover a
    cell and confirm the tooltip includes exact job text, station, priority,
    squad, relevant skill/value, and blocking status. Hover a station header
-   and confirm its column and matching row highlight. Confirm there is no
-   `UNASSIGNED` state in this milestone: a column exists only when at least one
-   readable loaded queue references the target.
+   and confirm its column and matching row highlight. Find a player-owned work
+   station that no readable loaded queue references. Confirm its column still
+   appears, every assignment cell is empty, and its header says `UNASSIGNED`.
 9. Give loaded members the generic Engineer, Medic, Robotics, and Rescue jobs.
    Confirm all four remain visible on Squad Jobs and in each worker's total job
    count, but none creates a Stations column or assignment cell. If the same
@@ -275,10 +279,10 @@ can be checked with a second save or rename mod.
     (Crafting, Refining, Farming, Mining, Research, Other / Unclassified).
 14. If a station target read fails, confirm target resolution continues and
     shows a red incomplete warning with the failed-target count. Use a stress
-    save if possible to reach 2,048 assigned targets; confirm the pass stops
-    and shows `Assigned target list truncated at 2,048. Results are
-    incomplete.` Record the target count, station count, warning text, and
-    whether any later target was skipped unexpectedly.
+    save if possible to reach 2,048 unique stations; confirm the pass stops and
+    shows `Player station result list truncated at 2,048`. Record the target
+    count, station count, warning text, and whether any later target was skipped
+    unexpectedly.
 
 ## Live refresh, native pause/speed, and TAB
 

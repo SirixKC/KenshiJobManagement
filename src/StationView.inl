@@ -9,6 +9,8 @@
 // StationScanState
 //   bool started, complete, truncated, rosterIncomplete;
 //   size_t targetsCompleted, targetsFailed, nextTarget;
+//   bool ownershipCopyTruncated, ownershipResolutionIncomplete;
+//   std::vector<StationOwnedHandRecord> ownedBuildingRecords;
 //   std::vector<hand> assignedTargetHandles;
 //   std::vector<std::string> errors;
 //   std::vector<StationTargetSnapshot> stations; // already display sorted
@@ -1413,6 +1415,11 @@
             status->setCaption(station.blockingStatus);
             status->setTextColour(MyGUI::Colour(1.0f, 0.38f, 0.27f));
         }
+        else if (station.assignments.empty())
+        {
+            status->setCaption("UNASSIGNED");
+            status->setTextColour(MyGUI::Colour(1.0f, 0.82f, 0.42f));
+        }
         status->setFontHeight(10);
         status->setTextAlign(MyGUI::Align::Center);
         status->setNeedMouseFocus(false);
@@ -1426,6 +1433,10 @@
         if (!station.blockingStatus.empty())
         {
             tooltip << "\nCannot work: " << station.blockingStatus;
+        }
+        if (station.assignments.empty())
+        {
+            tooltip << "\nAssignment: UNASSIGNED";
         }
         AttachStationInput(visible.root, -1, stationIndex, tooltip.str());
         AttachStationHeaderDragInput(visible.root);
@@ -1932,21 +1943,27 @@
         const StationScanState& snapshot = *g_stationView.snapshot;
         std::ostringstream caption;
         MyGUI::Colour colour(0.95f, 0.83f, 0.55f);
+        const size_t candidateCount = StationScanCandidateCount(snapshot);
         if (!snapshot.complete)
         {
-            caption << "READING ASSIGNED JOB TARGETS - RESULTS INCOMPLETE  |  Target "
+            caption << "READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE  |  Candidate "
                     << snapshot.targetsCompleted << " of "
-                    << snapshot.assignedTargetHandles.size();
+                    << candidateCount;
         }
         else if (snapshot.truncated)
         {
-            caption << "ASSIGNED TARGET LIST TRUNCATED AT 2,048 - RESULTS INCOMPLETE";
+            caption << "PLAYER STATION RESULT LIST TRUNCATED AT 2,048 - RESULTS INCOMPLETE";
+            colour = MyGUI::Colour(1.0f, 0.38f, 0.27f);
+        }
+        else if (snapshot.ownershipCopyTruncated)
+        {
+            caption << "PLAYER STATION OWNERSHIP COPY TRUNCATED AT 8,192 - RESULTS INCOMPLETE";
             colour = MyGUI::Colour(1.0f, 0.38f, 0.27f);
         }
         else if (!snapshot.errors.empty() || snapshot.targetsFailed > 0 ||
                  snapshot.rosterIncomplete)
         {
-            caption << "ASSIGNMENT VIEW INCOMPLETE";
+            caption << "PLAYER STATION VIEW INCOMPLETE";
             if (snapshot.targetsFailed > 0)
             {
                 caption << ": " << snapshot.targetsFailed
@@ -1962,7 +1979,7 @@
         else
         {
             caption << g_stationView.visibleStations.size()
-                    << " ASSIGNED STATION TARGETS LOADED";
+                    << " PLAYER STATIONS LOADED";
             colour = MyGUI::Colour(0.80f, 0.86f, 0.65f);
         }
         g_stationView.scanBanner->setCaption(caption.str());
@@ -1984,12 +2001,11 @@
         {
             const int trackWidth = g_stationView.progressTrack->getWidth();
             int fillWidth = trackWidth;
-            if (!snapshot.assignedTargetHandles.empty())
+            if (candidateCount != 0)
             {
                 fillWidth = static_cast<int>(
                     (static_cast<double>(snapshot.targetsCompleted) /
-                     static_cast<double>(
-                         snapshot.assignedTargetHandles.size())) * trackWidth);
+                     static_cast<double>(candidateCount)) * trackWidth);
             }
             fillWidth = ClampInt(fillWidth, 0, trackWidth);
             g_stationView.progressFill->setSize(fillWidth,
@@ -2170,8 +2186,8 @@
             {
                 g_stationView.emptyText->setCaption(
                     g_stationView.snapshot->complete ?
-                    "No station-specific loaded squad jobs match the current filters." :
-                    "Reading exact station targets from loaded squad jobs. Results are not complete yet.");
+                    "No player-owned station targets match the current filters." :
+                    "Reading player-owned stations and exact assigned targets. Results are not complete yet.");
             }
         }
         RefreshStationVirtualWidgets();

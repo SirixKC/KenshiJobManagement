@@ -41,34 +41,41 @@ The Stage 1 window provides:
   cards remain editable and a live queue remains editable when one target label
   is unavailable.
 
-The same manager now has a queue-derived **Stations** tab. It builds a frozen,
+The same manager now has a **Stations** tab. It builds a frozen,
 spreadsheet-style matrix for every readable loaded player character across the
 player squads. Kenshi's vanilla squad and member order is kept; squads are
-grouped and collapsible. Station columns come only from exact building targets
-already referenced by those members' permanent job queues. Areas, categories,
-exact (including renamed) target names, relevant skills, permanent queue
-priorities, Jobs state, and blocking status are shown. Existing station jobs
-can be moved between loaded members by dragging an assignment card. A verified
-successful transfer patches only the source and destination rows in place, so
-the current columns, scan progress, scroll positions, collapsed squads, and
-selection remain stable. A full projection refresh remains the fail-closed
-fallback for stale, partial, or externally changed data.
+grouped and collapsible. Station columns merge player-owned station-relevant
+buildings with exact building targets already referenced by those members'
+permanent job queues. Areas, categories, exact (including renamed) target
+names, relevant skills, permanent queue priorities, Jobs state, and blocking
+status are shown. Existing station jobs can be moved between loaded members by
+dragging an assignment card. A verified successful transfer patches only the
+source and destination rows in place, so the current columns, scan progress,
+scroll positions, collapsed squads, and selection remain stable. A full
+projection refresh remains the fail-closed fallback for stale, partial, or
+externally changed data.
 
 Both rosters use an enlarged portrait and stack each member's three displayed
 skills vertically in a larger font. While the manager is open, its opaque backdrop keeps the world from
 reducing text contrast and mouse-wheel input is reserved for the manager rather
 than changing the game camera.
 
-The assignment view starts lazily when the tab is first opened. It deduplicates
-stable target handles copied from readable permanent queues and resolves no
-more than one known target per UI update. A target appears only when its live
-building can be resolved and verified as player-owned; assigned natural resource
-nodes are the deliberate exception. An unloaded or unreadable target stays on
-the Squad Jobs tab with its red warning, while Stations omits it and reports an
-incomplete target pass. The matrix fills as results arrive and shows an explicit incomplete-results banner
-while it runs. It reports failed targets and stops at 2,048 assigned targets
-with a visible truncation warning. It does not enumerate zones, faction
-ownership lists, towns, or unrelated world buildings.
+The station pass starts lazily when the tab is first opened. It brackets a
+borrowed player ownership record copy into plugin-owned scalar data, then
+resolves no more than one candidate per UI update. It also deduplicates exact
+target handles copied from readable permanent queues. A direct ownership
+candidate appears only when its live building is resolved, verified as
+player-owned, and classified as station-relevant. Assigned natural resource
+nodes remain the deliberate non-owned exception, and assigned player targets
+with unknown metadata retain the `Other / Unclassified` fallback. An unloaded
+or unreadable assigned target stays on the Squad Jobs tab with its red warning,
+while Stations omits it. The matrix fills as results arrive and shows an
+explicit incomplete-results banner while it runs. It reports failed assigned
+targets, keeps ownership-record validation warnings separate, and stops at the
+2,048 final-station cap with a visible truncation warning. It does not
+enumerate zones, towns, or unrelated world buildings.
+Player-owned work stations with no readable queue assignment remain visible
+and are marked `UNASSIGNED`.
 Kenshi's global Engineer, Medic, Robotics, and Rescue jobs remain in the Squad
 Jobs queue and total job count, but they never create station columns or
 assignment cells because their stored targets do not define their work scope.
@@ -97,11 +104,9 @@ same artwork identifies building-target jobs on both tabs.
 
 The Stations tab can move an existing exact station assignment between loaded,
 readable player-member queues. It cannot create a new station assignment or
-change the job target. Because it is assignment-derived,
-it cannot show a station that no readable loaded queue references. Complete
-player-building discovery, camera centering, world highlights, roles, station
-new assignment creation, and an unassigned-building toggle remain planned follow-up
-work after a safe Kenshi world-discovery API is validated.
+change the job target. Camera centering, world highlights, roles, station new
+assignment creation, and an unassigned-building toggle remain planned follow-up
+work.
 
 The UI uses exact live task and target data. It does not guess a target from a
 job name. New assignment creation, role presets, camera/world highlighting,

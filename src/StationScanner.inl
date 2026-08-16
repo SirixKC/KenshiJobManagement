@@ -20,17 +20,51 @@
 // TryGetOrderedMemberHandles, TryReadRootObjectName, TryReadStatValue,
 // TryGetLocalizedStatName, TryGetBlockingCondition and SKILL_DEFINITIONS.
 //
-// The station board is derived only from exact permanent-job targets found in
-// readable loaded-player queues.  It never enumerates zones, ownership lists,
-// or unrelated world buildings.  Building, Platoon and Character pointers
-// never survive the guarded function that resolves them.  BeginStationScan()
-// takes the queue snapshot.  StepStationScan() enriches no more than one known
-// job target per UI call.
+// The station board merges two exact sources: player-owned BUILDING records
+// copied from the player's borrowed faction ownership storage, and exact
+// permanent-job targets found in readable loaded-player queues.  It never
+// enumerates zones or unrelated world buildings.  Ownership records are copied
+// as plug-in-owned scalar POD, then one local handle is reconstructed per UI
+// call.  Building, Platoon, and Character pointers never survive their guarded
+// leaf operation.  BeginStationScan() takes both value snapshots, and
+// StepStationScan() enriches no more than one candidate per UI call.
 
 #ifndef KENSHI_JOB_MANAGEMENT_STATION_SCANNER_INL
 #define KENSHI_JOB_MANAGEMENT_STATION_SCANNER_INL
 
+    // The final board cap is intentionally separate from the borrowed source
+    // copy cap.  Ownership records can include non-work buildings, so the
+    // source pass must be allowed to inspect more records than the board can
+    // ultimately display.
     const size_t STATION_SCAN_TARGET_LIMIT = 2048;
+    const unsigned int STATION_OWNERSHIP_COPY_LIMIT = 8192;
+
+    // These offsets are part of the reconstructed KenshiLib 0.4.0 ABI.  The
+    // ownership source is read as a borrowed array of scalar records only;
+    // fail the build if a dependency update changes the layout underneath the
+    // guarded copy path.
+    typedef char StationScannerAssertLektorSize[
+        (sizeof(lektor<hand>) == 0x18) ? 1 : -1];
+    typedef char StationScannerAssertLektorCount[
+        (offsetof(lektor<hand>, count) == 0x08) ? 1 : -1];
+    typedef char StationScannerAssertLektorMax[
+        (offsetof(lektor<hand>, maxSize) == 0x0C) ? 1 : -1];
+    typedef char StationScannerAssertLektorStuff[
+        (offsetof(lektor<hand>, stuff) == 0x10) ? 1 : -1];
+    typedef char StationScannerAssertHandSize[
+        (sizeof(hand) == 0x20) ? 1 : -1];
+    typedef char StationScannerAssertItemTypeSize[
+        (sizeof(itemType) == 0x04) ? 1 : -1];
+    typedef char StationScannerAssertHandType[
+        (offsetof(hand, type) == 0x08) ? 1 : -1];
+    typedef char StationScannerAssertHandContainer[
+        (offsetof(hand, container) == 0x0C) ? 1 : -1];
+    typedef char StationScannerAssertHandContainerSerial[
+        (offsetof(hand, containerSerial) == 0x10) ? 1 : -1];
+    typedef char StationScannerAssertHandIndex[
+        (offsetof(hand, index) == 0x14) ? 1 : -1];
+    typedef char StationScannerAssertHandSerial[
+        (offsetof(hand, serial) == 0x18) ? 1 : -1];
 
     enum StationCategory
     {
@@ -194,15 +228,67 @@
         StationPlatoonReference() : platoon(NULL), order(0), sourceOrder(0) {}
     };
 
+    // A copied ownership record contains only the hand vtable address and
+    // the five scalar identity fields.  The vtable is a numeric validation
+    // token; no source pointer or engine-owned container is retained.
+    struct StationOwnedHandRecord
+    {
+        ULONG_PTR vtable;
+        unsigned int type;
+        unsigned int container;
+        unsigned int containerSerial;
+        unsigned int index;
+        unsigned int serial;
+    };
+
+    struct StationOwnershipHeaderSnapshot
+    {
+        ULONG_PTR player;
+        ULONG_PTR faction;
+        ULONG_PTR ownerships;
+        ULONG_PTR sourceObject;
+        ULONG_PTR sourceVtable;
+        unsigned int count;
+        unsigned int maxSize;
+        ULONG_PTR stuff;
+    };
+
+    enum StationOwnedRecordResult
+    {
+        STATION_OWNED_RECORD_OK,
+        STATION_OWNED_RECORD_UNLOADED,
+        STATION_OWNED_RECORD_FAULT
+    };
+
+    struct StationOwnedBuildingResolution
+    {
+        bool constructorMatches;
+        bool handValid;
+        bool buildingFound;
+        bool handleMatches;
+        bool playerOwned;
+        StationOwnedRecordResult result;
+
+        StationOwnedBuildingResolution() :
+            constructorMatches(false), handValid(false),
+            buildingFound(false), handleMatches(false), playerOwned(false),
+            result(STATION_OWNED_RECORD_UNLOADED)
+        {
+        }
+    };
+
     struct StationScanState
     {
         bool started;
         bool complete;
         bool truncated;
         bool rosterIncomplete;
+        bool ownershipCopyTruncated;
+        bool ownershipResolutionIncomplete;
         size_t nextTarget;
         size_t targetsCompleted;
         size_t targetsFailed;
+        std::vector<StationOwnedHandRecord> ownedBuildingRecords;
         std::vector<hand> assignedTargetHandles;
         std::vector<StationSquadSnapshot> squads;
         std::vector<StationTargetSnapshot> stations;
@@ -210,8 +296,9 @@
 
         StationScanState() :
             started(false), complete(false), truncated(false),
-            rosterIncomplete(false), nextTarget(0), targetsCompleted(0),
-            targetsFailed(0)
+            rosterIncomplete(false), ownershipCopyTruncated(false),
+            ownershipResolutionIncomplete(false),
+            nextTarget(0), targetsCompleted(0), targetsFailed(0)
         {
         }
     };
@@ -255,6 +342,294 @@
         {
             state->errors.push_back(text);
         }
+    }
+
+    bool StationOwnershipHeaderIsSane(
+        const StationOwnershipHeaderSnapshot& header)
+    {
+        if (header.player == 0 || header.faction == 0 ||
+            header.ownerships == 0 || header.sourceObject == 0 ||
+            header.sourceVtable == 0)
+        {
+            return false;
+        }
+        if (header.count > header.maxSize ||
+            header.maxSize > 65536)
+        {
+            return false;
+        }
+        if (header.count != 0 && header.stuff == 0)
+        {
+            return false;
+        }
+        return true;
+    }
+
+    bool SameStationOwnershipHeader(
+        const StationOwnershipHeaderSnapshot& left,
+        const StationOwnershipHeaderSnapshot& right)
+    {
+        return left.player == right.player &&
+            left.faction == right.faction &&
+            left.ownerships == right.ownerships &&
+            left.sourceObject == right.sourceObject &&
+            left.sourceVtable == right.sourceVtable &&
+            left.count == right.count &&
+            left.maxSize == right.maxSize &&
+            left.stuff == right.stuff;
+    }
+
+    bool StationOwnershipSpanFits(
+        const StationOwnershipHeaderSnapshot& header,
+        unsigned int recordCount)
+    {
+        if (!StationOwnershipHeaderIsSane(header) ||
+            recordCount > header.count)
+        {
+            return false;
+        }
+        if (recordCount == 0)
+        {
+            return true;
+        }
+        if (header.stuff == 0)
+        {
+            return false;
+        }
+
+        const ULONG_PTR maxAddress =
+            static_cast<ULONG_PTR>(~static_cast<ULONG_PTR>(0));
+        const ULONG_PTR bytes =
+            static_cast<ULONG_PTR>(recordCount) *
+            static_cast<ULONG_PTR>(sizeof(hand));
+        const ULONG_PTR begin = header.stuff;
+        return begin <= maxAddress - bytes;
+    }
+
+    // Read only scalar ownership-list metadata.  Pointer values are kept as
+    // numeric bracket tokens in this local POD and never leave the guarded
+    // copy operation.
+    __declspec(noinline) bool TryReadStationOwnershipHeaderOnce(
+        PlayerInterface* player,
+        StationOwnershipHeaderSnapshot* output,
+        DWORD* exceptionCode)
+    {
+        if (output != NULL)
+        {
+            memset(output, 0, sizeof(*output));
+        }
+        if (exceptionCode != NULL)
+        {
+            *exceptionCode = 0;
+        }
+
+        __try
+        {
+            if (player == NULL || output == NULL)
+            {
+                return false;
+            }
+
+            Faction* faction = player->getFaction();
+            if (faction == NULL || !faction->isThePlayer())
+            {
+                return false;
+            }
+
+            Ownerships* ownerships = faction->factionOwnerships;
+            if (ownerships == NULL)
+            {
+                return false;
+            }
+
+            lektor<hand>* source = &ownerships->stuff;
+            output->player = reinterpret_cast<ULONG_PTR>(player);
+            output->faction = reinterpret_cast<ULONG_PTR>(faction);
+            output->ownerships = reinterpret_cast<ULONG_PTR>(ownerships);
+            output->sourceObject = reinterpret_cast<ULONG_PTR>(source);
+            output->sourceVtable = reinterpret_cast<ULONG_PTR>(
+                *reinterpret_cast<const void* const*>(source));
+            output->count = source->count;
+            output->maxSize = source->maxSize;
+            output->stuff = reinterpret_cast<ULONG_PTR>(source->stuff);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            if (exceptionCode != NULL)
+            {
+                *exceptionCode = GetExceptionCode();
+            }
+            return false;
+        }
+    }
+
+    // Bracket the borrowed array with exact owner/header reads.  The output
+    // buffer belongs to the plug-in and receives only scalar hand fields; no
+    // pointer into Kenshi's list survives this function.
+    __declspec(noinline) bool TryCopyStationOwnershipRecords(
+        PlayerInterface* player,
+        StationOwnedHandRecord* output,
+        unsigned int outputCapacity,
+        unsigned int* copiedOut,
+        bool* truncatedOut,
+        DWORD* exceptionCode)
+    {
+        if (copiedOut != NULL)
+        {
+            *copiedOut = 0;
+        }
+        if (truncatedOut != NULL)
+        {
+            *truncatedOut = false;
+        }
+        if (exceptionCode != NULL)
+        {
+            *exceptionCode = 0;
+        }
+
+        __try
+        {
+            if (player == NULL || output == NULL || copiedOut == NULL ||
+                truncatedOut == NULL || outputCapacity == 0 ||
+                outputCapacity > STATION_OWNERSHIP_COPY_LIMIT)
+            {
+                return false;
+            }
+
+            DWORD innerException = 0;
+            StationOwnershipHeaderSnapshot expected;
+            StationOwnershipHeaderSnapshot current;
+            StationOwnershipHeaderSnapshot after;
+            if (!TryReadStationOwnershipHeaderOnce(
+                    player, &expected, &innerException) ||
+                !StationOwnershipHeaderIsSane(expected) ||
+                !TryReadStationOwnershipHeaderOnce(
+                    player, &current, &innerException) ||
+                !StationOwnershipHeaderIsSane(current) ||
+                !SameStationOwnershipHeader(expected, current))
+            {
+                if (exceptionCode != NULL)
+                {
+                    *exceptionCode = innerException;
+                }
+                return false;
+            }
+
+            const unsigned int copyCount =
+                current.count < outputCapacity ?
+                    current.count : outputCapacity;
+            if (!StationOwnershipSpanFits(current, copyCount))
+            {
+                return false;
+            }
+
+            const hand* source = reinterpret_cast<const hand*>(
+                current.stuff);
+            for (unsigned int index = 0; index < copyCount; ++index)
+            {
+                const hand* currentHand = source + index;
+                output[index].vtable = reinterpret_cast<ULONG_PTR>(
+                    *reinterpret_cast<const void* const*>(currentHand));
+                output[index].type = static_cast<unsigned int>(
+                    currentHand->type);
+                output[index].container = currentHand->container;
+                output[index].containerSerial = currentHand->containerSerial;
+                output[index].index = currentHand->index;
+                output[index].serial = currentHand->serial;
+            }
+
+            if (!TryReadStationOwnershipHeaderOnce(
+                    player, &after, &innerException) ||
+                !StationOwnershipHeaderIsSane(after) ||
+                !SameStationOwnershipHeader(after, current) ||
+                !SameStationOwnershipHeader(after, expected))
+            {
+                if (exceptionCode != NULL)
+                {
+                    *exceptionCode = innerException;
+                }
+                return false;
+            }
+
+            *copiedOut = copyCount;
+            *truncatedOut = current.count > outputCapacity;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            if (exceptionCode != NULL)
+            {
+                *exceptionCode = GetExceptionCode();
+            }
+            return false;
+        }
+    }
+
+    void CompactStationOwnedBuildingRecords(
+        std::vector<StationOwnedHandRecord>* records)
+    {
+        if (records == NULL)
+        {
+            return;
+        }
+
+        size_t writeIndex = 0;
+        for (size_t readIndex = 0; readIndex < records->size(); ++readIndex)
+        {
+            if ((*records)[readIndex].type !=
+                static_cast<unsigned int>(BUILDING))
+            {
+                continue;
+            }
+            if (writeIndex != readIndex)
+            {
+                (*records)[writeIndex] = (*records)[readIndex];
+            }
+            ++writeIndex;
+        }
+        records->resize(writeIndex);
+    }
+
+    bool CaptureStationOwnedBuildingRecords(
+        PlayerInterface* player,
+        StationScanState* state)
+    {
+        if (player == NULL || state == NULL)
+        {
+            return false;
+        }
+
+        state->ownedBuildingRecords.clear();
+        state->ownershipCopyTruncated = false;
+        state->ownedBuildingRecords.resize(STATION_OWNERSHIP_COPY_LIMIT);
+        unsigned int copied = 0;
+        bool truncated = false;
+        DWORD exceptionCode = 0;
+        if (!TryCopyStationOwnershipRecords(
+                player,
+                state->ownedBuildingRecords.empty() ? NULL :
+                    &state->ownedBuildingRecords[0],
+                STATION_OWNERSHIP_COPY_LIMIT,
+                &copied, &truncated, &exceptionCode))
+        {
+            state->ownedBuildingRecords.clear();
+            AddStationScanError(
+                state,
+                "Player station ownership records could not be read safely.");
+            return false;
+        }
+
+        state->ownedBuildingRecords.resize(copied);
+        CompactStationOwnedBuildingRecords(&state->ownedBuildingRecords);
+        state->ownershipCopyTruncated = truncated;
+        if (truncated)
+        {
+            AddStationScanError(
+                state,
+                "Player station ownership records reached the 8,192-record safety limit.");
+        }
+        return true;
     }
 
     bool StationIdentityInList(
@@ -1183,6 +1558,7 @@
 
     bool TryIsPlayerManagedStation(
         Building* building,
+        bool allowNaturalException,
         bool* manageableOut)
     {
         if (building == NULL || manageableOut == NULL)
@@ -1197,7 +1573,9 @@
             // exception to the player-owned station rule.
             const bool natural =
                 building->getSpecialFunction() == BF_MINE_NATURAL;
-            *manageableOut = natural || building->isThePlayer();
+            *manageableOut = allowNaturalException ?
+                (natural || building->isThePlayer()) :
+                building->isThePlayer();
             return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -1540,9 +1918,136 @@
         }
     }
 
+    bool StationOwnedRecordMatchesHand(
+        const StationOwnedHandRecord& record,
+        const hand& value)
+    {
+        return record.vtable == reinterpret_cast<ULONG_PTR>(
+                   *reinterpret_cast<const void* const*>(&value)) &&
+            record.type == static_cast<unsigned int>(value.type) &&
+            record.container == value.container &&
+            record.containerSerial == value.containerSerial &&
+            record.index == value.index &&
+            record.serial == value.serial;
+    }
+
     bool TrySnapshotStationBuilding(
         Building* building,
         const std::vector<StationSquadSnapshot>& squads,
+        bool allowNaturalException,
+        StationTargetSnapshot* stationOut,
+        bool* includeOut);
+
+    // Reconstruct and validate one borrowed ownership record.  The runtime
+    // object, Building pointer, exact live-handle check, owner check, and
+    // metadata snapshot all stay inside this guarded leaf.  Only normalized
+    // value data is written to the caller's snapshot.
+    __declspec(noinline) bool TryResolveOwnedStationRecord(
+        const StationOwnedHandRecord* record,
+        const std::vector<StationSquadSnapshot>& squads,
+        StationOwnedBuildingResolution* resultOut,
+        StationTargetSnapshot* stationOut,
+        bool* includeOut)
+    {
+        if (resultOut != NULL)
+        {
+            *resultOut = StationOwnedBuildingResolution();
+        }
+        if (includeOut != NULL)
+        {
+            *includeOut = false;
+        }
+
+        __declspec(align(16)) unsigned char storage[sizeof(hand)];
+        __try
+        {
+            if (record == NULL || resultOut == NULL || stationOut == NULL ||
+                includeOut == NULL ||
+                record->type != static_cast<unsigned int>(BUILDING))
+            {
+                if (resultOut != NULL)
+                {
+                    resultOut->result = STATION_OWNED_RECORD_FAULT;
+                }
+                return false;
+            }
+
+            hand* reconstructed = reinterpret_cast<hand*>(storage);
+            hand* constructed = reconstructed->_CONSTRUCTOR(
+                record->index,
+                record->serial,
+                static_cast<itemType>(record->type),
+                record->container,
+                record->containerSerial);
+            if (constructed != reconstructed)
+            {
+                resultOut->result = STATION_OWNED_RECORD_FAULT;
+                return true;
+            }
+
+            resultOut->constructorMatches =
+                StationOwnedRecordMatchesHand(*record, *reconstructed);
+            if (!resultOut->constructorMatches)
+            {
+                resultOut->result = STATION_OWNED_RECORD_FAULT;
+                return true;
+            }
+
+            resultOut->handValid = reconstructed->isValid();
+            if (!resultOut->handValid)
+            {
+                resultOut->result = STATION_OWNED_RECORD_UNLOADED;
+                return true;
+            }
+
+            Building* building = reconstructed->getBuilding();
+            resultOut->buildingFound = building != NULL;
+            if (building == NULL)
+            {
+                resultOut->result = STATION_OWNED_RECORD_UNLOADED;
+                return true;
+            }
+
+            const hand& actual = building->getHandle();
+            resultOut->handleMatches = StationOwnedRecordMatchesHand(
+                *record, actual);
+            if (!resultOut->handleMatches)
+            {
+                resultOut->result = STATION_OWNED_RECORD_FAULT;
+                return true;
+            }
+
+            // The ownership decision is made only after the exact live handle
+            // check.  A stale slot can never promote a replacement building.
+            resultOut->playerOwned = building->isThePlayer();
+            if (!resultOut->playerOwned)
+            {
+                resultOut->result = STATION_OWNED_RECORD_FAULT;
+                return true;
+            }
+
+            if (!TrySnapshotStationBuilding(
+                    building, squads, false, stationOut, includeOut))
+            {
+                resultOut->result = STATION_OWNED_RECORD_FAULT;
+                return false;
+            }
+            resultOut->result = STATION_OWNED_RECORD_OK;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            *resultOut = StationOwnedBuildingResolution();
+            resultOut->result = STATION_OWNED_RECORD_FAULT;
+            *includeOut = false;
+            return false;
+        }
+    }
+
+    bool TrySnapshotStationBuilding(
+        Building* building,
+        const std::vector<StationSquadSnapshot>& squads,
+        bool allowNaturalException,
         StationTargetSnapshot* stationOut,
         bool* includeOut)
     {
@@ -1564,16 +2069,28 @@
         }
 
         std::string queueTargetLabel;
-        if (!TryFindAssignedStationTargetLabel(
-                squads, station.identity, &queueTargetLabel))
+        const bool queueEvidence = TryFindAssignedStationTargetLabel(
+            squads, station.identity, &queueTargetLabel);
+        if (allowNaturalException && !queueEvidence)
         {
             return true;
         }
 
         bool playerManaged = false;
-        if (!TryIsPlayerManagedStation(building, &playerManaged) ||
-            !playerManaged)
+        if (!TryIsPlayerManagedStation(
+                building, allowNaturalException, &playerManaged))
         {
+            return false;
+        }
+        if (!playerManaged)
+        {
+            if (!allowNaturalException)
+            {
+                // The ownership leaf already proved this was player-owned.
+                // A contradictory second read is a validation fault, not an
+                // ordinary public/city omission.
+                return false;
+            }
             // Fail closed. A public or city building referenced by a queue is
             // not part of the player's station board.
             return true;
@@ -1585,6 +2102,13 @@
                 building, &station.category, &station.relevantStat,
                 &station.relevantSkillKnown, &natural, &relevant))
         {
+            if (!queueEvidence)
+            {
+                // A direct-owned record must identify a station-specific
+                // work building.  Queue targets retain the old Other fallback
+                // because the exact assignment is still useful to the user.
+                return false;
+            }
             // The exact queue assignment remains useful even when optional
             // building metadata cannot be read.  Keep the target visible in
             // the catch-all category instead of dropping the whole column.
@@ -1594,6 +2118,10 @@
             relevant = false;
         }
 
+        if (!relevant && !queueEvidence)
+        {
+            return true;
+        }
         if (!relevant)
         {
             station.category = STATION_OTHER;
@@ -1621,8 +2149,10 @@
         if (!TryReadRootObjectName(building, &station.name) ||
             station.name.empty())
         {
-            station.name = queueTargetLabel.empty() ?
-                "Unnamed assigned target" : queueTargetLabel;
+            station.name = queueEvidence ?
+                (queueTargetLabel.empty() ?
+                    "Unnamed assigned target" : queueTargetLabel) :
+                "Unnamed player station";
         }
         TryGetStationArea(
             building, &station.areaIdentity, &station.areaName);
@@ -1708,7 +2238,7 @@
         StationTargetSnapshot station;
         bool include = false;
         if (!TrySnapshotStationBuilding(
-                building, state->squads, &station, &include))
+                building, state->squads, true, &station, &include))
         {
             return false;
         }
@@ -1728,6 +2258,104 @@
         }
         JoinStationAssignments(state->squads, &station);
         state->stations.push_back(station);
+        return true;
+    }
+
+    bool TryScanOwnedStationTarget(
+        const StationOwnedHandRecord& record,
+        StationScanState* state)
+    {
+        if (state == NULL)
+        {
+            return false;
+        }
+
+        StationOwnedBuildingResolution resolution;
+        StationTargetSnapshot station;
+        bool include = false;
+        const bool resolved = TryResolveOwnedStationRecord(
+            &record, state->squads, &resolution, &station, &include);
+        if (!resolved || resolution.result == STATION_OWNED_RECORD_FAULT)
+        {
+            if (!state->ownershipResolutionIncomplete)
+            {
+                state->ownershipResolutionIncomplete = true;
+                AddStationScanError(
+                    state,
+                    "Some player station ownership records failed validation.");
+            }
+            return true;
+        }
+        if (resolution.result != STATION_OWNED_RECORD_OK ||
+            !resolution.playerOwned)
+        {
+            // An ownership record can point at an unloaded or replaced
+            // object.  It is an expected omission from the live board, not a
+            // failed assigned target and therefore does not add a red error.
+            return true;
+        }
+
+        if (!include ||
+            StationTargetAlreadyScanned(station.identity, state->stations))
+        {
+            return true;
+        }
+        if (state->stations.size() >= STATION_SCAN_TARGET_LIMIT)
+        {
+            state->truncated = true;
+            state->complete = true;
+            return true;
+        }
+        JoinStationAssignments(state->squads, &station);
+        state->stations.push_back(station);
+        return true;
+    }
+
+    size_t StationScanCandidateCount(const StationScanState& state)
+    {
+        return state.ownedBuildingRecords.size() +
+            state.assignedTargetHandles.size();
+    }
+
+    void CaptureStationOwnedRecordIdentity(
+        const StationOwnedHandRecord& record,
+        HandleIdentity* identityOut)
+    {
+        if (identityOut == NULL)
+        {
+            return;
+        }
+        identityOut->valid = record.vtable != 0 &&
+            record.type == static_cast<unsigned int>(BUILDING);
+        identityOut->type = static_cast<itemType>(record.type);
+        identityOut->container = record.container;
+        identityOut->containerSerial = record.containerSerial;
+        identityOut->index = record.index;
+        identityOut->serial = record.serial;
+    }
+
+    bool TryGetStationScanCandidateIdentity(
+        const StationScanState& state,
+        size_t candidateIndex,
+        HandleIdentity* identityOut)
+    {
+        if (identityOut == NULL ||
+            candidateIndex >= StationScanCandidateCount(state))
+        {
+            return false;
+        }
+
+        if (candidateIndex < state.assignedTargetHandles.size())
+        {
+            CaptureHandleIdentity(
+                state.assignedTargetHandles[candidateIndex], identityOut);
+            return true;
+        }
+
+        CaptureStationOwnedRecordIdentity(
+            state.ownedBuildingRecords[
+                candidateIndex - state.assignedTargetHandles.size()],
+            identityOut);
         return true;
     }
 
@@ -1751,8 +2379,11 @@
             AddStationScanError(
                 state, "Player squad roster could not be read completely.");
         }
-        // The board is intentionally assignment-derived.  Do not enumerate
-        // faction ownership, zones, towns, or unrelated world buildings.
+        // Copy borrowed ownership records into plug-in-owned scalar storage.
+        // The list is bracket-validated; live handles are reconstructed later,
+        // one candidate per UI update.
+        CaptureStationOwnedBuildingRecords(player, state);
+
         std::vector<HandleIdentity> assignedTargets;
         CollectAssignedStationTargets(state->squads, &assignedTargets);
         bool assignedTargetIncomplete = false;
@@ -1766,7 +2397,7 @@
                 "Assigned station target list reached its safety limit.");
         }
 
-        state->complete = state->assignedTargetHandles.empty();
+        state->complete = StationScanCandidateCount(*state) == 0;
         return true;
     }
 
@@ -1781,16 +2412,35 @@
         }
         (void)world;
         (void)player;
-        if (state->nextTarget >= state->assignedTargetHandles.size())
+        if (state->nextTarget >= StationScanCandidateCount(*state))
         {
             state->complete = true;
             return true;
         }
 
-        const hand target = state->assignedTargetHandles[state->nextTarget];
+        const size_t candidateCount = StationScanCandidateCount(*state);
+        const size_t candidateIndex = state->nextTarget;
+        const bool ownedCandidate =
+            candidateIndex >= state->assignedTargetHandles.size();
         ++state->nextTarget;
 
-        if (!TryScanStationTarget(target, state))
+        bool scanSucceeded = true;
+        if (ownedCandidate)
+        {
+            // Ownership records are best-effort live inventory.  An unloaded
+            // slot is silently omitted and does not become an assigned-target
+            // failure in the banner.
+            scanSucceeded = TryScanOwnedStationTarget(
+                state->ownedBuildingRecords[
+                    candidateIndex - state->assignedTargetHandles.size()],
+                state);
+        }
+        else
+        {
+            const hand target = state->assignedTargetHandles[candidateIndex];
+            scanSucceeded = TryScanStationTarget(target, state);
+        }
+        if (!ownedCandidate && !scanSucceeded)
         {
             ++state->targetsFailed;
             AddStationScanError(
@@ -1798,7 +2448,7 @@
         }
         ++state->targetsCompleted;
         SortStationTargetsForDisplay(state);
-        if (state->nextTarget >= state->assignedTargetHandles.size() ||
+        if (state->nextTarget >= candidateCount ||
             state->truncated)
         {
             state->complete = true;
@@ -1827,17 +2477,21 @@
         state->squads.swap(freshSquads);
         state->rosterIncomplete = incomplete;
         state->stations.clear();
+        state->ownedBuildingRecords.clear();
         state->assignedTargetHandles.clear();
         state->errors.clear();
         state->nextTarget = 0;
         state->targetsCompleted = 0;
         state->targetsFailed = 0;
         state->truncated = false;
+        state->ownershipResolutionIncomplete = false;
         if (incomplete)
         {
             AddStationScanError(
                 state, "Some loaded squad job data is unavailable.");
         }
+
+        CaptureStationOwnedBuildingRecords(player, state);
 
         std::vector<HandleIdentity> assignedTargets;
         CollectAssignedStationTargets(state->squads, &assignedTargets);
@@ -1850,7 +2504,7 @@
             AddStationScanError(
                 state, "Assigned station target list reached its safety limit.");
         }
-        state->complete = state->assignedTargetHandles.empty();
+        state->complete = StationScanCandidateCount(*state) == 0;
         return true;
     }
 

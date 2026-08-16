@@ -243,7 +243,7 @@ outpost discovery is added:
 Every engine read or write that dereferences reconstructed runtime objects
 lives in a small SEH wrapper. MyGUI calls remain on the UI thread.
 
-## Assignment-derived Stations tab milestone
+## Player-station and assignment Stations tab milestone
 
 The manager has a second tab, `Stations`, beside `Squad Jobs`. Opening the
 manager always starts on `Squad Jobs`; switching to `Stations` is explicit.
@@ -275,24 +275,28 @@ The station view is a frozen spreadsheet-style matrix:
   hide the worker. Its top-three skills and portrait use the same enlarged
   vertical layout as the Squad Jobs roster.
 
-### Assignment-derived targets and ordering
+### Player-owned and assigned targets and ordering
 
-The current field-test board does not discover world buildings. It copies exact
-building targets from readable permanent queues belonging to loaded player
-members, deduplicates those stable handles, and re-resolves only those known
-targets. A column is included only after the live target is verified as a
-player-owned building. Assigned natural resource nodes are the deliberate
-exception. An unresolved or unloaded target remains visible in Squad Jobs but
-is omitted here because station ownership cannot be proven; the target pass is
-reported as incomplete.
+The board merges two exact sources. It brackets the player faction's borrowed
+ownership records into plugin-owned scalar POD, then reconstructs at most one
+record per UI update. It also copies exact building targets from readable
+permanent queues belonging to loaded player members and deduplicates those
+stable handles. A direct ownership candidate is included only after a valid
+handle, loaded Building, exact live-handle identity, player ownership, and
+station-relevant classification all pass. Assigned natural resource nodes are
+the deliberate non-owned exception. Assigned player targets whose metadata is
+unknown retain the `Other / Unclassified` fallback. An unresolved or unloaded
+assigned target remains visible in Squad Jobs but is omitted here because the
+live target cannot be proven.
 Loaded assigned targets remain visible when destroyed, incomplete, unpowered,
 broken, disabled, or dismantling.
 
-No faction ownership list, zone container, town list, or world-building list
-is traversed. No live building, squad, or character pointer is cached between
-target-resolution steps. Public and city buildings are excluded even when a
-player queue references them. This avoids city-wide noise without claiming that
-the current board is a complete player-building inventory.
+No zone container, town list, or unrelated world-building list is traversed. No
+borrowed ownership source pointer or live building, squad, or character pointer
+is cached between resolution steps. Direct-owned non-work buildings are
+excluded. Public and city buildings are excluded even when a player queue
+references them, except for assigned natural resource nodes. This avoids
+city-wide noise while allowing the board to show unassigned player stations.
 
 The station projection excludes the exact generic permanent task types
 `JOB_BUILDER` (Engineer), `JOB_MEDIC` (Medic), `JOB_REPAIR_ROBOT` (Robotics),
@@ -355,28 +359,30 @@ While the manager exists, the update hook clears Kenshi's camera-wheel input
 before vanilla UI processing. MyGUI continues to receive wheel input for the
 manager's own scroll views.
 
-Blocking states are red only when they prevent work. A truly unassigned station
-cannot appear in this milestone because every column originates from at least
-one readable permanent job. Unreadable queues remain visible as unavailable
-worker data but cannot contribute target columns.
+Blocking states are red only when they prevent work. Direct-owned stations can
+appear without an assignment and show `UNASSIGNED` in the station header;
+unreadable queues remain visible as unavailable worker data but cannot
+contribute assigned target columns.
 
 ### Lazy target resolution and safety limits
 
-The assignment target pass starts only when `Stations` is opened for the first
-time. Each UI update consumes no more than one stable queue target. It pauses
-when the tab is hidden and resumes when the tab is shown again. Results fill
-the matrix progressively and the banner remains prominent until the pass
-finishes:
+The station candidate pass starts only when `Stations` is opened for the first
+time. Each UI update consumes no more than one stable assigned target or one
+copied ownership record. It pauses when the tab is hidden and resumes when the
+tab is shown again. Results fill the matrix progressively and the banner
+remains prominent until the pass finishes:
 
 ```text
-READING ASSIGNED JOB TARGETS - RESULTS INCOMPLETE
-Target <N> of <M>
+READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE
+Candidate <N> of <M>
 ```
 
-If a target cannot be read, resolution continues and shows a red incomplete
-warning with the failed-target count. The pass stops at 2,048 assigned targets
-and shows `Assigned target list truncated at 2,048. Results are incomplete.`
-Reopening the manager starts a new queue-derived session. Queue changes from
+If an assigned target cannot be read, resolution continues and shows a red
+incomplete warning with the failed-target count. An unloaded ownership record is
+silently omitted; a validation fault reports one ownership-pass warning. The
+final station result stops at 2,048 unique stations, while the borrowed source
+copy is separately capped at 8,192 records. Reopening the manager starts a new
+player-station session. Queue changes from
 `Squad Jobs` rebuild both the target list and assignment joins. A successful
 Stations transfer is the exception: its verified source and destination rows
 are patched without restarting the target pass. External queue changes,
@@ -430,21 +436,29 @@ a raw `Tasker` subject pointer or depend on a raw subject-field offset. Queue id
 fingerprints are rechecked through fresh guarded reads immediately before
 mutation.
 
-### OutpostScanner
+### Ownership scanner boundary
 
-`OutpostScanner` is deferred. The current Stations milestone uses
-only exact targets already present in loaded player queues. A future scanner is
-still required to find player-owned stations with no assignment and to support
-the world-highlight audit. It must use a KenshiLib discovery API whose ABI,
-locking, allocation ownership, and lifetime rules have been validated in game
-before integration.
+The earlier `OutpostScanner` name now refers to this bounded production
+scanner; it does not imply a zone-wide world walk.
 
-The current normalized assigned-target result contains a stable target handle,
-area identity/name, category, exact display name, relevant skill, and blocking
+The production scanner uses the validated borrowed ownership-record path. It
+copies only the source vtable address and five scalar hand fields into
+plugin-owned storage. It never asks Kenshi to populate an output container and
+never frees or retains the borrowed source. The ownership source copy is capped
+at 8,192 records; the final normalized station result remains capped at 2,048.
+Each copied record is reconstructed and checked with `isValid`, `getBuilding`,
+an exact `Building::getHandle` identity comparison, and `isThePlayer` before
+metadata is read. A failed loaded-object check is omitted as an expected live
+inventory gap; validation faults are reported once as an incomplete ownership
+pass. World highlights, roles, new assignment creation, and an unassigned
+building toggle remain deferred.
+
+The current normalized station result contains a stable target handle, area
+identity/name, category, exact display name, relevant skill, and blocking
 status, plus the exact permanent-job assignments joined from loaded player
 characters. It preserves renamed target names, excludes destroyed or invalid
-targets, caps the result at 2,048, and reports a failed target without aborting
-later targets.
+targets, caps the result at 2,048, and reports an assigned-target failure
+without aborting later candidates.
 
 Its normalized target identity is represented by:
 
@@ -519,15 +533,21 @@ must not continuously fight Kenshi's own decisions.
   add if source removal fails. After a fully verified success, patch only the
   affected station roster rows and preserve the existing board projection;
   use a full refresh only when the patch preconditions fail.
-- Build station columns only from exact building targets in readable loaded
-  player queues. Do not enumerate ownership or zone containers in this
-  milestone.
-- Bound the assignment-derived target list at 2,048, resolve one stable target
-  per UI update, and show incomplete results until resolution completes. A
-  failed target must not abort later targets.
-- Reopen the manager to start a fresh queue-derived target pass. Do not retain
-  raw `Building`, `Platoon`, or `Character` pointers between refreshes or
-  game-state transitions.
+- Build station columns from verified player-owned station-relevant building
+  records and exact building targets in readable loaded player queues. Do not
+  enumerate zones or unrelated world containers.
+- Copy only scalar ownership-record fields into plugin-owned storage. Bracket
+  the borrowed source header, reconstruct one candidate per UI update, and
+  require `isValid`, `getBuilding`, exact live-handle identity, and
+  `isThePlayer` before reading direct-owned metadata. Never retain source or
+  engine object pointers between refreshes or game-state transitions.
+- Bound the borrowed ownership copy at 8,192 records and the final station
+  result at 2,048 unique stations. Resolve one stable candidate per UI update
+  and show incomplete results until resolution completes. A failed assigned
+  target must not abort later candidates.
+- Reopen the manager to start a fresh player-station candidate pass. Do not
+  retain raw `Building`, `Platoon`, or `Character` pointers between refreshes
+  or game-state transitions.
 - Leave combat, rescue, self-preservation, and immediate orders to vanilla
   Kenshi.
 - `Remove Selected` and drop-to-remove are immediate, irreversible actions with
@@ -558,28 +578,30 @@ must not continuously fight Kenshi's own decisions.
 - one-second incremental refresh and transition cleanup;
 - source validator and build package.
 
-### 0.1: Assignment-derived Stations matrix field test
+### 0.1: Player-station and assignment Stations matrix field test
 
 - second `Stations` tab with the manager opening on `Squad Jobs`;
 - all loaded player characters across all loaded squads, grouped in vanilla
   squad/member order;
-- exact loaded building targets referenced by readable player permanent jobs;
+- verified player-owned station-relevant buildings plus exact loaded building
+  targets referenced by readable player permanent jobs;
 - exact renamed station names, categories, relevant skills, queue priorities,
   Jobs state, conditions, and blocking status;
 - stable visual subtypes for material-output stations and special benches, with
   broad-category fallback artwork and rename-independent classification;
 - shared skill filters and station category filters with the documented defaults;
-- lazy one-target-per-update enrichment with progressive results, failure
-  warning, and 2,048-target truncation warning;
+- lazy one-candidate-per-update enrichment with progressive results, ownership
+  validation warning, assigned-target failure warning, and 2,048-result
+  truncation warning;
 - frozen roster/headers, virtualized vertical/horizontal scrolling, station
   category labels, short-click column selection, and guarded assignment-card
   transfer between loaded members with an in-place verified-success projection
   patch and a fail-closed full-refresh fallback;
 - disposable-save field checklist and source validation for the new files.
 
-This milestone cannot show unassigned stations. Complete player-building
-discovery and the unassigned world-highlight toggle remain gated on a validated
-KenshiLib enumeration contract.
+The production ownership pass can show unassigned player stations. Complete
+world highlights, safe full-world discovery, and the unassigned world-highlight
+toggle remain gated on separate validated contracts.
 
 ### 0.2: reliable target assignment
 
