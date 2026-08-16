@@ -534,6 +534,16 @@ extern "C" __declspec(dllexport) void KJM_ScannerProbe_RequestReadHandles()
     OwnershipProbeRequestStage(3);
 }
 
+extern "C" __declspec(dllexport) void KJM_ScannerProbe_RequestConstructHand()
+{
+    OwnershipProbeRequestStage(4);
+}
+
+extern "C" __declspec(dllexport) void KJM_ScannerProbe_RequestValidateHand()
+{
+    OwnershipProbeRequestStage(5);
+}
+
 extern "C" __declspec(dllexport) LONG KJM_ScannerProbe_GetState()
 {
     return OwnershipProbeGetState();
@@ -579,8 +589,8 @@ __declspec(dllexport) void startPlugin()
 #ifdef KJM_SCANNER_PROBE
     DebugLog(
         "[KJM OwnershipProbe] diagnostic build active; "
-        "source Ownerships::stuff header/copy8/copyall stages advance with "
-        "Ctrl+Shift+F10; no engine container is retained, allocated, or freed");
+        "borrowed-list header/copy/constructor/isValid stages advance with "
+        "Ctrl+Shift+F10; the probe makes no Building call or engine-memory release");
 #endif
 
     std::ostringstream message;

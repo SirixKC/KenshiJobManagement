@@ -18,10 +18,13 @@ The prior allocation-and-release test is recorded in
 - It requires the resolved faction to be the player faction.
 - It validates `count`, `maxSize`, `stuff`, owner identity, and the source
   header before and after each copy.
-- It copies only scalar `hand` fields into fixed plugin-owned POD arrays.
+- Stages 1-3 copy only scalar `hand` fields into fixed plugin-owned POD arrays.
 - It never stores an engine pointer. Stored pointer values are numeric identity
   markers only and are never dereferenced later.
-- It never constructs a `hand` or calls a `hand` method.
+- Stage 4 constructs one local `hand` from five scalar identity fields and
+  verifies its fields and vtable. It calls no `hand` method.
+- Stage 5 constructs that same record again and calls only `hand::isValid()`.
+- No stage requests or dereferences a `Building*`.
 - It never modifies, clears, destroys, or releases the borrowed list.
 - A world reset clears only plugin-owned POD state.
 
@@ -72,9 +75,19 @@ closed. Fully release the keys between presses.
    - Copies at most 8,192 records' scalar fields into fixed plugin storage.
    - Logs the copied count, `BUILDING` count, and truncation state.
    - Requires the source header to remain unchanged across the copy.
+4. Press `Ctrl+Shift+F10` a fourth time.
+   - Revalidates the owner, header, and record zero against stage 3.
+   - Constructs one local `hand` through the five-field engine constructor.
+   - Verifies all five scalar fields and the vtable.
+   - Calls no `hand` method.
+5. Press `Ctrl+Shift+F10` a fifth time.
+   - Revalidates the same borrowed record.
+   - Constructs it again and verifies the result.
+   - Calls only `hand::isValid()`.
+   - Revalidates the borrowed owner, header, and record after the call.
 
-There is no fourth stage. This build does not resolve building handles and has
-no allocation or release operation.
+There is no sixth stage. This build never calls `hand::getBuilding()` and has
+no engine-container allocation or release operation.
 
 ## Logs and debugger exports
 
@@ -87,6 +100,8 @@ The diagnostic DLL exports request-only entry points:
 KJM_ScannerProbe_RequestStage1
 KJM_ScannerProbe_RequestInspect
 KJM_ScannerProbe_RequestReadHandles
+KJM_ScannerProbe_RequestConstructHand
+KJM_ScannerProbe_RequestValidateHand
 KJM_ScannerProbe_GetState
 ```
 
@@ -100,6 +115,8 @@ Probe states are:
  1  stable borrowed header captured
  2  up to eight scalar records copied
  3  full bounded scalar copy completed
+ 4  record zero reconstructed and verified
+ 5  record zero `hand::isValid()` call completed
 -1  guarded failure
 -2  abandoned after an invalid or changing header
 ```

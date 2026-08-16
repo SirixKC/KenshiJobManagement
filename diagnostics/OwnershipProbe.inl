@@ -2,9 +2,10 @@
 // Diagnostic-only borrowed Ownerships::stuff probe.
 //
 // This file is included only when KJM_SCANNER_PROBE is defined. It never calls
-// an ownership discovery function, allocates or frees an engine container, or
-// invokes a hand method. Engine pointers exist only in guarded leaf frames;
-// the probe state retains numeric addresses for identity comparisons only.
+// an ownership discovery function or allocates/frees an engine container.
+// Stages 4-5 reconstruct one local hand, with only isValid reached in stage 5.
+// Engine pointers exist only in guarded leaf frames; the probe state retains
+// numeric addresses for identity comparisons only.
 
     typedef char OwnershipProbeAssertLektorSize[
         (sizeof(lektor<hand>) == 0x18) ? 1 : -1];
@@ -16,6 +17,18 @@
         (offsetof(lektor<hand>, stuff) == 0x10) ? 1 : -1];
     typedef char OwnershipProbeAssertHandSize[
         (sizeof(hand) == 0x20) ? 1 : -1];
+    typedef char OwnershipProbeAssertItemTypeSize[
+        (sizeof(itemType) == 0x04) ? 1 : -1];
+    typedef char OwnershipProbeAssertHandType[
+        (offsetof(hand, type) == 0x08) ? 1 : -1];
+    typedef char OwnershipProbeAssertHandContainer[
+        (offsetof(hand, container) == 0x0C) ? 1 : -1];
+    typedef char OwnershipProbeAssertHandContainerSerial[
+        (offsetof(hand, containerSerial) == 0x10) ? 1 : -1];
+    typedef char OwnershipProbeAssertHandIndex[
+        (offsetof(hand, index) == 0x14) ? 1 : -1];
+    typedef char OwnershipProbeAssertHandSerial[
+        (offsetof(hand, serial) == 0x18) ? 1 : -1];
 
     enum OwnershipProbeState
     {
@@ -23,6 +36,8 @@
         OWNERSHIP_PROBE_OWNER_HEADER = 1,
         OWNERSHIP_PROBE_FIRST_HANDS = 2,
         OWNERSHIP_PROBE_FULL_HANDS = 3,
+        OWNERSHIP_PROBE_HAND_CONSTRUCTED = 4,
+        OWNERSHIP_PROBE_HAND_VALIDATED = 5,
         OWNERSHIP_PROBE_FAILED = -1,
         OWNERSHIP_PROBE_ABANDONED = -2
     };
@@ -57,6 +72,7 @@
 
     volatile LONG g_ownershipProbeRequestedStage = 0;
     volatile LONG g_ownershipProbeState = OWNERSHIP_PROBE_IDLE;
+    volatile LONG g_ownershipProbeBusy = 0;
 
     OwnershipProbeHeaderSnapshot g_ownershipProbeHeader = {};
 
@@ -70,6 +86,8 @@
     unsigned int g_ownershipProbeBuildingCount = 0;
     bool g_ownershipProbeAllTruncated = false;
     bool g_ownershipProbeF10WasDown = false;
+    bool g_ownershipProbeF10Armed = false;
+    DWORD g_ownershipProbeUpdateThreadId = 0;
 
     void OwnershipProbeWriteLog(const char* message)
     {
@@ -105,6 +123,12 @@
             &g_ownershipProbeState,
             OWNERSHIP_PROBE_IDLE,
             OWNERSHIP_PROBE_IDLE);
+    }
+
+    bool OwnershipProbeOnExpectedThread()
+    {
+        return g_ownershipProbeUpdateThreadId != 0 &&
+            GetCurrentThreadId() == g_ownershipProbeUpdateThreadId;
     }
 
     bool OwnershipProbeHeaderIsSane(
@@ -405,6 +429,149 @@
         OwnershipProbeWriteLog(message);
     }
 
+    bool OwnershipProbeRawHandEquals(
+        const OwnershipProbeRawHand& left,
+        const OwnershipProbeRawHand& right)
+    {
+        return left.vtable == right.vtable &&
+            left.type == right.type &&
+            left.container == right.container &&
+            left.containerSerial == right.containerSerial &&
+            left.index == right.index &&
+            left.serial == right.serial;
+    }
+
+    bool OwnershipProbeCaptureCurrentRecordZero(
+        PlayerInterface* player,
+        OwnershipProbeRawHand* currentOut,
+        DWORD* exceptionCode)
+    {
+        if (currentOut != NULL)
+        {
+            memset(currentOut, 0, sizeof(*currentOut));
+        }
+        if (exceptionCode != NULL)
+        {
+            *exceptionCode = 0;
+        }
+        if (player == NULL || currentOut == NULL ||
+            g_ownershipProbeAllTruncated ||
+            g_ownershipProbeAllCount == 0 ||
+            g_ownershipProbeAll[0].type !=
+                static_cast<unsigned int>(BUILDING))
+        {
+            return false;
+        }
+
+        OwnershipProbeHeaderSnapshot before;
+        OwnershipProbeHeaderSnapshot after;
+        unsigned int copied = 0;
+        unsigned int buildingCount = 0;
+        bool prefixTruncated = false;
+        if (!OwnershipProbeTryCopyRawHands(
+                player,
+                &g_ownershipProbeHeader,
+                currentOut,
+                1,
+                &copied,
+                &buildingCount,
+                &prefixTruncated,
+                &before,
+                &after,
+                exceptionCode))
+        {
+            return false;
+        }
+        (void)prefixTruncated;
+        return copied == 1 && buildingCount == 1 &&
+            OwnershipProbeRawHandEquals(
+                *currentOut, g_ownershipProbeAll[0]);
+    }
+
+    // Construct a local hand through the engine's five-field constructor.
+    // The raw storage and scalar locals require no C++ unwinding in this SEH
+    // leaf. No hand pointer leaves the function and no destructor is called.
+    __declspec(noinline) bool OwnershipProbeTryConstructRecord(
+        const OwnershipProbeRawHand* expected,
+        bool callIsValid,
+        bool* constructorMatches,
+        bool* validOut,
+        LONG* phaseOut,
+        DWORD* exceptionCode)
+    {
+        if (constructorMatches != NULL)
+        {
+            *constructorMatches = false;
+        }
+        if (validOut != NULL)
+        {
+            *validOut = false;
+        }
+        if (phaseOut != NULL)
+        {
+            *phaseOut = 0;
+        }
+        if (exceptionCode != NULL)
+        {
+            *exceptionCode = 0;
+        }
+
+        __declspec(align(16)) unsigned char storage[sizeof(hand)];
+        __try
+        {
+            if (expected == NULL || constructorMatches == NULL ||
+                validOut == NULL || phaseOut == NULL ||
+                expected->type != static_cast<unsigned int>(BUILDING))
+            {
+                return false;
+            }
+
+            *phaseOut = 1;
+            hand* reconstructed = reinterpret_cast<hand*>(storage);
+            hand* constructed = reconstructed->_CONSTRUCTOR(
+                expected->index,
+                expected->serial,
+                static_cast<itemType>(expected->type),
+                expected->container,
+                expected->containerSerial);
+
+            *phaseOut = 2;
+            if (constructed != reconstructed)
+            {
+                return true;
+            }
+            *constructorMatches =
+                reinterpret_cast<ULONG_PTR>(
+                    *reinterpret_cast<const void* const*>(reconstructed)) ==
+                    expected->vtable &&
+                static_cast<unsigned int>(reconstructed->type) ==
+                    expected->type &&
+                reconstructed->container == expected->container &&
+                reconstructed->containerSerial ==
+                    expected->containerSerial &&
+                reconstructed->index == expected->index &&
+                reconstructed->serial == expected->serial;
+            if (!*constructorMatches || !callIsValid)
+            {
+                *phaseOut = 3;
+                return true;
+            }
+
+            *phaseOut = 4;
+            *validOut = reconstructed->isValid();
+            *phaseOut = 5;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            if (exceptionCode != NULL)
+            {
+                *exceptionCode = GetExceptionCode();
+            }
+            return false;
+        }
+    }
+
     void OwnershipProbeRunStage1(PlayerInterface* player)
     {
         if (OwnershipProbeReadState() != OWNERSHIP_PROBE_IDLE)
@@ -451,6 +618,7 @@
         }
 
         g_ownershipProbeHeader = first;
+        g_ownershipProbeUpdateThreadId = GetCurrentThreadId();
         InterlockedExchange(
             &g_ownershipProbeState, OWNERSHIP_PROBE_OWNER_HEADER);
 
@@ -474,6 +642,14 @@
         {
             OwnershipProbeWriteLog(
                 "stage=2 rejected; stage 1 must complete first");
+            return;
+        }
+        if (!OwnershipProbeOnExpectedThread())
+        {
+            OwnershipProbeWriteLog(
+                "stage=2 update thread changed; abandoning probe");
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
             return;
         }
 
@@ -538,6 +714,14 @@
                 "stage=3 rejected; stage 2 must complete first");
             return;
         }
+        if (!OwnershipProbeOnExpectedThread())
+        {
+            OwnershipProbeWriteLog(
+                "stage=3 update thread changed; abandoning probe");
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            return;
+        }
 
         OwnershipProbeHeaderSnapshot before;
         OwnershipProbeHeaderSnapshot after;
@@ -589,9 +773,205 @@
             &g_ownershipProbeState, OWNERSHIP_PROBE_FULL_HANDS);
     }
 
+    void OwnershipProbeRunStage4(PlayerInterface* player)
+    {
+        if (OwnershipProbeReadState() != OWNERSHIP_PROBE_FULL_HANDS)
+        {
+            OwnershipProbeWriteLog(
+                "stage=4 rejected; stage 3 must complete first");
+            return;
+        }
+        if (!OwnershipProbeOnExpectedThread())
+        {
+            OwnershipProbeWriteLog(
+                "stage=4 update thread changed; abandoning probe");
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            return;
+        }
+
+        OwnershipProbeRawHand currentBefore;
+        DWORD exceptionCode = 0;
+        if (!OwnershipProbeCaptureCurrentRecordZero(
+                player, &currentBefore, &exceptionCode))
+        {
+            if (exceptionCode != 0)
+            {
+                OwnershipProbeLogException("4-prevalidate", exceptionCode);
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            }
+            else
+            {
+                OwnershipProbeWriteLog(
+                    "stage=4 owner/header/record changed; abandoning probe");
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            }
+            return;
+        }
+
+        OwnershipProbeWriteLog(
+            "stage=4 before five-field hand constructor; no hand method will run");
+        bool constructorMatches = false;
+        bool unusedValid = false;
+        LONG phase = 0;
+        if (!OwnershipProbeTryConstructRecord(
+                &currentBefore,
+                false,
+                &constructorMatches,
+                &unusedValid,
+                &phase,
+                &exceptionCode))
+        {
+            char stage[64];
+            _snprintf_s(
+                stage, sizeof(stage), _TRUNCATE,
+                "4-constructor-phase-%ld", phase);
+            OwnershipProbeLogException(stage, exceptionCode);
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            return;
+        }
+        if (!constructorMatches)
+        {
+            OwnershipProbeWriteLog(
+                "stage=4 constructor returned mismatched fields or vtable");
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            return;
+        }
+
+        OwnershipProbeRawHand currentAfter;
+        if (!OwnershipProbeCaptureCurrentRecordZero(
+                player, &currentAfter, &exceptionCode) ||
+            !OwnershipProbeRawHandEquals(currentBefore, currentAfter))
+        {
+            if (exceptionCode != 0)
+            {
+                OwnershipProbeLogException("4-postvalidate", exceptionCode);
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            }
+            else
+            {
+                OwnershipProbeWriteLog(
+                    "stage=4 source changed after constructor; abandoning probe");
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            }
+            return;
+        }
+
+        InterlockedExchange(
+            &g_ownershipProbeState, OWNERSHIP_PROBE_HAND_CONSTRUCTED);
+        OwnershipProbeWriteLog(
+            "stage=4 complete; constructor fields and vtable match exactly");
+    }
+
+    void OwnershipProbeRunStage5(PlayerInterface* player)
+    {
+        if (OwnershipProbeReadState() != OWNERSHIP_PROBE_HAND_CONSTRUCTED)
+        {
+            OwnershipProbeWriteLog(
+                "stage=5 rejected; stage 4 must complete first");
+            return;
+        }
+        if (!OwnershipProbeOnExpectedThread())
+        {
+            OwnershipProbeWriteLog(
+                "stage=5 update thread changed; abandoning probe");
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            return;
+        }
+
+        OwnershipProbeRawHand currentBefore;
+        DWORD exceptionCode = 0;
+        if (!OwnershipProbeCaptureCurrentRecordZero(
+                player, &currentBefore, &exceptionCode))
+        {
+            if (exceptionCode != 0)
+            {
+                OwnershipProbeLogException("5-prevalidate", exceptionCode);
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            }
+            else
+            {
+                OwnershipProbeWriteLog(
+                    "stage=5 owner/header/record changed; abandoning probe");
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            }
+            return;
+        }
+
+        OwnershipProbeWriteLog(
+            "stage=5 before fresh constructor and hand.isValid; no Building call will run");
+        bool constructorMatches = false;
+        bool handValid = false;
+        LONG phase = 0;
+        if (!OwnershipProbeTryConstructRecord(
+                &currentBefore,
+                true,
+                &constructorMatches,
+                &handValid,
+                &phase,
+                &exceptionCode))
+        {
+            char stage[64];
+            _snprintf_s(
+                stage, sizeof(stage), _TRUNCATE,
+                "5-isValid-phase-%ld", phase);
+            OwnershipProbeLogException(stage, exceptionCode);
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            return;
+        }
+        if (!constructorMatches)
+        {
+            OwnershipProbeWriteLog(
+                "stage=5 fresh constructor no longer matches copied record");
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            return;
+        }
+
+        OwnershipProbeRawHand currentAfter;
+        if (!OwnershipProbeCaptureCurrentRecordZero(
+                player, &currentAfter, &exceptionCode) ||
+            !OwnershipProbeRawHandEquals(currentBefore, currentAfter))
+        {
+            if (exceptionCode != 0)
+            {
+                OwnershipProbeLogException("5-postvalidate", exceptionCode);
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            }
+            else
+            {
+                OwnershipProbeWriteLog(
+                    "stage=5 source changed after hand.isValid; abandoning probe");
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            }
+            return;
+        }
+
+        char message[256];
+        _snprintf_s(
+            message, sizeof(message), _TRUNCATE,
+            "stage=5 complete hand.isValid=%s; no Building pointer was requested",
+            handValid ? "true" : "false");
+        OwnershipProbeWriteLog(message);
+        InterlockedExchange(
+            &g_ownershipProbeState, OWNERSHIP_PROBE_HAND_VALIDATED);
+    }
+
     void OwnershipProbeRequestStage(int stage)
     {
-        if (stage >= 1 && stage <= 3)
+        if (stage >= 1 && stage <= 5)
         {
             InterlockedExchange(&g_ownershipProbeRequestedStage, stage);
         }
@@ -600,6 +980,7 @@
     void OwnershipProbeClearPODState()
     {
         InterlockedExchange(&g_ownershipProbeRequestedStage, 0);
+        InterlockedExchange(&g_ownershipProbeBusy, 0);
         memset(&g_ownershipProbeHeader, 0,
             sizeof(g_ownershipProbeHeader));
         memset(g_ownershipProbeFirstEight, 0,
@@ -610,6 +991,8 @@
         g_ownershipProbeBuildingCount = 0;
         g_ownershipProbeAllTruncated = false;
         g_ownershipProbeF10WasDown = false;
+        g_ownershipProbeF10Armed = false;
+        g_ownershipProbeUpdateThreadId = 0;
         InterlockedExchange(
             &g_ownershipProbeState, OWNERSHIP_PROBE_IDLE);
     }
@@ -634,9 +1017,15 @@
             (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 &&
             (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         const bool f10Down =
-            modifiersDown && (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+            (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
 
-        if (f10Down && !g_ownershipProbeF10WasDown)
+        if (!f10Down)
+        {
+            g_ownershipProbeF10Armed = true;
+        }
+
+        if (g_ownershipProbeF10Armed && modifiersDown && f10Down &&
+            !g_ownershipProbeF10WasDown)
         {
             const LONG state = OwnershipProbeReadState();
             if (state == OWNERSHIP_PROBE_IDLE)
@@ -651,6 +1040,14 @@
             {
                 OwnershipProbeRequestStage(3);
             }
+            else if (state == OWNERSHIP_PROBE_FULL_HANDS)
+            {
+                OwnershipProbeRequestStage(4);
+            }
+            else if (state == OWNERSHIP_PROBE_HAND_CONSTRUCTED)
+            {
+                OwnershipProbeRequestStage(5);
+            }
             else
             {
                 OwnershipProbeWriteLog(
@@ -661,6 +1058,17 @@
 
         const LONG requested = InterlockedExchange(
             &g_ownershipProbeRequestedStage, 0);
+        if (requested == 0)
+        {
+            return;
+        }
+        if (InterlockedCompareExchange(
+                &g_ownershipProbeBusy, 1, 0) != 0)
+        {
+            OwnershipProbeWriteLog(
+                "probe request rejected because another stage is active");
+            return;
+        }
         if (requested == 1)
         {
             OwnershipProbeRunStage1(player);
@@ -673,4 +1081,13 @@
         {
             OwnershipProbeRunStage3(player);
         }
+        else if (requested == 4)
+        {
+            OwnershipProbeRunStage4(player);
+        }
+        else if (requested == 5)
+        {
+            OwnershipProbeRunStage5(player);
+        }
+        InterlockedExchange(&g_ownershipProbeBusy, 0);
     }
