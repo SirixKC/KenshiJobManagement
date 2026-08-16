@@ -534,6 +534,11 @@ extern "C" __declspec(dllexport) void KJM_ScannerProbe_RequestReadHandles()
     OwnershipProbeRequestStage(3);
 }
 
+extern "C" __declspec(dllexport) void KJM_ScannerProbe_RequestRelease()
+{
+    OwnershipProbeRequestStage(4);
+}
+
 extern "C" __declspec(dllexport) LONG KJM_ScannerProbe_GetState()
 {
     return OwnershipProbeGetState();

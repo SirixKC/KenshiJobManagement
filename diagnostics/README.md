@@ -14,13 +14,16 @@ normal Release build remains the queue-derived, scanner-free Job Manager.
 - It queries only `Faction::factionOwnerships`. It does not inspect platoon
   ownership objects.
 - It runs only after a hotkey edge on the main game thread.
-- It never frees or clears the returned `lektor<hand>`.
+- Stages 1-3 never free or clear the returned `lektor<hand>`.
+- Stage 4 can free exactly one retained output allocation after strict
+  non-alias and header-stability checks.
 - It never calls a method on a returned `hand`.
 - A world reset abandons all retained game pointers without accessing them.
 - The probe is one-shot. Restart Kenshi before repeating stage 1.
 
-The intentionally retained result can leak one small allocation until process
-exit. Use this build only for one controlled test session.
+Before stage 4, the intentionally retained result can leak one small
+allocation until process exit. Use this build only for one controlled test
+session.
 
 ## Build
 
@@ -79,6 +82,15 @@ Manager window closed during the probe.
    - Revalidates the header.
    - Reads at most eight raw `hand` records.
    - Does not resolve any building.
+4. If Kenshi remains open, release the keys and press `Ctrl+Shift+F10` a
+   fourth time.
+   - Revalidates the retained output and source headers.
+   - Requires a sane output header and distinct source/output object and
+     `stuff` pointers.
+   - Releases only the retained output buffer through Ogre's general
+     allocator.
+   - Immediately zeros the retained output and source-header snapshots so no
+     later stage or reset path can access or release them again.
 
 Do not reload or import a save between stages. If the world resets, restart
 Kenshi before another probe.
@@ -94,10 +106,11 @@ The diagnostic DLL exports these debugger entry points:
 KJM_ScannerProbe_RequestStage1
 KJM_ScannerProbe_RequestInspect
 KJM_ScannerProbe_RequestReadHandles
+KJM_ScannerProbe_RequestRelease
 KJM_ScannerProbe_GetState
 ```
 
-The first three exports only request work. The engine-facing operation runs on
+The first four exports only request work. The engine-facing operation runs on
 the next `PlayerInterface::updateUT` call, on the normal game thread.
 
 Probe states are:
@@ -107,6 +120,8 @@ Probe states are:
  1  stage 1 returned
  2  stage 2 completed
  3  stage 3 completed
+ 4  stage 4 entered the releasing state
+ 5  stage 4 released and reset the retained output
 -1  guarded failure
 -2  abandoned after identity change, alias detection, or world reset
 ```

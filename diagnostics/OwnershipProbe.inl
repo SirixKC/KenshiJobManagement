@@ -4,6 +4,9 @@
 // This file is included only when KJM_SCANNER_PROBE is defined.  The normal
 // Release build does not contain this code or the discovery API symbol.
 
+#include <ogre/OgreMemoryAllocatorConfig.h>
+#include <stdint.h>
+
     typedef char OwnershipProbeAssertLektorSize[
         (sizeof(lektor<hand>) == 0x18) ? 1 : -1];
     typedef char OwnershipProbeAssertLektorCount[
@@ -21,6 +24,8 @@
         OWNERSHIP_PROBE_CALL_RETURNED = 1,
         OWNERSHIP_PROBE_HEADER_READ = 2,
         OWNERSHIP_PROBE_HANDLES_READ = 3,
+        OWNERSHIP_PROBE_RELEASING = 4,
+        OWNERSHIP_PROBE_OUTPUT_RELEASED = 5,
         OWNERSHIP_PROBE_FAILED = -1,
         OWNERSHIP_PROBE_ABANDONED = -2
     };
@@ -53,6 +58,15 @@
             index(0), serial(0)
         {
         }
+    };
+
+    struct OwnershipProbeByteSpan
+    {
+        ULONG_PTR begin;
+        ULONG_PTR end;
+        bool present;
+
+        OwnershipProbeByteSpan() : begin(0), end(0), present(false) {}
     };
 
     volatile LONG g_ownershipProbeRequestedStage = 0;
@@ -260,6 +274,39 @@
         }
     }
 
+    __declspec(noinline) bool OwnershipProbeTryReleaseOutput(
+        const hand* output,
+        DWORD* exceptionCode)
+    {
+        if (exceptionCode != NULL)
+        {
+            *exceptionCode = 0;
+        }
+
+        // This is deliberately a leaf frame.  It performs exactly one free
+        // through the same Ogre general allocator used by lektor<hand> and
+        // does not touch the lektor object before or after the call.
+        __try
+        {
+            if (output == NULL)
+            {
+                return false;
+            }
+            Ogre::CategorisedAllocPolicy<
+                Ogre::MEMCATEGORY_GENERAL>::deallocateBytes(
+                    const_cast<hand*>(output));
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            if (exceptionCode != NULL)
+            {
+                *exceptionCode = GetExceptionCode();
+            }
+            return false;
+        }
+    }
+
     bool OwnershipProbeHeaderIsSane(
         const OwnershipProbeLektorHeader& header)
     {
@@ -274,6 +321,69 @@
             return false;
         }
         return true;
+    }
+
+    bool OwnershipProbeHeadersMatch(
+        const OwnershipProbeLektorHeader& left,
+        const OwnershipProbeLektorHeader& right)
+    {
+        return left.object == right.object &&
+            left.vtable == right.vtable &&
+            left.count == right.count &&
+            left.maxSize == right.maxSize &&
+            left.stuff == right.stuff;
+    }
+
+    bool OwnershipProbeMakeByteSpan(
+        const OwnershipProbeLektorHeader& header,
+        OwnershipProbeByteSpan* spanOut)
+    {
+        if (spanOut == NULL)
+        {
+            return false;
+        }
+
+        *spanOut = OwnershipProbeByteSpan();
+        if (header.stuff == NULL)
+        {
+            return header.maxSize == 0;
+        }
+        if (header.maxSize == 0)
+        {
+            return false;
+        }
+
+        const ULONG_PTR maxAddress =
+            static_cast<ULONG_PTR>(~static_cast<ULONG_PTR>(0));
+        const ULONG_PTR elementSize =
+            static_cast<ULONG_PTR>(sizeof(hand));
+        const ULONG_PTR capacity =
+            static_cast<ULONG_PTR>(header.maxSize);
+        if (capacity > maxAddress / elementSize)
+        {
+            return false;
+        }
+
+        const ULONG_PTR bytes = capacity * elementSize;
+        const ULONG_PTR begin =
+            reinterpret_cast<ULONG_PTR>(header.stuff);
+        if (begin > maxAddress - bytes)
+        {
+            return false;
+        }
+
+        spanOut->begin = begin;
+        spanOut->end = begin + bytes;
+        spanOut->present = true;
+        return true;
+    }
+
+    bool OwnershipProbeSpansOverlap(
+        const OwnershipProbeByteSpan& left,
+        const OwnershipProbeByteSpan& right)
+    {
+        return left.present && right.present &&
+            left.begin < right.end && right.begin < left.end;
     }
 
     bool OwnershipProbeResolveSameOwner(
@@ -439,8 +549,11 @@
                 g_ownershipProbeSourceHeader.stuff;
         _snprintf_s(
             message, sizeof(message), _TRUNCATE,
-            "stage=2 output-aliases-source=%s output-sane=%s",
+            "stage=2 output-aliases-source=%s output-object-alias=%s output-sane=%s",
             g_ownershipProbeOutputAliasesSource ? "yes" : "no",
+            g_ownershipProbeOutputHeader.object ==
+                    g_ownershipProbeSourceHeader.object
+                ? "yes" : "no",
             OwnershipProbeHeaderIsSane(g_ownershipProbeOutputHeader)
                 ? "yes" : "no");
         OwnershipProbeWriteLog(message);
@@ -555,12 +668,171 @@
         InterlockedExchange(
             &g_ownershipProbeState, OWNERSHIP_PROBE_HANDLES_READ);
         OwnershipProbeWriteLog(
-            "stage=3 complete; buffer remains intentionally unfreed");
+            "stage=3 complete; output remains retained for the release test");
+    }
+
+    void OwnershipProbeRunStage4(PlayerInterface* player)
+    {
+        if (InterlockedCompareExchange(
+                &g_ownershipProbeState,
+                OWNERSHIP_PROBE_RELEASING,
+                OWNERSHIP_PROBE_HANDLES_READ) != OWNERSHIP_PROBE_HANDLES_READ)
+        {
+            OwnershipProbeWriteLog(
+                "stage=4 rejected; stage 3 must complete successfully first");
+            return;
+        }
+
+        Faction* faction = NULL;
+        Ownerships* ownerships = NULL;
+        if (!OwnershipProbeResolveSameOwner(player, &faction, &ownerships))
+        {
+            if (InterlockedCompareExchange(
+                    &g_ownershipProbeState,
+                    OWNERSHIP_PROBE_IDLE,
+                    OWNERSHIP_PROBE_IDLE) != OWNERSHIP_PROBE_ABANDONED)
+            {
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            }
+            return;
+        }
+
+        OwnershipProbeLektorHeader sourceNow;
+        OwnershipProbeLektorHeader outputNow;
+        DWORD exceptionCode = 0;
+        if (!OwnershipProbeTryReadHeaders(
+                ownerships,
+                &g_ownershipProbeOutput,
+                &sourceNow,
+                &outputNow,
+                &exceptionCode))
+        {
+            if (exceptionCode != 0)
+            {
+                OwnershipProbeLogException("4-revalidate-header", exceptionCode);
+            }
+            else
+            {
+                OwnershipProbeWriteLog(
+                    "stage=4 header revalidation rejected; refusing free");
+            }
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            return;
+        }
+
+        if (!OwnershipProbeHeaderIsSane(sourceNow) ||
+            !OwnershipProbeHeaderIsSane(outputNow) ||
+            !OwnershipProbeHeadersMatch(
+                sourceNow, g_ownershipProbeSourceHeader) ||
+            !OwnershipProbeHeadersMatch(
+                outputNow, g_ownershipProbeOutputHeader))
+        {
+            OwnershipProbeWriteLog(
+                "stage=4 output header changed or is not sane; refusing free");
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            return;
+        }
+
+        OwnershipProbeByteSpan outputSpan;
+        OwnershipProbeByteSpan currentSourceSpan;
+        OwnershipProbeByteSpan cachedSourceSpan;
+        if (!OwnershipProbeMakeByteSpan(outputNow, &outputSpan) ||
+            !OwnershipProbeMakeByteSpan(sourceNow, &currentSourceSpan) ||
+            !OwnershipProbeMakeByteSpan(
+                g_ownershipProbeSourceHeader, &cachedSourceSpan))
+        {
+            OwnershipProbeWriteLog(
+                "stage=4 span calculation failed; refusing free");
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            return;
+        }
+
+        const bool objectAliases =
+            outputNow.object == sourceNow.object ||
+            outputNow.object == g_ownershipProbeSourceHeader.object;
+        const bool stuffAliases =
+            outputNow.stuff != NULL &&
+            (outputNow.stuff == sourceNow.stuff ||
+             outputNow.stuff == g_ownershipProbeSourceHeader.stuff);
+        if (objectAliases || stuffAliases ||
+            OwnershipProbeSpansOverlap(outputSpan, currentSourceSpan) ||
+            OwnershipProbeSpansOverlap(outputSpan, cachedSourceSpan))
+        {
+            OwnershipProbeWriteLog(
+                "stage=4 strict non-alias/span guard failed; refusing free");
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            return;
+        }
+
+        char message[768];
+        _snprintf_s(
+            message, sizeof(message), _TRUNCATE,
+            "stage=4 before-release output=%p count=%u max=%u source=%p source-stuff=%p",
+            outputNow.stuff,
+            outputNow.count,
+            outputNow.maxSize,
+            sourceNow.object,
+            sourceNow.stuff);
+        OwnershipProbeWriteLog(message);
+        OwnershipProbeWriteLog(
+            "stage=4 freeing retained output through Ogre general allocator");
+
+        // Detach before calling the allocator.  A failed allocator call is
+        // terminal and the captured buffer is never retried or accessed via
+        // the retained lektor again.
+        hand* outputBuffer = const_cast<hand*>(outputNow.stuff);
+        g_ownershipProbeOutput.count = 0;
+        g_ownershipProbeOutput.maxSize = 0;
+        g_ownershipProbeOutput.stuff = NULL;
+        g_ownershipProbeOutputHeader.object = NULL;
+        g_ownershipProbeOutputHeader.vtable = NULL;
+        g_ownershipProbeOutputHeader.count = 0;
+        g_ownershipProbeOutputHeader.maxSize = 0;
+        g_ownershipProbeOutputHeader.stuff = NULL;
+        g_ownershipProbeSourceHeader.object = NULL;
+        g_ownershipProbeSourceHeader.vtable = NULL;
+        g_ownershipProbeSourceHeader.count = 0;
+        g_ownershipProbeSourceHeader.maxSize = 0;
+        g_ownershipProbeSourceHeader.stuff = NULL;
+        g_ownershipProbeOutputAliasesSource = false;
+        g_ownershipProbePlayer = NULL;
+        g_ownershipProbeFaction = NULL;
+        g_ownershipProbeOwnerships = NULL;
+
+        const bool hasAllocation = outputBuffer != NULL;
+        if (hasAllocation && !OwnershipProbeTryReleaseOutput(
+                outputBuffer, &exceptionCode))
+        {
+            if (exceptionCode != 0)
+            {
+                OwnershipProbeLogException("4-release", exceptionCode);
+            }
+            else
+            {
+                OwnershipProbeWriteLog(
+                    "stage=4 allocator release rejected without exception");
+            }
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
+            return;
+        }
+
+        InterlockedExchange(
+            &g_ownershipProbeState, OWNERSHIP_PROBE_OUTPUT_RELEASED);
+        OwnershipProbeWriteLog(
+            hasAllocation
+                ? "stage=4 after-release complete; retained output header reset"
+                : "stage=4 after-detach complete; output was null and zero-sized");
     }
 
     void OwnershipProbeRequestStage(int stage)
     {
-        if (stage >= 1 && stage <= 3)
+        if (stage >= 1 && stage <= 4)
         {
             InterlockedExchange(&g_ownershipProbeRequestedStage, stage);
         }
@@ -618,6 +890,10 @@
             {
                 OwnershipProbeRequestStage(3);
             }
+            else if (state == OWNERSHIP_PROBE_HANDLES_READ)
+            {
+                OwnershipProbeRequestStage(4);
+            }
             else
             {
                 OwnershipProbeWriteLog(
@@ -640,5 +916,9 @@
         else if (requested == 3)
         {
             OwnershipProbeRunStage3(player);
+        }
+        else if (requested == 4)
+        {
+            OwnershipProbeRunStage4(player);
         }
     }
