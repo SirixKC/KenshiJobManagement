@@ -24,7 +24,12 @@ The prior allocation-and-release test is recorded in
 - Stage 4 constructs one local `hand` from five scalar identity fields and
   verifies its fields and vtable. It calls no `hand` method.
 - Stage 5 constructs that same record again and calls only `hand::isValid()`.
-- No stage requests or dereferences a `Building*`.
+- Stage 6 requests `hand::getBuilding()` but does not dereference or retain the
+  returned pointer.
+- Stage 7 resolves the building again and verifies its live `getHandle()`
+  identity. Stage 8 repeats that verification before calling only
+  `Building::isThePlayer()`.
+- No `Building*` or `hand*` leaves a guarded leaf function.
 - It never modifies, clears, destroys, or releases the borrowed list.
 - A world reset clears only plugin-owned POD state.
 
@@ -85,9 +90,23 @@ closed. Fully release the keys between presses.
    - Constructs it again and verifies the result.
    - Calls only `hand::isValid()`.
    - Revalidates the borrowed owner, header, and record after the call.
+6. Press `Ctrl+Shift+F10` a sixth time.
+   - Reconstructs and validates record zero again.
+   - Calls `hand::getBuilding()`.
+   - Logs only whether a pointer was returned. It does not dereference or
+     retain that pointer.
+7. If stage 6 found a loaded building, press `Ctrl+Shift+F10` a seventh time.
+   - Resolves the building again from the scalar identity.
+   - Reads its live `getHandle()` reference and verifies the vtable and all
+     five identity fields.
+   - Retains no pointer or reference.
+8. Press `Ctrl+Shift+F10` an eighth time.
+   - Repeats fresh resolution and exact handle verification.
+   - Calls only `Building::isThePlayer()` and logs the Boolean result.
+   - Retains no pointer or reference.
 
-There is no sixth stage. This build never calls `hand::getBuilding()` and has
-no engine-container allocation or release operation.
+There is no ninth stage. This build has no engine-container allocation or
+release operation.
 
 ## Logs and debugger exports
 
@@ -102,6 +121,9 @@ KJM_ScannerProbe_RequestInspect
 KJM_ScannerProbe_RequestReadHandles
 KJM_ScannerProbe_RequestConstructHand
 KJM_ScannerProbe_RequestValidateHand
+KJM_ScannerProbe_RequestGetBuilding
+KJM_ScannerProbe_RequestVerifyBuilding
+KJM_ScannerProbe_RequestCheckOwnership
 KJM_ScannerProbe_GetState
 ```
 
@@ -117,6 +139,9 @@ Probe states are:
  3  full bounded scalar copy completed
  4  record zero reconstructed and verified
  5  record zero `hand::isValid()` call completed
+ 6  `hand::getBuilding()` completed
+ 7  exact live Building handle verified
+ 8  `Building::isThePlayer()` completed
 -1  guarded failure
 -2  abandoned after an invalid or changing header
 ```
