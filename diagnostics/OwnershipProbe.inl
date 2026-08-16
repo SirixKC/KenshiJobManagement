@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Diagnostic-only, one-shot probe for Ownerships::getOwnedBuildingsH.
+// Diagnostic-only borrowed Ownerships::stuff probe.
 //
-// This file is included only when KJM_SCANNER_PROBE is defined.  The normal
-// Release build does not contain this code or the discovery API symbol.
-
-#include <ogre/OgreMemoryAllocatorConfig.h>
-#include <stdint.h>
+// This file is included only when KJM_SCANNER_PROBE is defined. It never calls
+// an ownership discovery function, allocates or frees an engine container, or
+// invokes a hand method. Engine pointers exist only in guarded leaf frames;
+// the probe state retains numeric addresses for identity comparisons only.
 
     typedef char OwnershipProbeAssertLektorSize[
         (sizeof(lektor<hand>) == 0x18) ? 1 : -1];
@@ -21,63 +20,55 @@
     enum OwnershipProbeState
     {
         OWNERSHIP_PROBE_IDLE = 0,
-        OWNERSHIP_PROBE_CALL_RETURNED = 1,
-        OWNERSHIP_PROBE_HEADER_READ = 2,
-        OWNERSHIP_PROBE_HANDLES_READ = 3,
-        OWNERSHIP_PROBE_RELEASING = 4,
-        OWNERSHIP_PROBE_OUTPUT_RELEASED = 5,
+        OWNERSHIP_PROBE_OWNER_HEADER = 1,
+        OWNERSHIP_PROBE_FIRST_HANDS = 2,
+        OWNERSHIP_PROBE_FULL_HANDS = 3,
         OWNERSHIP_PROBE_FAILED = -1,
         OWNERSHIP_PROBE_ABANDONED = -2
     };
 
-    struct OwnershipProbeLektorHeader
+    const unsigned int OWNERSHIP_PROBE_MAX_HEADER_CAPACITY = 65536;
+    const unsigned int OWNERSHIP_PROBE_COPY8_CAPACITY = 8;
+    const unsigned int OWNERSHIP_PROBE_COPYALL_CAPACITY = 8192;
+
+    // These records contain only scalar values copied from the engine. No
+    // engine pointer is retained in the diagnostic state.
+    struct OwnershipProbeHeaderSnapshot
     {
-        const void* object;
-        const void* vtable;
+        ULONG_PTR player;
+        ULONG_PTR faction;
+        ULONG_PTR ownerships;
+        ULONG_PTR sourceObject;
+        ULONG_PTR sourceVtable;
         unsigned int count;
         unsigned int maxSize;
-        const hand* stuff;
-
-        OwnershipProbeLektorHeader() :
-            object(NULL), vtable(NULL), count(0), maxSize(0), stuff(NULL)
-        {
-        }
+        ULONG_PTR stuff;
     };
 
     struct OwnershipProbeRawHand
     {
-        const void* vtable;
+        ULONG_PTR vtable;
         unsigned int type;
         unsigned int container;
         unsigned int containerSerial;
         unsigned int index;
         unsigned int serial;
-
-        OwnershipProbeRawHand() :
-            vtable(NULL), type(0), container(0), containerSerial(0),
-            index(0), serial(0)
-        {
-        }
-    };
-
-    struct OwnershipProbeByteSpan
-    {
-        ULONG_PTR begin;
-        ULONG_PTR end;
-        bool present;
-
-        OwnershipProbeByteSpan() : begin(0), end(0), present(false) {}
     };
 
     volatile LONG g_ownershipProbeRequestedStage = 0;
     volatile LONG g_ownershipProbeState = OWNERSHIP_PROBE_IDLE;
-    PlayerInterface* g_ownershipProbePlayer = NULL;
-    Faction* g_ownershipProbeFaction = NULL;
-    Ownerships* g_ownershipProbeOwnerships = NULL;
-    lektor<hand> g_ownershipProbeOutput;
-    OwnershipProbeLektorHeader g_ownershipProbeOutputHeader;
-    OwnershipProbeLektorHeader g_ownershipProbeSourceHeader;
-    bool g_ownershipProbeOutputAliasesSource = false;
+
+    OwnershipProbeHeaderSnapshot g_ownershipProbeHeader = {};
+
+    // Fixed plugin-owned POD storage. It is never passed to an engine API.
+    OwnershipProbeRawHand g_ownershipProbeFirstEight[
+        OWNERSHIP_PROBE_COPY8_CAPACITY] = {};
+    unsigned int g_ownershipProbeFirstEightCount = 0;
+    OwnershipProbeRawHand g_ownershipProbeAll[
+        OWNERSHIP_PROBE_COPYALL_CAPACITY] = {};
+    unsigned int g_ownershipProbeAllCount = 0;
+    unsigned int g_ownershipProbeBuildingCount = 0;
+    bool g_ownershipProbeAllTruncated = false;
     bool g_ownershipProbeF10WasDown = false;
 
     void OwnershipProbeWriteLog(const char* message)
@@ -108,19 +99,87 @@
         OwnershipProbeWriteLog(message);
     }
 
-    __declspec(noinline) bool OwnershipProbeTryResolveOwner(
+    LONG OwnershipProbeReadState()
+    {
+        return InterlockedCompareExchange(
+            &g_ownershipProbeState,
+            OWNERSHIP_PROBE_IDLE,
+            OWNERSHIP_PROBE_IDLE);
+    }
+
+    bool OwnershipProbeHeaderIsSane(
+        const OwnershipProbeHeaderSnapshot& header)
+    {
+        if (header.player == 0 || header.faction == 0 ||
+            header.ownerships == 0 || header.sourceObject == 0 ||
+            header.sourceVtable == 0)
+        {
+            return false;
+        }
+        if (header.count > header.maxSize ||
+            header.maxSize > OWNERSHIP_PROBE_MAX_HEADER_CAPACITY)
+        {
+            return false;
+        }
+        if (header.count != 0 && header.stuff == 0)
+        {
+            return false;
+        }
+        return true;
+    }
+
+    bool OwnershipProbeHeaderEquals(
+        const OwnershipProbeHeaderSnapshot& left,
+        const OwnershipProbeHeaderSnapshot& right)
+    {
+        return left.player == right.player &&
+            left.faction == right.faction &&
+            left.ownerships == right.ownerships &&
+            left.sourceObject == right.sourceObject &&
+            left.sourceVtable == right.sourceVtable &&
+            left.count == right.count &&
+            left.maxSize == right.maxSize &&
+            left.stuff == right.stuff;
+    }
+
+    bool OwnershipProbeSpanFits(
+        const OwnershipProbeHeaderSnapshot& header,
+        unsigned int recordCount)
+    {
+        if (!OwnershipProbeHeaderIsSane(header) ||
+            recordCount > header.count)
+        {
+            return false;
+        }
+        if (recordCount == 0)
+        {
+            return true;
+        }
+        if (header.stuff == 0)
+        {
+            return false;
+        }
+
+        const ULONG_PTR maxAddress =
+            static_cast<ULONG_PTR>(~static_cast<ULONG_PTR>(0));
+        const ULONG_PTR bytes =
+            static_cast<ULONG_PTR>(recordCount) *
+            static_cast<ULONG_PTR>(sizeof(hand));
+        const ULONG_PTR begin = header.stuff;
+        return begin <= maxAddress - bytes;
+    }
+
+    // This guarded leaf resolves the player owner and reads only scalar
+    // fields from faction->factionOwnerships->stuff. Its pointer locals die
+    // before the wrapper returns.
+    __declspec(noinline) bool OwnershipProbeTryReadHeaderOnce(
         PlayerInterface* player,
-        Faction** factionOut,
-        Ownerships** ownershipsOut,
+        OwnershipProbeHeaderSnapshot* output,
         DWORD* exceptionCode)
     {
-        if (factionOut != NULL)
+        if (output != NULL)
         {
-            *factionOut = NULL;
-        }
-        if (ownershipsOut != NULL)
-        {
-            *ownershipsOut = NULL;
+            memset(output, 0, sizeof(*output));
         }
         if (exceptionCode != NULL)
         {
@@ -129,7 +188,7 @@
 
         __try
         {
-            if (player == NULL || factionOut == NULL || ownershipsOut == NULL)
+            if (player == NULL || output == NULL)
             {
                 return false;
             }
@@ -146,8 +205,16 @@
                 return false;
             }
 
-            *factionOut = faction;
-            *ownershipsOut = ownerships;
+            lektor<hand>* source = &ownerships->stuff;
+            output->player = reinterpret_cast<ULONG_PTR>(player);
+            output->faction = reinterpret_cast<ULONG_PTR>(faction);
+            output->ownerships = reinterpret_cast<ULONG_PTR>(ownerships);
+            output->sourceObject = reinterpret_cast<ULONG_PTR>(source);
+            output->sourceVtable = reinterpret_cast<ULONG_PTR>(
+                *reinterpret_cast<const void* const*>(source));
+            output->count = source->count;
+            output->maxSize = source->maxSize;
+            output->stuff = reinterpret_cast<ULONG_PTR>(source->stuff);
             return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -160,711 +227,405 @@
         }
     }
 
-    __declspec(noinline) bool OwnershipProbeTryCall(
-        Ownerships* ownerships,
-        lektor<hand>* output,
-        DWORD* exceptionCode)
-    {
-        if (exceptionCode != NULL)
-        {
-            *exceptionCode = 0;
-        }
-
-        __try
-        {
-            if (ownerships == NULL || output == NULL)
-            {
-                return false;
-            }
-            ownerships->getOwnedBuildingsH(*output);
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            if (exceptionCode != NULL)
-            {
-                *exceptionCode = GetExceptionCode();
-            }
-            return false;
-        }
-    }
-
-    __declspec(noinline) bool OwnershipProbeTryReadHeaders(
-        Ownerships* ownerships,
-        const lektor<hand>* output,
-        OwnershipProbeLektorHeader* sourceHeader,
-        OwnershipProbeLektorHeader* outputHeader,
-        DWORD* exceptionCode)
-    {
-        if (exceptionCode != NULL)
-        {
-            *exceptionCode = 0;
-        }
-
-        __try
-        {
-            if (ownerships == NULL || output == NULL ||
-                sourceHeader == NULL || outputHeader == NULL)
-            {
-                return false;
-            }
-
-            const lektor<hand>* source = &ownerships->stuff;
-            sourceHeader->object = source;
-            sourceHeader->vtable = *reinterpret_cast<const void* const*>(source);
-            sourceHeader->count = source->count;
-            sourceHeader->maxSize = source->maxSize;
-            sourceHeader->stuff = source->stuff;
-
-            outputHeader->object = output;
-            outputHeader->vtable = *reinterpret_cast<const void* const*>(output);
-            outputHeader->count = output->count;
-            outputHeader->maxSize = output->maxSize;
-            outputHeader->stuff = output->stuff;
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            if (exceptionCode != NULL)
-            {
-                *exceptionCode = GetExceptionCode();
-            }
-            return false;
-        }
-    }
-
-    __declspec(noinline) bool OwnershipProbeTryReadRawHands(
-        const hand* input,
-        unsigned int count,
-        OwnershipProbeRawHand* output,
-        DWORD* exceptionCode)
-    {
-        if (exceptionCode != NULL)
-        {
-            *exceptionCode = 0;
-        }
-
-        __try
-        {
-            if ((count != 0 && input == NULL) || output == NULL || count > 8)
-            {
-                return false;
-            }
-
-            for (unsigned int i = 0; i < count; ++i)
-            {
-                const hand* current = input + i;
-                output[i].vtable =
-                    *reinterpret_cast<const void* const*>(current);
-                output[i].type = static_cast<unsigned int>(current->type);
-                output[i].container = current->container;
-                output[i].containerSerial = current->containerSerial;
-                output[i].index = current->index;
-                output[i].serial = current->serial;
-            }
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            if (exceptionCode != NULL)
-            {
-                *exceptionCode = GetExceptionCode();
-            }
-            return false;
-        }
-    }
-
-    __declspec(noinline) bool OwnershipProbeTryReleaseOutput(
-        const hand* output,
-        DWORD* exceptionCode)
-    {
-        if (exceptionCode != NULL)
-        {
-            *exceptionCode = 0;
-        }
-
-        // This is deliberately a leaf frame.  It performs exactly one free
-        // through the same Ogre general allocator used by lektor<hand> and
-        // does not touch the lektor object before or after the call.
-        __try
-        {
-            if (output == NULL)
-            {
-                return false;
-            }
-            Ogre::CategorisedAllocPolicy<
-                Ogre::MEMCATEGORY_GENERAL>::deallocateBytes(
-                    const_cast<hand*>(output));
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            if (exceptionCode != NULL)
-            {
-                *exceptionCode = GetExceptionCode();
-            }
-            return false;
-        }
-    }
-
-    bool OwnershipProbeHeaderIsSane(
-        const OwnershipProbeLektorHeader& header)
-    {
-        const unsigned int MAX_PROBE_CAPACITY = 65536;
-        if (header.count > header.maxSize ||
-            header.maxSize > MAX_PROBE_CAPACITY)
-        {
-            return false;
-        }
-        if (header.count != 0 && header.stuff == NULL)
-        {
-            return false;
-        }
-        return true;
-    }
-
-    bool OwnershipProbeHeadersMatch(
-        const OwnershipProbeLektorHeader& left,
-        const OwnershipProbeLektorHeader& right)
-    {
-        return left.object == right.object &&
-            left.vtable == right.vtable &&
-            left.count == right.count &&
-            left.maxSize == right.maxSize &&
-            left.stuff == right.stuff;
-    }
-
-    bool OwnershipProbeMakeByteSpan(
-        const OwnershipProbeLektorHeader& header,
-        OwnershipProbeByteSpan* spanOut)
-    {
-        if (spanOut == NULL)
-        {
-            return false;
-        }
-
-        *spanOut = OwnershipProbeByteSpan();
-        if (header.stuff == NULL)
-        {
-            return header.maxSize == 0;
-        }
-        if (header.maxSize == 0)
-        {
-            return false;
-        }
-
-        const ULONG_PTR maxAddress =
-            static_cast<ULONG_PTR>(~static_cast<ULONG_PTR>(0));
-        const ULONG_PTR elementSize =
-            static_cast<ULONG_PTR>(sizeof(hand));
-        const ULONG_PTR capacity =
-            static_cast<ULONG_PTR>(header.maxSize);
-        if (capacity > maxAddress / elementSize)
-        {
-            return false;
-        }
-
-        const ULONG_PTR bytes = capacity * elementSize;
-        const ULONG_PTR begin =
-            reinterpret_cast<ULONG_PTR>(header.stuff);
-        if (begin > maxAddress - bytes)
-        {
-            return false;
-        }
-
-        spanOut->begin = begin;
-        spanOut->end = begin + bytes;
-        spanOut->present = true;
-        return true;
-    }
-
-    bool OwnershipProbeSpansOverlap(
-        const OwnershipProbeByteSpan& left,
-        const OwnershipProbeByteSpan& right)
-    {
-        return left.present && right.present &&
-            left.begin < right.end && right.begin < left.end;
-    }
-
-    bool OwnershipProbeResolveSameOwner(
+    __declspec(noinline) bool OwnershipProbeTryReadHeaderTwice(
         PlayerInterface* player,
-        Faction** factionOut,
-        Ownerships** ownershipsOut)
+        OwnershipProbeHeaderSnapshot* first,
+        OwnershipProbeHeaderSnapshot* second,
+        DWORD* exceptionCode)
     {
-        DWORD exceptionCode = 0;
-        if (!OwnershipProbeTryResolveOwner(
-                player, factionOut, ownershipsOut, &exceptionCode))
+        DWORD innerException = 0;
+        if (exceptionCode != NULL)
         {
-            if (exceptionCode != 0)
+            *exceptionCode = 0;
+        }
+
+        if (!OwnershipProbeTryReadHeaderOnce(
+                player, first, &innerException))
+        {
+            if (exceptionCode != NULL)
             {
-                OwnershipProbeLogException("resolve-owner", exceptionCode);
-            }
-            else
-            {
-                OwnershipProbeWriteLog(
-                    "owner resolution failed; load a player save and retry");
+                *exceptionCode = innerException;
             }
             return false;
         }
-
-        if (g_ownershipProbeOwnerships != NULL &&
-            (*ownershipsOut != g_ownershipProbeOwnerships ||
-             *factionOut != g_ownershipProbeFaction ||
-             player != g_ownershipProbePlayer))
+        if (!OwnershipProbeTryReadHeaderOnce(
+                player, second, &innerException))
         {
-            OwnershipProbeWriteLog(
-                "owner identity changed; abandoning probe until process restart");
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
-            g_ownershipProbePlayer = NULL;
-            g_ownershipProbeFaction = NULL;
-            g_ownershipProbeOwnerships = NULL;
+            if (exceptionCode != NULL)
+            {
+                *exceptionCode = innerException;
+            }
             return false;
         }
         return true;
+    }
+
+    // Copy a bounded scalar prefix while the borrowed source header is stable.
+    // The source pointer is local to this guarded frame and is never retained.
+    __declspec(noinline) bool OwnershipProbeTryCopyRawHands(
+        PlayerInterface* player,
+        const OwnershipProbeHeaderSnapshot* expected,
+        OwnershipProbeRawHand* output,
+        unsigned int outputCapacity,
+        unsigned int* copied,
+        unsigned int* buildingCount,
+        bool* truncated,
+        OwnershipProbeHeaderSnapshot* before,
+        OwnershipProbeHeaderSnapshot* after,
+        DWORD* exceptionCode)
+    {
+        if (copied != NULL)
+        {
+            *copied = 0;
+        }
+        if (buildingCount != NULL)
+        {
+            *buildingCount = 0;
+        }
+        if (truncated != NULL)
+        {
+            *truncated = false;
+        }
+        if (before != NULL)
+        {
+            memset(before, 0, sizeof(*before));
+        }
+        if (after != NULL)
+        {
+            memset(after, 0, sizeof(*after));
+        }
+        if (exceptionCode != NULL)
+        {
+            *exceptionCode = 0;
+        }
+
+        __try
+        {
+            if (player == NULL || expected == NULL || output == NULL ||
+                copied == NULL || buildingCount == NULL ||
+                truncated == NULL || before == NULL || after == NULL ||
+                outputCapacity == 0 ||
+                outputCapacity > OWNERSHIP_PROBE_COPYALL_CAPACITY)
+            {
+                return false;
+            }
+
+            DWORD innerException = 0;
+            OwnershipProbeHeaderSnapshot current;
+            if (!OwnershipProbeTryReadHeaderOnce(
+                    player, &current, &innerException))
+            {
+                if (exceptionCode != NULL)
+                {
+                    *exceptionCode = innerException;
+                }
+                return false;
+            }
+            if (!OwnershipProbeHeaderIsSane(current) ||
+                !OwnershipProbeHeaderEquals(current, *expected))
+            {
+                return false;
+            }
+
+            const unsigned int copyCount =
+                current.count < outputCapacity
+                    ? current.count : outputCapacity;
+            const bool copyWasTruncated = current.count > outputCapacity;
+            if (!OwnershipProbeSpanFits(current, copyCount))
+            {
+                return false;
+            }
+
+            unsigned int copiedBuildingCount = 0;
+            const hand* source = reinterpret_cast<const hand*>(
+                current.stuff);
+            for (unsigned int index = 0; index < copyCount; ++index)
+            {
+                const hand* currentHand = source + index;
+                output[index].vtable = reinterpret_cast<ULONG_PTR>(
+                    *reinterpret_cast<const void* const*>(currentHand));
+                output[index].type = static_cast<unsigned int>(
+                    currentHand->type);
+                output[index].container = currentHand->container;
+                output[index].containerSerial = currentHand->containerSerial;
+                output[index].index = currentHand->index;
+                output[index].serial = currentHand->serial;
+                if (output[index].type ==
+                    static_cast<unsigned int>(BUILDING))
+                {
+                    ++copiedBuildingCount;
+                }
+            }
+
+            if (!OwnershipProbeTryReadHeaderOnce(
+                    player, after, &innerException))
+            {
+                if (exceptionCode != NULL)
+                {
+                    *exceptionCode = innerException;
+                }
+                return false;
+            }
+            if (!OwnershipProbeHeaderIsSane(*after) ||
+                !OwnershipProbeHeaderEquals(*after, current) ||
+                !OwnershipProbeHeaderEquals(*after, *expected))
+            {
+                return false;
+            }
+
+            *before = current;
+            *copied = copyCount;
+            *buildingCount = copiedBuildingCount;
+            *truncated = copyWasTruncated;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            if (exceptionCode != NULL)
+            {
+                *exceptionCode = GetExceptionCode();
+            }
+            return false;
+        }
+    }
+
+    void OwnershipProbeLogRawHand(
+        const char* prefix,
+        unsigned int index,
+        const OwnershipProbeRawHand& value)
+    {
+        char message[512];
+        _snprintf_s(
+            message, sizeof(message), _TRUNCATE,
+            "%s[%u] vtable=%p type=%u container=%u containerSerial=%u "
+            "index=%u serial=%u",
+            prefix, index, reinterpret_cast<const void*>(value.vtable),
+            value.type, value.container, value.containerSerial,
+            value.index, value.serial);
+        OwnershipProbeWriteLog(message);
     }
 
     void OwnershipProbeRunStage1(PlayerInterface* player)
     {
-        if (InterlockedCompareExchange(
-                &g_ownershipProbeState,
-                OWNERSHIP_PROBE_IDLE,
-                OWNERSHIP_PROBE_IDLE) != OWNERSHIP_PROBE_IDLE)
+        if (OwnershipProbeReadState() != OWNERSHIP_PROBE_IDLE)
         {
             OwnershipProbeWriteLog(
-                "stage=1 rejected; probe is one-shot and requires a process restart");
+                "stage=1 rejected; probe is already active or complete");
             return;
         }
 
-        Faction* faction = NULL;
-        Ownerships* ownerships = NULL;
-        if (!OwnershipProbeResolveSameOwner(player, &faction, &ownerships))
-        {
-            return;
-        }
-
-        char message[512];
-        _snprintf_s(
-            message, sizeof(message), _TRUNCATE,
-            "stage=1 before-call player=%p faction=%p ownerships=%p "
-            "out=%p sizeof(lektor<hand>)=0x%I64X",
-            player, faction, ownerships, &g_ownershipProbeOutput,
-            static_cast<unsigned __int64>(sizeof(lektor<hand>)));
-        OwnershipProbeWriteLog(message);
         OwnershipProbeWriteLog(
-            "stage=1 entering getOwnedBuildingsH; output will not be read or freed");
-
+            "stage=1 before resolving player faction and Ownerships::stuff");
+        OwnershipProbeHeaderSnapshot first;
+        OwnershipProbeHeaderSnapshot second;
         DWORD exceptionCode = 0;
-        if (!OwnershipProbeTryCall(
-                ownerships, &g_ownershipProbeOutput, &exceptionCode))
+        if (!OwnershipProbeTryReadHeaderTwice(
+                player, &first, &second, &exceptionCode))
         {
             if (exceptionCode != 0)
             {
-                OwnershipProbeLogException("1-call", exceptionCode);
+                OwnershipProbeLogException("1-header", exceptionCode);
             }
             else
             {
-                OwnershipProbeWriteLog("stage=1 call rejected without exception");
+                OwnershipProbeWriteLog(
+                    "stage=1 player faction/Ownerships resolution failed");
             }
             InterlockedExchange(
                 &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
             return;
         }
 
-        g_ownershipProbePlayer = player;
-        g_ownershipProbeFaction = faction;
-        g_ownershipProbeOwnerships = ownerships;
+        const bool firstSane = OwnershipProbeHeaderIsSane(first);
+        const bool secondSane = OwnershipProbeHeaderIsSane(second);
+        const bool exactMatch = OwnershipProbeHeaderEquals(first, second);
+        if (!firstSane || !secondSane || !exactMatch)
+        {
+            OwnershipProbeWriteLog(
+                firstSane && secondSane
+                    ? "stage=1 owner/header changed between reads"
+                    : "stage=1 source header failed count/max/stuff validation");
+            InterlockedExchange(
+                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
+            return;
+        }
+
+        g_ownershipProbeHeader = first;
         InterlockedExchange(
-            &g_ownershipProbeState, OWNERSHIP_PROBE_CALL_RETURNED);
-        OwnershipProbeWriteLog(
-            "stage=1 returned; output remains unread and intentionally unfreed");
+            &g_ownershipProbeState, OWNERSHIP_PROBE_OWNER_HEADER);
+
+        char message[768];
+        _snprintf_s(
+            message, sizeof(message), _TRUNCATE,
+            "stage=1 complete owner=%p faction=%p source=%p "
+            "source-vtable=%p count=%u max=%u stuff=%p owner-header-exact=yes",
+            reinterpret_cast<const void*>(first.ownerships),
+            reinterpret_cast<const void*>(first.faction),
+            reinterpret_cast<const void*>(first.sourceObject),
+            reinterpret_cast<const void*>(first.sourceVtable),
+            first.count, first.maxSize,
+            reinterpret_cast<const void*>(first.stuff));
+        OwnershipProbeWriteLog(message);
     }
 
     void OwnershipProbeRunStage2(PlayerInterface* player)
     {
-        if (InterlockedCompareExchange(
-                &g_ownershipProbeState,
-                OWNERSHIP_PROBE_CALL_RETURNED,
-                OWNERSHIP_PROBE_CALL_RETURNED) !=
-            OWNERSHIP_PROBE_CALL_RETURNED)
+        if (OwnershipProbeReadState() != OWNERSHIP_PROBE_OWNER_HEADER)
         {
             OwnershipProbeWriteLog(
-                "stage=2 rejected; stage 1 must return successfully first");
+                "stage=2 rejected; stage 1 must complete first");
             return;
         }
 
-        Faction* faction = NULL;
-        Ownerships* ownerships = NULL;
-        if (!OwnershipProbeResolveSameOwner(player, &faction, &ownerships))
-        {
-            return;
-        }
-
-        OwnershipProbeWriteLog(
-            "stage=2 reading source and output lektor headers only");
+        OwnershipProbeHeaderSnapshot before;
+        OwnershipProbeHeaderSnapshot after;
+        unsigned int copied = 0;
+        unsigned int buildingCount = 0;
+        bool truncated = false;
         DWORD exceptionCode = 0;
-        if (!OwnershipProbeTryReadHeaders(
-                ownerships,
-                &g_ownershipProbeOutput,
-                &g_ownershipProbeSourceHeader,
-                &g_ownershipProbeOutputHeader,
+        OwnershipProbeWriteLog(
+            "stage=2 before re-resolve and bracket-copy of up to eight hand records");
+        if (!OwnershipProbeTryCopyRawHands(
+                player,
+                &g_ownershipProbeHeader,
+                g_ownershipProbeFirstEight,
+                OWNERSHIP_PROBE_COPY8_CAPACITY,
+                &copied,
+                &buildingCount,
+                &truncated,
+                &before,
+                &after,
                 &exceptionCode))
         {
             if (exceptionCode != 0)
             {
-                OwnershipProbeLogException("2-header", exceptionCode);
+                OwnershipProbeLogException("2-copy8", exceptionCode);
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
             }
             else
             {
-                OwnershipProbeWriteLog("stage=2 header read rejected");
+                OwnershipProbeWriteLog(
+                    "stage=2 owner/header pre/post mismatch or raw copy failed");
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
             }
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
             return;
         }
 
-        char message[768];
-        _snprintf_s(
-            message, sizeof(message), _TRUNCATE,
-            "stage=2 source object=%p vtable=%p count=%u max=%u stuff=%p",
-            g_ownershipProbeSourceHeader.object,
-            g_ownershipProbeSourceHeader.vtable,
-            g_ownershipProbeSourceHeader.count,
-            g_ownershipProbeSourceHeader.maxSize,
-            g_ownershipProbeSourceHeader.stuff);
-        OwnershipProbeWriteLog(message);
-        _snprintf_s(
-            message, sizeof(message), _TRUNCATE,
-            "stage=2 output object=%p vtable=%p count=%u max=%u stuff=%p",
-            g_ownershipProbeOutputHeader.object,
-            g_ownershipProbeOutputHeader.vtable,
-            g_ownershipProbeOutputHeader.count,
-            g_ownershipProbeOutputHeader.maxSize,
-            g_ownershipProbeOutputHeader.stuff);
-        OwnershipProbeWriteLog(message);
-
-        g_ownershipProbeOutputAliasesSource =
-            g_ownershipProbeOutputHeader.stuff != NULL &&
-            g_ownershipProbeOutputHeader.stuff ==
-                g_ownershipProbeSourceHeader.stuff;
-        _snprintf_s(
-            message, sizeof(message), _TRUNCATE,
-            "stage=2 output-aliases-source=%s output-object-alias=%s output-sane=%s",
-            g_ownershipProbeOutputAliasesSource ? "yes" : "no",
-            g_ownershipProbeOutputHeader.object ==
-                    g_ownershipProbeSourceHeader.object
-                ? "yes" : "no",
-            OwnershipProbeHeaderIsSane(g_ownershipProbeOutputHeader)
-                ? "yes" : "no");
-        OwnershipProbeWriteLog(message);
-
-        if (!OwnershipProbeHeaderIsSane(g_ownershipProbeOutputHeader))
+        g_ownershipProbeFirstEightCount = copied;
+        for (unsigned int index = 0; index < copied; ++index)
         {
-            OwnershipProbeWriteLog(
-                "stage=2 output header is not sane; refusing all element reads");
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
-            return;
+            OwnershipProbeLogRawHand(
+                "stage=2 hand", index, g_ownershipProbeFirstEight[index]);
         }
-
+        char message[512];
+        _snprintf_s(
+            message, sizeof(message), _TRUNCATE,
+            "stage=2 complete copied=%u source-count=%u "
+            "owner-header-pre-post-exact=yes",
+            copied, before.count);
+        OwnershipProbeWriteLog(message);
         InterlockedExchange(
-            &g_ownershipProbeState, OWNERSHIP_PROBE_HEADER_READ);
-        OwnershipProbeWriteLog("stage=2 complete; no elements were read or freed");
+            &g_ownershipProbeState, OWNERSHIP_PROBE_FIRST_HANDS);
     }
 
     void OwnershipProbeRunStage3(PlayerInterface* player)
     {
-        if (InterlockedCompareExchange(
-                &g_ownershipProbeState,
-                OWNERSHIP_PROBE_HEADER_READ,
-                OWNERSHIP_PROBE_HEADER_READ) != OWNERSHIP_PROBE_HEADER_READ)
+        if (OwnershipProbeReadState() != OWNERSHIP_PROBE_FIRST_HANDS)
         {
             OwnershipProbeWriteLog(
-                "stage=3 rejected; stage 2 must complete successfully first");
+                "stage=3 rejected; stage 2 must complete first");
             return;
         }
 
-        Faction* faction = NULL;
-        Ownerships* ownerships = NULL;
-        if (!OwnershipProbeResolveSameOwner(player, &faction, &ownerships))
-        {
-            return;
-        }
-
-        OwnershipProbeLektorHeader sourceNow;
-        OwnershipProbeLektorHeader outputNow;
+        OwnershipProbeHeaderSnapshot before;
+        OwnershipProbeHeaderSnapshot after;
+        unsigned int copied = 0;
+        unsigned int buildingCount = 0;
+        bool truncated = false;
         DWORD exceptionCode = 0;
-        if (!OwnershipProbeTryReadHeaders(
-                ownerships,
-                &g_ownershipProbeOutput,
-                &sourceNow,
-                &outputNow,
-                &exceptionCode))
-        {
-            OwnershipProbeLogException("3-revalidate-header", exceptionCode);
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
-            return;
-        }
-
-        if (outputNow.count != g_ownershipProbeOutputHeader.count ||
-            outputNow.maxSize != g_ownershipProbeOutputHeader.maxSize ||
-            outputNow.stuff != g_ownershipProbeOutputHeader.stuff)
-        {
-            OwnershipProbeWriteLog(
-                "stage=3 output header changed; refusing stale element reads");
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
-            return;
-        }
-
-        if (g_ownershipProbeOutputAliasesSource)
-        {
-            OwnershipProbeWriteLog(
-                "stage=3 refused because output aliases engine-owned source memory");
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
-            return;
-        }
-
-        const unsigned int readCount =
-            outputNow.count < 8 ? outputNow.count : 8;
-        OwnershipProbeRawHand rawHands[8];
         OwnershipProbeWriteLog(
-            "stage=3 reading at most eight raw hand records; no handle methods will run");
-        if (!OwnershipProbeTryReadRawHands(
-                outputNow.stuff, readCount, rawHands, &exceptionCode))
+            "stage=3 before re-resolve and bracket-copy of up to 8192 hand records");
+        if (!OwnershipProbeTryCopyRawHands(
+                player,
+                &g_ownershipProbeHeader,
+                g_ownershipProbeAll,
+                OWNERSHIP_PROBE_COPYALL_CAPACITY,
+                &copied,
+                &buildingCount,
+                &truncated,
+                &before,
+                &after,
+                &exceptionCode))
         {
             if (exceptionCode != 0)
             {
-                OwnershipProbeLogException("3-hands", exceptionCode);
-            }
-            else
-            {
-                OwnershipProbeWriteLog("stage=3 raw handle read rejected");
-            }
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
-            return;
-        }
-
-        for (unsigned int i = 0; i < readCount; ++i)
-        {
-            char message[512];
-            _snprintf_s(
-                message, sizeof(message), _TRUNCATE,
-                "stage=3 hand[%u] vtable=%p type=%u container=%u "
-                "containerSerial=%u index=%u serial=%u",
-                i,
-                rawHands[i].vtable,
-                rawHands[i].type,
-                rawHands[i].container,
-                rawHands[i].containerSerial,
-                rawHands[i].index,
-                rawHands[i].serial);
-            OwnershipProbeWriteLog(message);
-        }
-
-        InterlockedExchange(
-            &g_ownershipProbeState, OWNERSHIP_PROBE_HANDLES_READ);
-        OwnershipProbeWriteLog(
-            "stage=3 complete; output remains retained for the release test");
-    }
-
-    void OwnershipProbeRunStage4(PlayerInterface* player)
-    {
-        if (InterlockedCompareExchange(
-                &g_ownershipProbeState,
-                OWNERSHIP_PROBE_RELEASING,
-                OWNERSHIP_PROBE_HANDLES_READ) != OWNERSHIP_PROBE_HANDLES_READ)
-        {
-            OwnershipProbeWriteLog(
-                "stage=4 rejected; stage 3 must complete successfully first");
-            return;
-        }
-
-        Faction* faction = NULL;
-        Ownerships* ownerships = NULL;
-        if (!OwnershipProbeResolveSameOwner(player, &faction, &ownerships))
-        {
-            if (InterlockedCompareExchange(
-                    &g_ownershipProbeState,
-                    OWNERSHIP_PROBE_IDLE,
-                    OWNERSHIP_PROBE_IDLE) != OWNERSHIP_PROBE_ABANDONED)
-            {
+                OwnershipProbeLogException("3-copyall", exceptionCode);
                 InterlockedExchange(
                     &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
             }
-            return;
-        }
-
-        OwnershipProbeLektorHeader sourceNow;
-        OwnershipProbeLektorHeader outputNow;
-        DWORD exceptionCode = 0;
-        if (!OwnershipProbeTryReadHeaders(
-                ownerships,
-                &g_ownershipProbeOutput,
-                &sourceNow,
-                &outputNow,
-                &exceptionCode))
-        {
-            if (exceptionCode != 0)
-            {
-                OwnershipProbeLogException("4-revalidate-header", exceptionCode);
-            }
             else
             {
                 OwnershipProbeWriteLog(
-                    "stage=4 header revalidation rejected; refusing free");
+                    "stage=3 owner/header pre/post mismatch or raw copy failed");
+                InterlockedExchange(
+                    &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
             }
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
             return;
         }
 
-        if (!OwnershipProbeHeaderIsSane(sourceNow) ||
-            !OwnershipProbeHeaderIsSane(outputNow) ||
-            !OwnershipProbeHeadersMatch(
-                sourceNow, g_ownershipProbeSourceHeader) ||
-            !OwnershipProbeHeadersMatch(
-                outputNow, g_ownershipProbeOutputHeader))
-        {
-            OwnershipProbeWriteLog(
-                "stage=4 output header changed or is not sane; refusing free");
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
-            return;
-        }
-
-        OwnershipProbeByteSpan outputSpan;
-        OwnershipProbeByteSpan currentSourceSpan;
-        OwnershipProbeByteSpan cachedSourceSpan;
-        if (!OwnershipProbeMakeByteSpan(outputNow, &outputSpan) ||
-            !OwnershipProbeMakeByteSpan(sourceNow, &currentSourceSpan) ||
-            !OwnershipProbeMakeByteSpan(
-                g_ownershipProbeSourceHeader, &cachedSourceSpan))
-        {
-            OwnershipProbeWriteLog(
-                "stage=4 span calculation failed; refusing free");
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
-            return;
-        }
-
-        const bool objectAliases =
-            outputNow.object == sourceNow.object ||
-            outputNow.object == g_ownershipProbeSourceHeader.object;
-        const bool stuffAliases =
-            outputNow.stuff != NULL &&
-            (outputNow.stuff == sourceNow.stuff ||
-             outputNow.stuff == g_ownershipProbeSourceHeader.stuff);
-        if (objectAliases || stuffAliases ||
-            OwnershipProbeSpansOverlap(outputSpan, currentSourceSpan) ||
-            OwnershipProbeSpansOverlap(outputSpan, cachedSourceSpan))
-        {
-            OwnershipProbeWriteLog(
-                "stage=4 strict non-alias/span guard failed; refusing free");
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
-            return;
-        }
-
-        char message[768];
+        g_ownershipProbeAllCount = copied;
+        g_ownershipProbeBuildingCount = buildingCount;
+        g_ownershipProbeAllTruncated = truncated;
+        char message[512];
         _snprintf_s(
             message, sizeof(message), _TRUNCATE,
-            "stage=4 before-release output=%p count=%u max=%u source=%p source-stuff=%p",
-            outputNow.stuff,
-            outputNow.count,
-            outputNow.maxSize,
-            sourceNow.object,
-            sourceNow.stuff);
+            "stage=3 complete copied=%u BUILDING=%u truncated=%s "
+            "source-count=%u owner-header-pre-post-exact=yes",
+            copied, buildingCount, truncated ? "yes" : "no", before.count);
         OwnershipProbeWriteLog(message);
-        OwnershipProbeWriteLog(
-            "stage=4 freeing retained output through Ogre general allocator");
-
-        // Detach before calling the allocator.  A failed allocator call is
-        // terminal and the captured buffer is never retried or accessed via
-        // the retained lektor again.
-        hand* outputBuffer = const_cast<hand*>(outputNow.stuff);
-        g_ownershipProbeOutput.count = 0;
-        g_ownershipProbeOutput.maxSize = 0;
-        g_ownershipProbeOutput.stuff = NULL;
-        g_ownershipProbeOutputHeader.object = NULL;
-        g_ownershipProbeOutputHeader.vtable = NULL;
-        g_ownershipProbeOutputHeader.count = 0;
-        g_ownershipProbeOutputHeader.maxSize = 0;
-        g_ownershipProbeOutputHeader.stuff = NULL;
-        g_ownershipProbeSourceHeader.object = NULL;
-        g_ownershipProbeSourceHeader.vtable = NULL;
-        g_ownershipProbeSourceHeader.count = 0;
-        g_ownershipProbeSourceHeader.maxSize = 0;
-        g_ownershipProbeSourceHeader.stuff = NULL;
-        g_ownershipProbeOutputAliasesSource = false;
-        g_ownershipProbePlayer = NULL;
-        g_ownershipProbeFaction = NULL;
-        g_ownershipProbeOwnerships = NULL;
-
-        const bool hasAllocation = outputBuffer != NULL;
-        if (hasAllocation && !OwnershipProbeTryReleaseOutput(
-                outputBuffer, &exceptionCode))
-        {
-            if (exceptionCode != 0)
-            {
-                OwnershipProbeLogException("4-release", exceptionCode);
-            }
-            else
-            {
-                OwnershipProbeWriteLog(
-                    "stage=4 allocator release rejected without exception");
-            }
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_FAILED);
-            return;
-        }
-
         InterlockedExchange(
-            &g_ownershipProbeState, OWNERSHIP_PROBE_OUTPUT_RELEASED);
-        OwnershipProbeWriteLog(
-            hasAllocation
-                ? "stage=4 after-release complete; retained output header reset"
-                : "stage=4 after-detach complete; output was null and zero-sized");
+            &g_ownershipProbeState, OWNERSHIP_PROBE_FULL_HANDS);
     }
 
     void OwnershipProbeRequestStage(int stage)
     {
-        if (stage >= 1 && stage <= 4)
+        if (stage >= 1 && stage <= 3)
         {
             InterlockedExchange(&g_ownershipProbeRequestedStage, stage);
         }
     }
 
+    void OwnershipProbeClearPODState()
+    {
+        InterlockedExchange(&g_ownershipProbeRequestedStage, 0);
+        memset(&g_ownershipProbeHeader, 0,
+            sizeof(g_ownershipProbeHeader));
+        memset(g_ownershipProbeFirstEight, 0,
+            sizeof(g_ownershipProbeFirstEight));
+        g_ownershipProbeFirstEightCount = 0;
+        memset(g_ownershipProbeAll, 0, sizeof(g_ownershipProbeAll));
+        g_ownershipProbeAllCount = 0;
+        g_ownershipProbeBuildingCount = 0;
+        g_ownershipProbeAllTruncated = false;
+        g_ownershipProbeF10WasDown = false;
+        InterlockedExchange(
+            &g_ownershipProbeState, OWNERSHIP_PROBE_IDLE);
+    }
+
     LONG OwnershipProbeGetState()
     {
-        return InterlockedCompareExchange(
-            &g_ownershipProbeState,
-            OWNERSHIP_PROBE_IDLE,
-            OWNERSHIP_PROBE_IDLE);
+        return OwnershipProbeReadState();
     }
 
     void OwnershipProbeOnWorldReset()
     {
-        InterlockedExchange(&g_ownershipProbeRequestedStage, 0);
-        g_ownershipProbeF10WasDown = false;
-
-        const LONG state = OwnershipProbeGetState();
-        if (state != OWNERSHIP_PROBE_IDLE)
-        {
-            // Never dereference or free retained data while the world tears
-            // down.  A possible deep-copy allocation is intentionally leaked
-            // until process exit; retrying requires a full process restart.
-            g_ownershipProbePlayer = NULL;
-            g_ownershipProbeFaction = NULL;
-            g_ownershipProbeOwnerships = NULL;
-            InterlockedExchange(
-                &g_ownershipProbeState, OWNERSHIP_PROBE_ABANDONED);
-            OwnershipProbeWriteLog(
-                "world reset detected; retained pointers abandoned without access or free");
-        }
+        // Only plugin-owned POD storage is cleared. No game pointer is read,
+        // dereferenced, or released while the world is being torn down.
+        OwnershipProbeClearPODState();
+        OwnershipProbeWriteLog(
+            "world reset cleared borrowed-header snapshots and plugin-owned POD records");
     }
 
     void TickOwnershipProbe(PlayerInterface* player)
@@ -877,22 +638,18 @@
 
         if (f10Down && !g_ownershipProbeF10WasDown)
         {
-            const LONG state = OwnershipProbeGetState();
+            const LONG state = OwnershipProbeReadState();
             if (state == OWNERSHIP_PROBE_IDLE)
             {
                 OwnershipProbeRequestStage(1);
             }
-            else if (state == OWNERSHIP_PROBE_CALL_RETURNED)
+            else if (state == OWNERSHIP_PROBE_OWNER_HEADER)
             {
                 OwnershipProbeRequestStage(2);
             }
-            else if (state == OWNERSHIP_PROBE_HEADER_READ)
+            else if (state == OWNERSHIP_PROBE_FIRST_HANDS)
             {
                 OwnershipProbeRequestStage(3);
-            }
-            else if (state == OWNERSHIP_PROBE_HANDLES_READ)
-            {
-                OwnershipProbeRequestStage(4);
             }
             else
             {
@@ -900,11 +657,10 @@
                     "Ctrl+Shift+F10 ignored; probe is complete, failed, or abandoned");
             }
         }
-
         g_ownershipProbeF10WasDown = f10Down;
 
-        const LONG requested =
-            InterlockedExchange(&g_ownershipProbeRequestedStage, 0);
+        const LONG requested = InterlockedExchange(
+            &g_ownershipProbeRequestedStage, 0);
         if (requested == 1)
         {
             OwnershipProbeRunStage1(player);
@@ -916,9 +672,5 @@
         else if (requested == 3)
         {
             OwnershipProbeRunStage3(player);
-        }
-        else if (requested == 4)
-        {
-            OwnershipProbeRunStage4(player);
         }
     }
