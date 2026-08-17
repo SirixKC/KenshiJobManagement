@@ -1173,7 +1173,6 @@
             {
                 tooltip << "\nTarget: " << row.targetLabel;
             }
-            tooltip << "\nDrag within this member to reorder.";
             card.card->setUserString("KJM_ToolTip", tooltip.str());
 
             // Reuse the square category artwork from the Stations tab. The
