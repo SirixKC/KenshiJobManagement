@@ -621,8 +621,43 @@
         StoreCurrentSquadScrollOffsets();
     }
 
+    void OnOptionsMouseWheel(MyGUI::Widget*, int relative)
+    {
+        if (g_modal.kind != MODAL_OPTIONS || g_optionsScroll == NULL ||
+            relative == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            const MyGUI::IntSize canvas = g_optionsScroll->getCanvasSize();
+            const MyGUI::IntCoord view = g_optionsScroll->getViewCoord();
+            const int maxOffset = std::max(0, canvas.height - view.height);
+            // ScrollView exposes the canvas position, which is zero at the
+            // top and negative while the content moves upward.  Keep the
+            // arithmetic in a positive scroll-distance coordinate, then
+            // convert it back for setViewOffset().
+            const MyGUI::IntPoint current = g_optionsScroll->getViewOffset();
+            const int currentDistance = ClampInt(
+                -current.top, 0, maxOffset);
+            const int nextDistance = ClampInt(
+                currentDistance - relative * 40, 0, maxOffset);
+            if (nextDistance != currentDistance)
+            {
+                g_optionsScroll->setViewOffset(
+                    MyGUI::IntPoint(current.left, -nextDistance));
+            }
+        }
+        catch (...)
+        {
+            // Modal input must remain fail-closed if MyGUI is shutting down.
+        }
+    }
+
     void CloseModalNow()
     {
+        g_optionsScroll = NULL;
         MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
         if (gui != NULL)
         {
@@ -642,6 +677,12 @@
                 {
                     gui->destroyWidget(g_modal.shade);
                 }
+                MyGUI::InputManager* input =
+                    MyGUI::InputManager::getInstancePtr();
+                if (input != NULL && g_window != NULL)
+                {
+                    input->setKeyFocusWidget(g_window);
+                }
             }
             catch (...)
             {
@@ -649,8 +690,6 @@
             }
         }
         g_modal = ModalState();
-        g_optionStatButtons.clear();
-        g_optionCategoryButtons.clear();
         g_stationOptionButtons.clear();
         g_modalCloseRequested = false;
     }
@@ -760,102 +799,11 @@
 
     void RefreshOptionButtons()
     {
-        for (size_t index = 0; index < g_optionStatButtons.size(); ++index)
-        {
-            int stat = 0;
-            if (GetWidgetIndex(g_optionStatButtons[index], "KJM_Stat", &stat) &&
-                stat > STAT_NONE && stat < STAT_END)
-            {
-                g_optionStatButtons[index]->setStateSelected(g_skillEnabled[stat]);
-            }
-        }
-
-        for (size_t categoryIndex = 0;
-             categoryIndex < g_optionCategoryButtons.size();
-             ++categoryIndex)
-        {
-            bool all = true;
-            bool found = false;
-            for (size_t skillIndex = 0;
-                 skillIndex < SKILL_DEFINITION_COUNT;
-                 ++skillIndex)
-            {
-                if (g_optionCategoryButtons[categoryIndex].category ==
-                    SKILL_DEFINITIONS[skillIndex].category)
-                {
-                    found = true;
-                    if (!g_skillEnabled[SKILL_DEFINITIONS[skillIndex].stat])
-                    {
-                        all = false;
-                    }
-                }
-            }
-            g_optionCategoryButtons[categoryIndex].button->setStateSelected(found && all);
-        }
-
         for (size_t index = 0; index < g_stationOptionButtons.size(); ++index)
         {
             g_stationOptionButtons[index].button->setStateSelected(
                 IsStationCategoryEnabled(
-                    g_stationOptionButtons[index].category));
-        }
-    }
-
-    void CommitSkillOptionChange()
-    {
-        if (!SaveSkillSettings())
-        {
-            g_settingsWriteFailed = true;
-        }
-        RefreshOptionButtons();
-        g_skillRefreshRequested = true;
-    }
-
-    void OnOptionStatClicked(MyGUI::Widget* widget)
-    {
-        int stat = 0;
-        if (GetWidgetIndex(widget, "KJM_Stat", &stat) &&
-            stat > STAT_NONE && stat < STAT_END)
-        {
-            g_skillEnabled[stat] = !g_skillEnabled[stat];
-            CommitSkillOptionChange();
-        }
-    }
-
-    void OnOptionCategoryClicked(MyGUI::Widget* widget)
-    {
-        for (size_t categoryIndex = 0;
-             categoryIndex < g_optionCategoryButtons.size();
-             ++categoryIndex)
-        {
-            if (g_optionCategoryButtons[categoryIndex].button != widget)
-            {
-                continue;
-            }
-            bool all = true;
-            for (size_t skillIndex = 0;
-                 skillIndex < SKILL_DEFINITION_COUNT;
-                 ++skillIndex)
-            {
-                if (g_optionCategoryButtons[categoryIndex].category ==
-                        SKILL_DEFINITIONS[skillIndex].category &&
-                    !g_skillEnabled[SKILL_DEFINITIONS[skillIndex].stat])
-                {
-                    all = false;
-                }
-            }
-            for (size_t skillIndex = 0;
-                 skillIndex < SKILL_DEFINITION_COUNT;
-                 ++skillIndex)
-            {
-                if (g_optionCategoryButtons[categoryIndex].category ==
-                    SKILL_DEFINITIONS[skillIndex].category)
-                {
-                    g_skillEnabled[SKILL_DEFINITIONS[skillIndex].stat] = !all;
-                }
-            }
-            CommitSkillOptionChange();
-            return;
+                g_stationOptionButtons[index].category));
         }
     }
 
@@ -882,34 +830,15 @@
         }
     }
 
-    void OnOptionSelectAll(MyGUI::Widget*)
-    {
-        for (size_t index = 0; index < SKILL_DEFINITION_COUNT; ++index)
-        {
-            g_skillEnabled[SKILL_DEFINITIONS[index].stat] = true;
-        }
-        CommitSkillOptionChange();
-    }
-
-    void OnOptionClearAll(MyGUI::Widget*)
-    {
-        for (size_t index = 0; index < SKILL_DEFINITION_COUNT; ++index)
-        {
-            g_skillEnabled[SKILL_DEFINITIONS[index].stat] = false;
-        }
-        CommitSkillOptionChange();
-    }
-
     void OnOptionReset(MyGUI::Widget*)
     {
-        ResetDefaultSkills();
         ResetDefaultStationCategories();
         if (!SaveStationCategorySettings())
         {
             g_settingsWriteFailed = true;
         }
         g_stationFilterRefreshRequested = true;
-        CommitSkillOptionChange();
+        RefreshOptionButtons();
     }
 
     void OnOptionClose(MyGUI::Widget*)
@@ -919,7 +848,7 @@
 
     void OpenOptionsModal()
     {
-        if (!BeginModal(MODAL_OPTIONS, 700, 760, "Job Manager Options"))
+        if (!BeginModal(MODAL_OPTIONS, 900, 460, "Job Manager Options"))
         {
             return;
         }
@@ -927,11 +856,11 @@
         const MyGUI::IntSize clientSize = client->getSize();
         MyGUI::TextBox* help = client->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText_Small",
-            MyGUI::IntCoord(16, 8, clientSize.width - 32, 38),
+            MyGUI::IntCoord(16, 8, clientSize.width - 32, 44),
             MyGUI::Align::Top | MyGUI::Align::HStretch,
             "KJM_OptionsHelp");
         help->setCaption(
-            "Skill filters affect both tabs. Station categories affect only the Stations tab. Changes save globally now.");
+            "Station category filters apply only to Stations.\nSquad Jobs always shows every permanent job and selects each member's top three from all supported base stats. Changes save globally now.");
         help->setTextAlign(MyGUI::Align::Center);
         help->setNeedMouseFocus(false);
 
@@ -939,118 +868,62 @@
             "Kenshi_ScrollView",
             MyGUI::IntCoord(
                 16,
-                50,
+                56,
                 clientSize.width - 32,
-                std::max(180, clientSize.height - 116)),
+                std::max(180, clientSize.height - 122)),
             MyGUI::Align::Stretch,
             "KJM_OptionsScroll");
         scroll->setVisibleVScroll(true);
         scroll->setVisibleHScroll(false);
+        scroll->eventMouseWheel += MyGUI::newDelegate(OnOptionsMouseWheel);
+        g_optionsScroll = scroll;
 
-        const char* categories[] =
-        {
-            "Attributes", "Weapons", "Combat", "Ranged",
-            "Thievery", "Athletics", "Sciences", "Trades"
-        };
-        int y = 8;
-        MyGUI::TextBox* skillSection = scroll->createWidget<MyGUI::TextBox>(
-            "Kenshi_TextboxStandardText",
-            MyGUI::IntCoord(8, y, clientSize.width - 74, 30),
-            MyGUI::Align::Left | MyGUI::Align::Top,
-            "KJM_SkillFilterSection");
-        skillSection->setCaption("CHARACTER SKILL FILTERS");
-        skillSection->setTextColour(MyGUI::Colour(1.0f, 0.84f, 0.45f));
-        skillSection->setNeedMouseFocus(false);
-        y += 34;
-        for (size_t category = 0; category < 8; ++category)
-        {
-            MyGUI::Button* categoryButton = scroll->createWidget<MyGUI::Button>(
-                "Kenshi_TickButton1",
-                MyGUI::IntCoord(8, y, clientSize.width - 74, 30),
-                MyGUI::Align::Left | MyGUI::Align::Top,
-                "KJM_OptionCategory");
-            categoryButton->setCaption(categories[category]);
-            categoryButton->eventMouseButtonClick +=
-                MyGUI::newDelegate(OnOptionCategoryClicked);
-            OptionCategoryButton binding;
-            binding.button = categoryButton;
-            binding.category = categories[category];
-            g_optionCategoryButtons.push_back(binding);
-            y += 34;
+        const int canvasWidth = std::max(240, clientSize.width - 60);
+        const int columnGap = 16;
+        const int columnWidth = std::max(
+            100, (canvasWidth - 16 - columnGap) / 2);
+        const int leftColumn = 8;
+        const int rightColumn = leftColumn + columnWidth + columnGap;
 
-            for (size_t skillIndex = 0;
-                 skillIndex < SKILL_DEFINITION_COUNT;
-                 ++skillIndex)
-            {
-                const SkillDefinition& definition = SKILL_DEFINITIONS[skillIndex];
-                if (binding.category != definition.category)
-                {
-                    continue;
-                }
-                MyGUI::Button* skill = scroll->createWidget<MyGUI::Button>(
-                    "Kenshi_TickButton1",
-                    MyGUI::IntCoord(36, y, clientSize.width - 102, 27),
-                    MyGUI::Align::Left | MyGUI::Align::Top,
-                    "KJM_OptionStat");
-                std::string name;
-                if (!TryGetLocalizedStatName(definition.stat, &name))
-                {
-                    name = definition.fallbackName;
-                }
-                skill->setCaption(name.c_str());
-                skill->setUserString(
-                    "KJM_Stat",
-                    IntegerString(static_cast<size_t>(definition.stat)));
-                skill->eventMouseButtonClick += MyGUI::newDelegate(OnOptionStatClicked);
-                g_optionStatButtons.push_back(skill);
-                y += 29;
-            }
-            y += 8;
-        }
-
-        y += 4;
         MyGUI::TextBox* stationSection = scroll->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText",
-            MyGUI::IntCoord(8, y, clientSize.width - 74, 30),
+            MyGUI::IntCoord(leftColumn, 8, canvasWidth, 30),
             MyGUI::Align::Left | MyGUI::Align::Top,
             "KJM_StationFilterSection");
         stationSection->setCaption("STATION CATEGORY FILTERS");
         stationSection->setTextColour(MyGUI::Colour(1.0f, 0.84f, 0.45f));
         stationSection->setNeedMouseFocus(false);
-        y += 34;
+
         for (size_t index = 0;
              index < STATION_CATEGORY_DEFINITION_COUNT; ++index)
         {
             const StationCategoryDefinition& definition =
                 STATION_CATEGORY_DEFINITIONS[index];
+            const size_t column = index / 5;
+            const size_t row = index % 5;
+            const int x = column == 0 ? leftColumn : rightColumn;
+            const int y = 46 + static_cast<int>(row) * 40;
             MyGUI::Button* category = scroll->createWidget<MyGUI::Button>(
                 "Kenshi_TickButton1",
-                MyGUI::IntCoord(36, y, clientSize.width - 102, 29),
+                MyGUI::IntCoord(
+                    x, y, columnWidth, 34),
                 MyGUI::Align::Left | MyGUI::Align::Top,
                 "KJM_StationCategoryOption");
             category->setCaption(definition.name);
             category->eventMouseButtonClick +=
                 MyGUI::newDelegate(OnStationCategoryOptionClicked);
+            category->eventMouseWheel +=
+                MyGUI::newDelegate(OnOptionsMouseWheel);
             StationCategoryOptionButton binding;
             binding.button = category;
             binding.category = definition.category;
             g_stationOptionButtons.push_back(binding);
-            y += 31;
         }
-        scroll->setCanvasSize(640, y + 8);
+        scroll->setCanvasSize(
+            canvasWidth, 46 + 5 * 40 + 8);
 
-        MyGUI::Button* all = client->createWidget<MyGUI::Button>(
-            "Kenshi_Button1", MyGUI::IntCoord(16, clientSize.height - 50, 120, 38),
-            MyGUI::Align::Left | MyGUI::Align::Bottom, "KJM_OptionAll");
-        all->setCaption("All Skills");
-        all->eventMouseButtonClick += MyGUI::newDelegate(OnOptionSelectAll);
-        MyGUI::Button* none = client->createWidget<MyGUI::Button>(
-            "Kenshi_Button1", MyGUI::IntCoord(146, clientSize.height - 50, 120, 38),
-            MyGUI::Align::Left | MyGUI::Align::Bottom, "KJM_OptionNone");
-        none->setCaption("No Skills");
-        none->eventMouseButtonClick += MyGUI::newDelegate(OnOptionClearAll);
         MyGUI::Button* reset = client->createWidget<MyGUI::Button>(
-            "Kenshi_Button1", MyGUI::IntCoord(276, clientSize.height - 50, 160, 38),
+            "Kenshi_Button1", MyGUI::IntCoord(16, clientSize.height - 50, 160, 38),
             MyGUI::Align::Left | MyGUI::Align::Bottom, "KJM_OptionReset");
         reset->setCaption("Reset Default");
         reset->eventMouseButtonClick += MyGUI::newDelegate(OnOptionReset);
@@ -1398,6 +1271,587 @@
         return true;
     }
 
+    void SetStationActionStatus(const std::string& status)
+    {
+        SetStatus(status);
+        SetStationDetailStatus(status);
+    }
+
+    bool TryCaptureProjectedStationMemberQueue(
+        const HandleIdentity& station,
+        const HandleIdentity& member,
+        std::vector<JobRowSnapshot>* queueOut)
+    {
+        if (queueOut == NULL || !station.valid || station.type != BUILDING ||
+            !member.valid || member.type != CHARACTER ||
+            !g_stationScan.started)
+        {
+            return false;
+        }
+        queueOut->clear();
+
+        bool stationFound = false;
+        for (size_t stationIndex = 0;
+             stationIndex < g_stationScan.stations.size(); ++stationIndex)
+        {
+            if (SameHandleIdentity(
+                    g_stationScan.stations[stationIndex].identity, station))
+            {
+                if (stationFound)
+                {
+                    return false;
+                }
+                stationFound = true;
+            }
+        }
+        if (!stationFound)
+        {
+            return false;
+        }
+
+        const StationMemberSnapshot* projectedMember = NULL;
+        for (size_t squadIndex = 0;
+             squadIndex < g_stationScan.squads.size(); ++squadIndex)
+        {
+            const StationSquadSnapshot& squad =
+                g_stationScan.squads[squadIndex];
+            for (size_t memberIndex = 0;
+                 memberIndex < squad.members.size(); ++memberIndex)
+            {
+                const StationMemberSnapshot& candidate =
+                    squad.members[memberIndex];
+                if (!SameHandleIdentity(candidate.identity, member))
+                {
+                    continue;
+                }
+                if (projectedMember != NULL)
+                {
+                    return false;
+                }
+                projectedMember = &candidate;
+            }
+        }
+        if (projectedMember == NULL || !projectedMember->loaded ||
+            !projectedMember->queueAvailable || projectedMember->truncated ||
+            projectedMember->permanentJobCount < 0 ||
+            static_cast<size_t>(projectedMember->permanentJobCount) !=
+                projectedMember->jobs.size() ||
+            projectedMember->jobs.size() >
+                static_cast<size_t>(MAX_SAFE_JOB_ROWS))
+        {
+            return false;
+        }
+
+        queueOut->reserve(projectedMember->jobs.size());
+        for (size_t index = 0; index < projectedMember->jobs.size(); ++index)
+        {
+            queueOut->push_back(projectedMember->jobs[index].exactJob);
+        }
+        return true;
+    }
+
+    bool TryGetAssignedNaturalAddAuthorization(
+        const HandleIdentity& station,
+        bool* allowAssignedNaturalExceptionOut)
+    {
+        if (allowAssignedNaturalExceptionOut == NULL ||
+            !station.valid || station.type != BUILDING ||
+            !g_stationScan.started)
+        {
+            return false;
+        }
+        *allowAssignedNaturalExceptionOut = false;
+
+        const StationTargetSnapshot* matchedStation = NULL;
+        for (size_t stationIndex = 0;
+             stationIndex < g_stationScan.stations.size(); ++stationIndex)
+        {
+            const StationTargetSnapshot& candidate =
+                g_stationScan.stations[stationIndex];
+            if (!SameHandleIdentity(candidate.identity, station))
+            {
+                continue;
+            }
+            if (matchedStation != NULL)
+            {
+                return false;
+            }
+            matchedStation = &candidate;
+        }
+        if (matchedStation == NULL)
+        {
+            return false;
+        }
+
+        // A non-player natural node is actionable only while a readable
+        // loaded-player queue still proves that Kenshi already assigned it.
+        // Player-owned buildings do not need this exception; the guarded
+        // native leaf checks their ownership directly.
+        *allowAssignedNaturalExceptionOut =
+            matchedStation->naturalResourceException &&
+            !matchedStation->assignments.empty();
+        return true;
+    }
+
+    void RequestAddStationAssignment(
+        const HandleIdentity& station,
+        const HandleIdentity& member)
+    {
+        if (g_pendingAction.type != ACTION_NONE)
+        {
+            SetStationActionStatus(
+                "Another job change is pending. Try again after it finishes.");
+            return;
+        }
+
+        std::vector<JobRowSnapshot> capturedQueue;
+        if (!TryCaptureProjectedStationMemberQueue(
+                station, member, &capturedQueue))
+        {
+            SetStationActionStatus(
+                "The member queue or station changed. No jobs were changed.");
+            return;
+        }
+
+        g_pendingAction = PendingAction();
+        g_pendingAction.type = ACTION_ASSIGN_STATION;
+        g_pendingAction.member = member;
+        g_pendingAction.stationTarget = station;
+        g_pendingAction.sequence = capturedQueue;
+        SetStationActionStatus("Validating the station assignment...");
+    }
+
+    void RequestRemoveStationAssignment(
+        const HandleIdentity& station,
+        const HandleIdentity& member)
+    {
+        if (g_pendingAction.type != ACTION_NONE)
+        {
+            SetStationActionStatus(
+                "Another job change is pending. Try again after it finishes.");
+            return;
+        }
+
+        std::vector<JobRowSnapshot> capturedQueue;
+        if (!TryCaptureProjectedStationMemberQueue(
+                station, member, &capturedQueue))
+        {
+            SetStationActionStatus(
+                "The member queue or station changed. No jobs were changed.");
+            return;
+        }
+
+        g_pendingAction = PendingAction();
+        g_pendingAction.type = ACTION_REMOVE_STATION_BUNDLE;
+        g_pendingAction.member = member;
+        g_pendingAction.stationTarget = station;
+        g_pendingAction.sequence = capturedQueue;
+        SetStationActionStatus("Validating all jobs for this station...");
+    }
+
+    bool SameStationQueuePrefix(
+        const std::vector<JobRowSnapshot>& before,
+        const std::vector<JobRowSnapshot>& after)
+    {
+        if (after.size() < before.size())
+        {
+            return false;
+        }
+        std::vector<JobRowSnapshot> afterPrefix(
+            after.begin(), after.begin() + before.size());
+        return SameQueue(before, afterPrefix);
+    }
+
+    bool IsExpectedStationAssignmentSuffix(
+        const std::vector<JobRowSnapshot>& before,
+        const std::vector<JobRowSnapshot>& after,
+        TaskType normalizedTask,
+        bool automaticBundle,
+        const HandleIdentity& station)
+    {
+        if (!SameStationQueuePrefix(before, after))
+        {
+            return false;
+        }
+        const size_t suffixCount = after.size() - before.size();
+        if (automaticBundle)
+        {
+            if (suffixCount != 2)
+            {
+                return false;
+            }
+            const JobRowSnapshot& first = after[before.size()];
+            const JobRowSnapshot& second = after[before.size() + 1];
+            return SameStationJobKindAndTarget(
+                    first, normalizedTask, station) &&
+                SameStationJobKindAndTarget(
+                    second, OPERATE_STORAGE, station);
+        }
+        if (suffixCount != 1)
+        {
+            return false;
+        }
+        return SameStationJobKindAndTarget(
+            after[before.size()], normalizedTask, station);
+    }
+
+    bool TryPatchStationActionProjection(
+        const MemberSnapshot& memberAfter,
+        const HandleIdentity& station,
+        bool* naturalBecameUnassignedOut)
+    {
+        if (naturalBecameUnassignedOut == NULL)
+        {
+            return false;
+        }
+        *naturalBecameUnassignedOut = false;
+        if (!g_stationScan.started || !memberAfter.identity.valid ||
+            !station.valid)
+        {
+            return false;
+        }
+        StationMemberSnapshot* projectedMember = NULL;
+        for (size_t squadIndex = 0;
+             squadIndex < g_stationScan.squads.size(); ++squadIndex)
+        {
+            StationSquadSnapshot& squad = g_stationScan.squads[squadIndex];
+            for (size_t memberIndex = 0;
+                 memberIndex < squad.members.size(); ++memberIndex)
+            {
+                StationMemberSnapshot& candidate = squad.members[memberIndex];
+                if (SameHandleIdentity(
+                        candidate.identity, memberAfter.identity))
+                {
+                    if (projectedMember != NULL)
+                    {
+                        return false;
+                    }
+                    projectedMember = &candidate;
+                }
+            }
+        }
+        StationTargetSnapshot* projectedStation = NULL;
+        for (size_t stationIndex = 0;
+             stationIndex < g_stationScan.stations.size(); ++stationIndex)
+        {
+            StationTargetSnapshot& candidate =
+                g_stationScan.stations[stationIndex];
+            if (SameHandleIdentity(candidate.identity, station))
+            {
+                if (projectedStation != NULL)
+                {
+                    return false;
+                }
+                projectedStation = &candidate;
+            }
+        }
+        if (projectedMember == NULL || projectedStation == NULL)
+        {
+            return false;
+        }
+
+        CopyMemberQueueIntoStationProjection(memberAfter, projectedMember);
+        JoinStationAssignments(g_stationScan.squads, projectedStation);
+        *naturalBecameUnassignedOut =
+            projectedStation->naturalResourceException &&
+            projectedStation->assignments.empty();
+        return true;
+    }
+
+    void FinishStationMemberAction(
+        const MemberSnapshot& memberAfter,
+        const HandleIdentity& station,
+        const std::string& status,
+        bool fullyVerified)
+    {
+        bool naturalBecameUnassigned = false;
+        const bool projectionPatched = fullyVerified &&
+            TryPatchStationActionProjection(
+                memberAfter, station, &naturalBecameUnassigned);
+        TryNotifyVanillaSelectionUI();
+        RefreshSquadView(true);
+        if (projectionPatched && !naturalBecameUnassigned)
+        {
+            // RefreshSquadView observes the verified queue change and marks
+            // the station join dirty. The value projection above is already
+            // exact, so clear that flag after the Squad refresh.
+            g_stationAssignmentsDirty = false;
+            // The Stations view integration treats equal source/destination
+            // identities as one affected row for add/remove actions.
+            g_stationProjectionRefreshSource = memberAfter.identity;
+            g_stationProjectionRefreshDestination = memberAfter.identity;
+            g_stationProjectionRefreshRequested = true;
+        }
+        else
+        {
+            // Partial, unexpected, or unreadable results must rebuild from
+            // fresh queues. An unassigned natural target also needs a full
+            // target rescan so it disappears from the station inventory.
+            g_stationAssignmentsDirty = g_stationScan.started;
+        }
+        if (fullyVerified)
+        {
+            MarkStationDetailChange(station, memberAfter.identity);
+        }
+        SetStationActionStatus(status);
+    }
+
+    void FinishUnverifiedStationMemberAction(
+        const HandleIdentity& station,
+        const HandleIdentity& member,
+        const std::string& status)
+    {
+        (void)station;
+        (void)member;
+        TryNotifyVanillaSelectionUI();
+        RefreshSquadView(true);
+        g_stationAssignmentsDirty = g_stationScan.started;
+        SetStationActionStatus(status);
+    }
+
+    void ProcessStationAssignmentRequest(const PendingAction& action)
+    {
+        MemberSnapshot before;
+        if (!TryBuildLiveMemberByIdentity(action.member, &before) ||
+            !SameQueue(before.jobs, action.sequence))
+        {
+            FinishUnverifiedStationMemberAction(
+                action.stationTarget, action.member,
+                "Station assignment stopped: 0 job changes were verified. The member queue changed or became unavailable.");
+            return;
+        }
+
+        bool allowAssignedNaturalException = false;
+        if (!TryGetAssignedNaturalAddAuthorization(
+                action.stationTarget,
+                &allowAssignedNaturalException))
+        {
+            FinishUnverifiedStationMemberAction(
+                action.stationTarget, action.member,
+                "Station assignment stopped: 0 job changes were verified. The station projection became unavailable.");
+            return;
+        }
+
+        // Reacquire the exact full queue again after projection
+        // authorization and immediately before the native add leaf. This
+        // keeps the pre-call fingerprint boundary as narrow as possible.
+        MemberSnapshot immediatelyBeforeAdd;
+        if (!TryBuildLiveMemberByIdentity(
+                action.member, &immediatelyBeforeAdd) ||
+            !SameQueue(immediatelyBeforeAdd.jobs, before.jobs))
+        {
+            FinishUnverifiedStationMemberAction(
+                action.stationTarget, action.member,
+                "Station assignment stopped: 0 job changes were verified. The member queue changed immediately before assignment.");
+            return;
+        }
+
+        TaskType normalizedTask = NULL_TASK;
+        bool automaticBundle = false;
+        const StationAddJobResult addResult =
+            TryResolveAndAddStationJobOnce(
+                action.member, action.stationTarget, before.jobs.size(),
+                allowAssignedNaturalException,
+                &normalizedTask, &automaticBundle);
+        if (addResult == STATION_ADD_INVALID_TARGET)
+        {
+            SetStationActionStatus(
+                "The member or exact station is unavailable or is no longer player-managed. No jobs were changed.");
+            return;
+        }
+        if (addResult == STATION_ADD_UNSUPPORTED_TASK)
+        {
+            SetStationActionStatus(
+                "This station does not expose a supported permanent job. No jobs were changed.");
+            return;
+        }
+        if (addResult == STATION_ADD_QUEUE_FULL)
+        {
+            SetStationActionStatus(
+                "The member queue is too full for this station job. No jobs were changed.");
+            return;
+        }
+
+        MemberSnapshot after;
+        if (!TryBuildLiveMemberByIdentity(action.member, &after))
+        {
+            FinishUnverifiedStationMemberAction(
+                action.stationTarget, action.member,
+                "The station job was sent, but 0 job changes could be verified because the queue became unavailable. Review the member queue.");
+            return;
+        }
+        const bool expectedSuffix = IsExpectedStationAssignmentSuffix(
+                before.jobs, after.jobs, normalizedTask,
+                automaticBundle, action.stationTarget);
+        if (!expectedSuffix)
+        {
+            FinishStationMemberAction(
+                after, action.stationTarget,
+                "Kenshi changed the queue in an unexpected way. 0 station job changes were verified. Review the member queue before another change.",
+                false);
+            return;
+        }
+
+        if (addResult == STATION_ADD_FAULTED)
+        {
+            if (SameQueue(before.jobs, after.jobs))
+            {
+                SetStationActionStatus(
+                    "Kenshi rejected the station job. No jobs were changed.");
+            }
+            else
+            {
+                FinishStationMemberAction(
+                    after, action.stationTarget,
+                    "Kenshi reported an error after changing the queue. The exact station job change was verified.",
+                    true);
+            }
+            return;
+        }
+
+        const size_t addedCount = after.jobs.size() - before.jobs.size();
+        std::ostringstream status;
+        status << "Assigned " << after.name << " to this station ("
+               << addedCount << " permanent job"
+               << (addedCount == 1 ? "" : "s") << ").";
+        FinishStationMemberAction(
+            after, action.stationTarget, status.str(), true);
+    }
+
+    void ProcessStationBundleRemovalRequest(const PendingAction& action)
+    {
+        MemberSnapshot current;
+        if (!TryBuildLiveMemberByIdentity(action.member, &current) ||
+            !SameQueue(current.jobs, action.sequence))
+        {
+            FinishUnverifiedStationMemberAction(
+                action.stationTarget, action.member,
+                "Station removal stopped after 0 verified jobs. The member queue changed or became unavailable.");
+            return;
+        }
+
+        if (!TryValidateStationActionTargetIdentity(action.stationTarget))
+        {
+            SetStationActionStatus(
+                "The station is unavailable or is no longer player-managed. No jobs were changed.");
+            return;
+        }
+
+        std::vector<int> removalSlots;
+        for (size_t index = 0; index < current.jobs.size(); ++index)
+        {
+            const JobRowSnapshot& row = current.jobs[index];
+            if (IsStationDisplayJob(row.taskType) && row.hasTarget &&
+                SameHandleIdentity(row.target, action.stationTarget))
+            {
+                removalSlots.push_back(static_cast<int>(index));
+            }
+        }
+
+        size_t removedCount = 0;
+        for (size_t removalIndex = removalSlots.size();
+             removalIndex > 0; --removalIndex)
+        {
+            const int slot = removalSlots[removalIndex - 1];
+            // Revalidate the live handle and player/natural ownership gate
+            // immediately before every mutation in the station bundle.
+            if (!TryValidateStationActionTargetIdentity(
+                    action.stationTarget))
+            {
+                std::ostringstream status;
+                status << "Removal stopped after " << removedCount
+                       << " verified job"
+                       << (removedCount == 1 ? "" : "s")
+                       << ". The exact station is no longer player-managed.";
+                FinishUnverifiedStationMemberAction(
+                    action.stationTarget, action.member, status.str());
+                return;
+            }
+
+            // Reacquire and compare the exact full queue after the target
+            // validation and immediately before the native removal. This
+            // catches external or engine-side changes between bundle rows.
+            MemberSnapshot beforeRemove;
+            if (!TryBuildLiveMemberByIdentity(
+                    action.member, &beforeRemove) ||
+                !SameQueue(beforeRemove.jobs, current.jobs) ||
+                slot < 0 ||
+                slot >= static_cast<int>(beforeRemove.jobs.size()) ||
+                !IsStationDisplayJob(beforeRemove.jobs[slot].taskType) ||
+                !beforeRemove.jobs[slot].hasTarget ||
+                !SameHandleIdentity(
+                    beforeRemove.jobs[slot].target,
+                    action.stationTarget))
+            {
+                std::ostringstream status;
+                status << "Removal stopped after " << removedCount
+                       << " verified job"
+                       << (removedCount == 1 ? "" : "s")
+                       << ". The exact full queue changed or became unavailable.";
+                FinishUnverifiedStationMemberAction(
+                    action.stationTarget, action.member, status.str());
+                return;
+            }
+            const bool removeCallSucceeded =
+                TryRemovePermajob(beforeRemove.handle, slot);
+
+            MemberSnapshot afterRemove;
+            if (!TryBuildLiveMemberByIdentity(action.member, &afterRemove))
+            {
+                std::ostringstream status;
+                status << "Removal stopped after " << removedCount
+                       << " verified job"
+                       << (removedCount == 1 ? "" : "s")
+                       << ". The changed queue became unavailable. Review it before another change.";
+                FinishUnverifiedStationMemberAction(
+                    action.stationTarget, action.member, status.str());
+                return;
+            }
+
+            const bool exactRemoval = SameQueueWithExactJobRemoved(
+                beforeRemove.jobs, slot, afterRemove.jobs);
+            current = afterRemove;
+            if (exactRemoval)
+            {
+                ++removedCount;
+            }
+            if (!removeCallSucceeded || !exactRemoval)
+            {
+                std::ostringstream status;
+                status << "Removal stopped after " << removedCount
+                       << " verified job"
+                       << (removedCount == 1 ? "" : "s") << ". ";
+                if (!exactRemoval)
+                {
+                    status << "The queue changed in an unexpected way.";
+                }
+                else
+                {
+                    status << "Kenshi reported an error after the removal.";
+                }
+                status << " Review it before another change.";
+                FinishStationMemberAction(
+                    current, action.stationTarget, status.str(), false);
+                return;
+            }
+        }
+
+        std::ostringstream status;
+        if (removedCount == 0)
+        {
+            status << current.name << " has no permanent jobs for this station.";
+        }
+        else
+        {
+            status << "Removed all " << removedCount
+                   << " permanent station job"
+                   << (removedCount == 1 ? "" : "s") << " from "
+                   << current.name << ".";
+        }
+        FinishStationMemberAction(
+            current, action.stationTarget, status.str(), true);
+    }
+
     void FinishStationTransfer(const std::string& status)
     {
         g_stationAssignmentsDirty = g_stationScan.started;
@@ -1574,6 +2028,18 @@
         if (action.type == ACTION_TRANSFER_STATION_JOB)
         {
             ProcessStationJobTransfer(action);
+            return;
+        }
+
+        if (action.type == ACTION_ASSIGN_STATION)
+        {
+            ProcessStationAssignmentRequest(action);
+            return;
+        }
+
+        if (action.type == ACTION_REMOVE_STATION_BUNDLE)
+        {
+            ProcessStationBundleRemovalRequest(action);
             return;
         }
 

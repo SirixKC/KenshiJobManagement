@@ -6,6 +6,15 @@ This is a field-test build for RE_Kenshi/KenshiLib.
 Open the Stage 1 squad audit/editor:
   Ctrl+J
 
+The vanilla HUD JOBS row also contains a square Job Manager sibling. It uses
+the live JOBS control size, remains under the Orders panel, and shows the
+tooltip `Open Job Manager (Ctrl+J)`. Its click is deferred until after vanilla
+updateUT; Ctrl+J remains the fallback. GUI rebuilds reacquire the entry, and
+reset restores the original JOBS rectangle only when its live rectangle still
+matches the plugin split. The packaged `gui/kjm-hud-icon.png` is loaded
+independently; the button uses a `JM` caption if the texture is unavailable at
+runtime.
+
 The native full-screen window replaces the old one-character popup. Its primary
 backdrop is fully opaque so cards, controls, and text remain easy to read. It shows
 the current squad's live or per-member cached permanent-job queues. Each member
@@ -31,12 +40,11 @@ An empty live queue shows `[No permanent jobs]`; an unavailable queue shows
 Use same-row drag to reorder one member's queue. Select exact rows across
 members for immediate Remove Selected, or drop a row onto the remove target.
 Both actions have no prompt and no undo. A batch stops at its first failure and
-reports the partial result. Each member shows its own top three enabled base
-stats above 1. Options changes save immediately to one global preference and
-persist across reload, reinstall, and update; defaults are Sciences + Trades.
-If the settings write fails, the display still applies for the session and the
-status says:
-  Displayed-stat options were applied, but settings.ini could not be saved.
+reports the partial result. Each member shows its own top three supported base
+stats above 1. The Options page contains broad station-category filters only;
+they apply to Stations, while Squad Jobs always shows every job and uses all
+supported stats when selecting each member's top three. Category changes save
+immediately and persist across reload, reinstall, and update.
 The manager invokes native pause on open, restores prior pause/speed on an
 ordinary close, and preserves a user's resumed speed if they change it while
 the manager is open. Each TAB press advances once on the main manager and
@@ -48,45 +56,64 @@ editable if only its target is unavailable.
 
 STATIONS TAB
 ------------
-The `Stations` tab is a player-station and assignment view. It shows every
-readable loaded player character against verified player-owned station columns
-and exact targets in loaded members' permanent job queues.
-Rows keep Kenshi's vanilla squad and member order and can be collapsed by
-squad. The frozen roster shows each portrait, condition, Jobs state, permanent
-job count, and the same filtered top three skills as the squad tab. Each station
-column shows its area, category label, exact station name (including names from
-building-rename mods), relevant skill, blocking status, and permanent queue
-assignments for each worker. The portrait is enlarged, and the top-three skill
-list is stacked vertically in a larger font. If one worker has several jobs for the same station, each job
-gets a separate compact left-aligned card such as `1  Hauling...` or
-`2  Operating...`; the tooltip retains the full order text. Light gray,
-33%-opaque lines separate station columns. Drag one assignment card to another
-loaded member row to move the exact permanent job while keeping its station
-target. The job appends to the destination queue.
+The `Stations` tab is a category-grouped card grid, not a member-by-station
+board. It shows verified player-owned workstations and exact station targets
+from readable player queues. The strict player-owned workstation allowlist
+excludes walls, lights, chairs, and any other object accepted only because it
+has a generic task. An assigned natural resource node is the one explicit
+non-owned exception. Engineer, Medic, Robotics, and Rescue remain on Squad
+Jobs and never create a station card.
 
-After a verified successful transfer, the board patches the source and
-destination rows in place. Station columns, scan progress, scroll positions,
-collapsed squads, and selection remain stable. A full projection refresh is
-used only as the fail-closed fallback when the projection cannot be patched or
-the queue changed outside the manager.
+Category headers show persistent `+`/`-` collapse state, station count, and
+unassigned count. Within each category, unassigned cards appear first, then
+cards sort alphabetically by exact station name. A card shows the exact name
+(including a rename-mod name), a translucent category icon, unique assigned
+people, and a red blocking status only when work is prevented. A usable card
+with nobody assigned has a thin yellow outline and a large red X. An idle
+bench's zero power allocation is not an outage: NO POWER requires active unmet
+demand, while a manual switch-off appears as POWER OFF. The area appears only
+when the result contains more than one area.
+Destroyed stations remain visible for cleanup, but new assignment is disabled;
+existing verified assignments can still be removed.
+
+Click a card to open a wide, fully opaque detail modal. Assigned workers stay
+on the left and available workers remain visible on the right, with independent
+scrollbars. Portraits have a fixed column and normal text is pure white. Both
+lists sort by relevant skill from highest to lowest, except Training stations
+sort from lowest to highest. Ties use total permanent jobs, then name. Each row
+shows name, skill/value, and total jobs. An OPERATE_STORAGE/hauling entry is hidden only when that same worker has
+a non-hauling exact-target station job. Click a candidate or press `Enter` for
+an immediate verified assignment. Automatic-machine work uses Kenshi's native
+operation-plus-hauling bundle; storage tasks normalize to `OPERATE_STORAGE`.
+An unsupported assignment contract disables the available pane instead of
+guessing a task. Right-click an assigned person to immediately remove all verified
+existing exact-target station jobs for that worker. There is no Apply button
+and no undo.
+
+After a verified change, update only the affected card, detail list, category
+count, and worker cache. Keep the card position fixed until the modal closes
+and show blue recent-change feedback. A stale queue, load transition, or failed
+verification is fail-closed. Squad Jobs retains same-row drag reorder; Stations
+has no drag-to-transfer interaction.
 
 The main manager backdrop is fully opaque. While the manager is open, the
 mouse wheel scrolls its views without also changing the game camera.
 
 The station pass merges verified live player-owned station-relevant buildings
 from Kenshi's borrowed ownership records with exact targets from readable
-loaded-player permanent queues. It does not enumerate zones, towns, or
+loaded-player permanent job queues. It does not enumerate zones, towns, or
 unrelated city buildings. Assigned natural resource nodes are the deliberate
 exception because Kenshi does not make them player-owned; assigned unknown
-player targets may remain in `Other / Unclassified`.
-Player-owned work stations with no readable queue assignment remain visible
-and are marked `UNASSIGNED`.
-Loaded assigned targets remain visible when incomplete,
-unpowered, broken, disabled, or being dismantled; destroyed or invalid handles
-are excluded. `Other / Unclassified`
-can be hidden in the shared Options page. Skill filters affect both member
-skills and station visibility. The default enabled station categories are
-Crafting, Refining, Farming, Mining, Research, and Other / Unclassified.
+player targets may remain in `Other / Unclassified`. Player-owned workstations
+with no readable queue assignment remain visible with a thin yellow outline and
+a large red `X`.
+Loaded assigned targets remain visible when incomplete, unpowered, broken,
+disabled, being dismantled, or destroyed; a red status marks any state that
+prevents work. Invalid or unresolvable handles are excluded.
+`Other / Unclassified` can be hidden in the shared Options page. Category
+filters affect only station visibility. The default enabled station
+categories are Crafting, Refining, Farming, Mining, Research, and Other /
+Unclassified.
 The nine broad station categories use simple 2-to-4-color pictograms: anvil,
 furnace, wheat, pickaxe, research book, training dummy, crate, shield, and
 gear. Stable building/functionality identities can select more specific icons
@@ -98,30 +125,27 @@ used on both tabs.
 
 The target pass starts when the tab is first opened. It brackets the borrowed
 ownership source into scalar plugin-owned records and copies exact building
-targets referenced by loaded permanent jobs, then resolves at most one stable
-candidate per UI update. An unloaded or unreadable assigned target remains
-visible with a red warning on Squad Jobs, but Stations omits it and reports the
+targets referenced by loaded permanent jobs. It resolves the complete bounded
+candidate list before showing the grid; each candidate remains isolated in one
+guarded call. Normalized results append internally in value-only batches of up
+to 16, then the visible station cards are built once. This causes a short
+button-click pause instead of streaming an incomplete board. Squad-tab edits
+defer this refresh until Stations is opened. An unloaded or unreadable assigned target remains visible
+with a red warning on Squad Jobs, but Stations omits it and reports the
 target-read failure. An unloaded ownership record is omitted without one red
-error per record; a validation fault reports one ownership-pass warning. While
-it runs, the tab says `READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE`
-and shows candidate progress. The final 2,048-station result cap and separate
-8,192-record ownership copy cap are visible warnings. The matrix
-uses frozen headers, vertical and horizontal scrolling, and virtualized rows
-and columns. Drag the station header strip left or right to pan without
-selecting a station. Global Engineer, Medic, Robotics, and Rescue jobs remain on the
-Squad Jobs tab and in each worker's total job count, but never create station
-columns or assignment cells. Transfers validate both full queues, add and
-verify the destination first, and remove the exact source row last. A source
-removal failure leaves the duplicate and reports it; there is no rollback. Camera
-centering, safe full-world building discovery, world highlights, roles,
-new assignment creation, and an unassigned-building toggle are planned later.
+error per record; a validation fault reports one ownership-pass warning. The
+final 2,048-station result cap and separate 8,192-record ownership copy cap are
+visible warnings. The scanner never retains a borrowed source pointer or an
+engine object pointer across a step, never enumerates zones or unrelated world
+containers, and never uses a generic default task to classify a station.
+Camera centering, roles, and world highlights are outside this view.
 
 SAFETY
 ------
 This build has been compiled successfully with the VC100 x64 toolchain, but it
 has not yet completed in-game testing. Use a disposable save. Keep a backup
 before installation. Test single-member Remove and Clear Queue before
-multi-member batch removal or drag reorder. Remove Selected and drop-to-remove
+multi-member batch removal or Squad Jobs same-row drag reorder. Remove Selected and drop-to-remove
 are immediate and irreversible. Inspect RE_Kenshi_log.txt after the first run
 and after every failed mutation.
 

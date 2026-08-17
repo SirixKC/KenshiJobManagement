@@ -78,6 +78,7 @@ xcopy /Y /I "$(ProjectDir)mod\gui\*.png" "$(OutDir)gui\"</Command>
     <None Include="src\StationScanner.inl" />
     <None Include="src\StationSettings.inl" />
     <None Include="src\StationView.inl" />
+    <None Include="src\HudButton.inl" />
     <None Include="mod\RE_Kenshi.json" />
     <None Include="mod\KenshiJobManagement.mod" />
     <None Include="mod\README.txt" />
@@ -99,6 +100,7 @@ xcopy /Y /I "$(ProjectDir)mod\gui\*.png" "$(OutDir)gui\"</Command>
     <None Include="mod\gui\station-steel-bars.png" />
     <None Include="mod\gui\station-storage.png" />
     <None Include="mod\gui\station-training.png" />
+    <None Include="mod\gui\kjm-hud-icon.png" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

@@ -32,6 +32,7 @@ REQUIRED_FILES = (
     "mod/gui/station-electronics.png",
     "mod/gui/station-crossbow.png",
     "mod/gui/station-skeleton-limbs.png",
+    "mod/gui/kjm-hud-icon.png",
     "scripts/build.ps1",
     "scripts/install.ps1",
     "src/KenshiJobManagement.cpp",
@@ -43,6 +44,7 @@ REQUIRED_FILES = (
     "src/StationScanner.inl",
     "src/StationSettings.inl",
     "src/StationAssets.inl",
+    "src/HudButton.inl",
     "src/StationView.inl",
     "diagnostics/evidence/2026-08-15-station-handle-resolution-success.md",
 )
@@ -122,7 +124,7 @@ SOURCE_TOKENS = (
     "MODAL_CLEAR",
     "MODAL_OPTIONS",
     "WritePrivateProfileStringA",
-    # Player-station/assignment tab and validated assignment transfer.
+    # Player-station grouped grid and validated detail actions.
     "StationScanState",
     "STATION_SCAN_TARGET_LIMIT = 2048",
     "CollectAssignedStationTargets",
@@ -173,6 +175,9 @@ SOURCE_TOKENS = (
     "EnsureStationIconResources",
     "LoadStationCategorySettings",
     "SaveStationCategorySettings",
+    "IsStationCategoryCollapsed",
+    "SetStationCategoryCollapsed",
+    '"Collapsed_%d"',
     "SetManagerTab",
     '"KJM_SquadTabButton"',
     '"KJM_StationTabButton"',
@@ -180,34 +185,92 @@ SOURCE_TOKENS = (
     "SetStationBoardSnapshot",
     "SetStationViewVisible",
     "RefreshStationView",
-    "STATION_COLUMN_WIDTH",
-    "STATION_MEMBER_ROW_HEIGHT = 116",
-    '"KJM_StationAssignmentCard"',
-    '"KJM_StationAssignmentOverflow"',
-    "GetStationAssignmentWorkLabel",
-    "GetCompactStationAssignmentWorkLabel",
-    '"KJM_StationColumnDividerHeader"',
-    '"KJM_StationColumnDividerBody"',
-    "EnsureStationHeaderDragBuffer",
-    "OnStationHeaderDrag",
-    "IsStationHeaderDragArmed",
+    "STATION_SCAN_PRESENTATION_BATCH_SIZE = 16",
+    "TryCompleteStationScanImmediately",
+    "while (!g_stationScan.complete && steps <= candidateCount)",
+    "g_stationScan.pendingStations.clear()",
+    "pendingStations",
+    "PublishPendingStationResults",
+    "state->stations.insert(",
+    "scanProgressChanged",
+    "!g_stationTabActive || !g_stationScan.started",
+    "assignmentSupported",
+    "STATION_GRID_CARD_WIDTH = 214",
+    "STATION_GRID_CARD_HEIGHT = 128",
+    "StationGridGroup",
+    "StationGridCardBinding",
+    '"KJM_StationCategoryHeader"',
+    '"KJM_StationCard"',
+    '"KJM_StationDetailModal"',
+    '"KJM_StationDetailBackground"',
+    "modalBackground->setAlpha(1.0f)",
+    "modalBackground->setDepth(100)",
+    "gui->createWidget<MyGUI::Widget>(",
+    "input->addWidgetModal(g_stationView.modalPanel)",
+    '"ASSIGNED WORKERS ("',
+    '"AVAILABLE WORKERS ("',
+    '"KJM_StationAssignmentUnsupported"',
+    '"KJM_StationAvailableViewport"',
+    "OnStationAvailableWheel",
+    "label->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f))",
+    "IsStationDetailOpen",
+    "CloseStationDetail",
+    "detailCloseRequested",
     "ACTION_TRANSFER_STATION_JOB",
-    "OnStationAssignmentDrag",
     "TryAddStationPermanentJob",
     "SameQueueWithAppendedStationJob",
     "SameQueueWithExactJobRemoved",
     "TryPatchStationTransferProjection",
     "g_stationProjectionRefreshRequested",
     "RefreshStationTransferredMemberRows",
-    "processedStationTarget",
     "5038571-Universal Wasteland Expansion.mod",
     "IsStationInteractionDragArmed",
     "WrapToolTipCaption",
-    "STATION_OVERSCAN",
-    "READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE",
+    "PARTIAL SCAN - RESULTS INCOMPLETE",
     "PLAYER STATION RESULT LIST TRUNCATED AT 2,048 - RESULTS INCOMPLETE",
-    'status->setCaption("UNASSIGNED")',
-    '"JOBS UNAVAILABLE"',
+    "SetStationCardAssignment",
+    'assignment->setCaption("X")',
+    "IsStationUsableAndUnassigned",
+    "blockingStatusKnown",
+    '"KJM_StationUnassignedTop"',
+    "SetStationUnassignedOutlineVisible",
+    "howMuchPowerDoYouWantNow() > 0.001f",
+    '"POWER OFF"',
+    "ACTION_ASSIGN_STATION",
+    "ACTION_REMOVE_STATION_BUNDLE",
+    "RequestAddStationAssignment",
+    "RequestRemoveStationAssignment",
+    # Options deliberately filters only the broad station categories. Squad
+    # member stats are always selected from the complete supported list.
+    "bool StationPassesFilters(const StationTargetSnapshot& station)",
+    "return IsStationCategoryEnabled(station.category);",
+    "void BuildTopSkills(Character* character, std::vector<SkillValue>* skillsOut)",
+    "void OnOptionsMouseWheel(MyGUI::Widget*, int relative)",
+    "category->eventMouseWheel +=",
+    "case BCTYPE_TURRET:",
+    "case BF_TRAINING:",
+    "case BF_TURRET:",
+    "station.category == STATION_TRAINING",
+    "lowestSkillFirst ?",
+    "left.relevantSkill < right.relevantSkill",
+    "NormalizeStationTaskScalars",
+    "TryResolveAndAddStationJobOnce",
+    "IsExpectedStationAssignmentSuffix",
+    "ProcessStationBundleRemovalRequest",
+    "MarkStationDetailChange",
+    "RefreshStationActionProjection",
+    # Persistent native HUD JOBS entry and deferred manager activation.
+    "gui->mainbar->ordersDataPanel",
+    "chaseCheckBox",
+    '"KJM_HudJobManagerButton"',
+    '"Open Job Manager (Ctrl+J)"',
+    '"Kenshi_Button1"',
+    "TryReadLiveHudManagerButtonGuarded",
+    "TryDestroyHudButtonWidgetGuarded",
+    "TryEnsureHudManagerIconResourceGuarded",
+    "g_hudManagerButtonRequest",
+    "RestoreHudManagerButton",
+    "g_hudSplitJobsCoord",
 )
 
 EMPTY_FCS_MOD_MARKER = bytes.fromhex(
@@ -322,6 +385,7 @@ def validate_source(errors: list[str]) -> None:
         "src/JobWindow.inl",
         "src/Hooks.inl",
         "src/StationAssets.inl",
+        "src/HudButton.inl",
         "src/StationScanner.inl",
         "src/StationSettings.inl",
         "src/StationView.inl",
@@ -353,6 +417,19 @@ def validate_source(errors: list[str]) -> None:
         if token in source:
             fail(errors, f"Station view must not use the forbidden world-discovery API: {token}")
 
+    if "g_skillEnabled" in source:
+        fail(errors, "Per-stat skill filters must not affect Squad Jobs or Stations")
+
+    build_top_skills_start = source.find(
+        "void BuildTopSkills(Character* character, std::vector<SkillValue>* skillsOut)")
+    if build_top_skills_start >= 0:
+        build_top_skills_end = source.find(
+            "void ", build_top_skills_start + 8)
+        if build_top_skills_end < 0:
+            build_top_skills_end = len(source)
+        if "g_skillEnabled" in source[build_top_skills_start:build_top_skills_end]:
+            fail(errors, "BuildTopSkills must include all supported stats above 1")
+
     if source.count("KenshiLib::AddHook(") < 3:
         fail(
             errors,
@@ -372,9 +449,36 @@ def validate_source(errors: list[str]) -> None:
         "SameHandleIdentity(action.job.target, action.stationTarget)",
         "character->addJob(taskType, building, true, true, position)",
         "TryRemovePermajob(sourceBeforeRemove.handle, verifiedSourceSlot)",
+        "SameQueue(before.jobs, action.sequence)",
+        "TryResolveAndAddStationJobOnce(",
+        "SameStationQueuePrefix(before, after)",
+        "TryValidateStationActionTargetIdentity(",
+        "SameQueueWithExactJobRemoved(",
     ):
         if token not in source:
             fail(errors, f"Exact queue revalidation is missing: {token}")
+
+    scanner = read_text("src/StationScanner.inl", errors)
+    for forbidden in (
+        "if (usable->getDefaultTask() != NULL_TASK)",
+        "if (building->getDefaultTask() != NULL_TASK)",
+    ):
+        if forbidden in scanner:
+            fail(
+                errors,
+                "Direct-owned station relevance must not use a generic default task",
+            )
+
+    station_view = read_text("src/StationView.inl", errors)
+    for token in (
+        "(STATION_GRID_CARD_WIDTH - iconSize) / 2",
+        "input->addWidgetModal(g_stationView.modalPanel)",
+        "input->removeWidgetModal(g_stationView.modalPanel)",
+        "g_stationView.fullRefreshRequested = true",
+        "RefreshStationActionProjection(",
+    ):
+        if token not in station_view:
+            fail(errors, f"Station grid safety or layout contract is missing: {token}")
 
     if "->permajobs" in source or ".permajobs" in source:
         fail(errors, "Source must not mutate or inspect the permanent-job container directly")
@@ -423,7 +527,12 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "read-only",
         "33% opaque",
         "visual subtype icons",
-        "patches only the\nsource and destination rows in place",
+        "broad station-category filters",
+        "stations sort lowest first",
+        "Successful assignment changes update only the affected card, detail list,",
+        "persistent split-JOBS HUD entry",
+        "deferred until after vanilla `updateUT`",
+        "kjm-hud-icon.png",
     ):
         if token not in readme:
             fail(errors, f"README must disclose or document: {token}")
@@ -431,7 +540,7 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
     design = read_text("docs/DESIGN.md", errors)
     for token in (
         "OutpostScanner",
-        "AssignmentMatrix",
+        "Grouped station grid",
         "OptionalPriorityScheduler",
         "Player-station and assignment Stations tab milestone",
         "one stable assigned target",
@@ -439,8 +548,13 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "Other / Unclassified",
         "StationVisualSubtype",
         "ImageBox",
-        "projection is patched in place",
-        "full refresh only when the patch preconditions fail",
+        "Training stations sort lowest first",
+        "contains only `STATION CATEGORY FILTERS`",
+        "projection patches only the affected card, detail list, category counts,",
+        "normal fail-closed refresh path.",
+        "Native HUD JOBS entry",
+        "KJM_HudJobManagerButton",
+        "same live root/control still has the plugin's split rectangle",
     ):
         if token not in design:
             fail(errors, f"Design roadmap is missing component: {token}")
@@ -450,17 +564,32 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "Same-row drag reorder",
         "Cross-member multi-select and drop-to-remove",
         "Clear Queue Yes/No/Esc modal and fingerprint",
-        "Stations tab: player-station and assignment matrix",
-        "READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE",
-        "Player station result list truncated at 2,048",
-        "header says `UNASSIGNED`",
+        "Stations tab: player-station card grid and assignment detail",
+        "opens a fully populated grid",
+        "reach 2,048 unique stations",
+        "people or a large red `X`",
+        "interior must be fully opaque",
         "33%` opaque",
-        "specific pictograms",
-        "successful transfer, confirm only the source and destination rows change",
+        "copper ore, iron ore",
+        "without any per-skill setting",
+        "sort from lowest to highest",
+        "confirm only the affected",
         "save",
+        "Native HUD JOBS entry",
+        "Open Job Manager",
+        "original JOBS",
+        "JM",
     ):
         if token not in testing:
             fail(errors, f"Testing checklist is missing coverage for: {token}")
+
+    mod_readme = read_text("mod/README.txt", errors)
+    for token in (
+        "station-category filters only",
+        "except Training stations",
+    ):
+        if token not in mod_readme:
+            fail(errors, f"Packaged README must document: {token}")
 
     evidence = read_text(
         "diagnostics/evidence/2026-08-15-station-handle-resolution-success.md",

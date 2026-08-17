@@ -8,6 +8,7 @@
 
     const char* const STATION_ICON_RESOURCE_GROUP =
         "KenshiJobManagementStationIcons";
+    const char* const STATION_HUD_ICON_FILE = "kjm-hud-icon.png";
 
     const char* const STATION_ICON_FILES[] =
     {
@@ -37,6 +38,7 @@
     };
 
     bool g_stationVisualIconAvailable[STATION_VISUAL_COUNT] = { false };
+    bool g_hudManagerIconAvailable = false;
 
     const char* GetStationCategoryIconResource(StationCategory category)
     {
@@ -175,6 +177,20 @@
                 }
             }
 
+            // The manager entry icon is optional.  A package without this
+            // new file must still keep every mandatory station category
+            // resource usable; HudButton.inl keeps its JM caption fallback.
+            try
+            {
+                Ogre::TexturePtr texture = textures->load(
+                    STATION_HUD_ICON_FILE, STATION_ICON_RESOURCE_GROUP);
+                g_hudManagerIconAvailable = !texture.isNull();
+            }
+            catch (...)
+            {
+                g_hudManagerIconAvailable = false;
+            }
+
             g_stationIconLocationRegistered = true;
             DebugLog("[KenshiJobManagement] Station category icons loaded.");
             return true;
@@ -216,6 +232,56 @@
             return false;
         }
         return true;
+    }
+
+    bool EnsureHudManagerIconResource()
+    {
+        if (!g_stationIconLocationRegistered)
+        {
+            return false;
+        }
+        if (g_hudManagerIconAvailable)
+        {
+            return true;
+        }
+
+        try
+        {
+            Ogre::TextureManager* textures =
+                Ogre::TextureManager::getSingletonPtr();
+            if (textures == NULL)
+            {
+                return false;
+            }
+            Ogre::TexturePtr texture = textures->load(
+                STATION_HUD_ICON_FILE, STATION_ICON_RESOURCE_GROUP);
+            g_hudManagerIconAvailable = !texture.isNull();
+        }
+        catch (...)
+        {
+            g_hudManagerIconAvailable = false;
+        }
+        return g_hudManagerIconAvailable;
+    }
+
+    __declspec(noinline) bool TryEnsureHudManagerIconResourceGuarded()
+    {
+        bool result = false;
+        bool faulted = false;
+        __try
+        {
+            result = EnsureHudManagerIconResource();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            faulted = true;
+        }
+        if (faulted)
+        {
+            g_hudManagerIconAvailable = false;
+            return false;
+        }
+        return result;
     }
 
 #endif

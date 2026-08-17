@@ -42,6 +42,9 @@
     <None Include="src\StationView.inl">
       <Filter>Source Files</Filter>
     </None>
+    <None Include="src\HudButton.inl">
+      <Filter>Source Files</Filter>
+    </None>
     <None Include="mod\RE_Kenshi.json">
       <Filter>Mod Package</Filter>
     </None>
@@ -69,5 +72,6 @@
     <None Include="mod\gui\station-steel-bars.png"><Filter>Mod Package</Filter></None>
     <None Include="mod\gui\station-storage.png"><Filter>Mod Package</Filter></None>
     <None Include="mod\gui\station-training.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\kjm-hud-icon.png"><Filter>Mod Package</Filter></None>
   </ItemGroup>
 </Project>

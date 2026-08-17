@@ -56,6 +56,8 @@
 #include <kenshi/RootObject.h>
 #include <kenshi/RootObjectBase.h>
 #include <kenshi/Town.h>
+#include <kenshi/gui/ForgottenGUI.h>
+#include <kenshi/gui/MainBarGUI.h>
 #include <kenshi/gui/OrdersPanel.h>
 #include <kenshi/gui/PortraitManager.h>
 #include <kenshi/gui/SquadManagementScreen.h>
@@ -361,7 +363,9 @@ namespace
         ACTION_REORDER,
         ACTION_REMOVE_SELECTED,
         ACTION_CLEAR_MEMBER,
-        ACTION_TRANSFER_STATION_JOB
+        ACTION_TRANSFER_STATION_JOB,
+        ACTION_ASSIGN_STATION,
+        ACTION_REMOVE_STATION_BUNDLE
     };
 
     struct PendingAction
@@ -382,16 +386,6 @@ namespace
     {
         StatsEnumerated stat;
         const char* fallbackName;
-        const char* category;
-        bool defaultEnabled;
-    };
-
-    struct OptionCategoryButton
-    {
-        MyGUI::Button* button;
-        std::string category;
-
-        OptionCategoryButton() : button(NULL) {}
     };
 
     // Full-screen UI state. g_window is retained as the lifecycle sentinel.
@@ -439,11 +433,8 @@ namespace
     DragState g_drag;
     ModalState g_modal;
     PendingAction g_pendingAction;
-    std::vector<MyGUI::Button*> g_optionStatButtons;
-    std::vector<OptionCategoryButton> g_optionCategoryButtons;
+    MyGUI::ScrollView* g_optionsScroll = NULL;
 
-    bool g_skillEnabled[STAT_END];
-    bool g_settingsLoaded = false;
     std::string g_settingsPath;
 
     DWORD g_lastRefreshTick = 0;
@@ -454,7 +445,6 @@ namespace
     bool g_tabWasDown = false;
     bool g_closeRequested = false;
     bool g_modalCloseRequested = false;
-    bool g_skillRefreshRequested = false;
     bool g_settingsWriteFailed = false;
     bool g_stationFilterRefreshRequested = false;
     bool g_stationAssignmentsDirty = false;
@@ -467,6 +457,7 @@ namespace
     bool g_windowModalAdded = false;
     bool g_pauseCaptured = false;
     bool g_wasPaused = false;
+    bool g_hudManagerButtonRequest = false;
     float g_previousSpeed = 1.0f;
     float g_managerPausedSpeed = 0.0f;
 
@@ -489,14 +480,20 @@ namespace
     void OnHorizontalScroll(MyGUI::ScrollBar*, size_t);
     void OnClearYes(MyGUI::Widget*);
     void OnClearNo(MyGUI::Widget*);
-    void OnOptionStatClicked(MyGUI::Widget*);
-    void OnOptionCategoryClicked(MyGUI::Widget*);
-    void OnOptionSelectAll(MyGUI::Widget*);
-    void OnOptionClearAll(MyGUI::Widget*);
     void OnOptionReset(MyGUI::Widget*);
     void OnOptionClose(MyGUI::Widget*);
+    void OnHudManagerButtonClicked(MyGUI::Widget*);
     void ClearJobHoverHighlight();
     void CancelDrag();
+    bool IsStationDetailOpen();
+    void CloseStationDetail();
+    void SetStationDetailStatus(const std::string& text);
+    void MarkStationDetailChange(
+        const HandleIdentity& station,
+        const HandleIdentity& member);
+    void RestoreHudManagerButton();
+    void TickHudManagerButton();
+    void ProcessHudManagerButtonRequest();
 
 #include "RuntimeAccess.inl"
 #include "StationScanner.inl"
@@ -513,6 +510,7 @@ namespace
 #include "JobActions.inl"
 #include "StationView.inl"
 #include "JobWindow.inl"
+#include "HudButton.inl"
 #include "Hooks.inl"
 }
 

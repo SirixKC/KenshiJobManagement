@@ -27,7 +27,7 @@
 // as plug-in-owned scalar POD, then one local handle is reconstructed per UI
 // call.  Building, Platoon, and Character pointers never survive their guarded
 // leaf operation.  BeginStationScan() takes both value snapshots, and
-// StepStationScan() enriches no more than one candidate per UI call.
+// StepStationScan() enriches no more than one candidate per guarded call.
 
 #ifndef KENSHI_JOB_MANAGEMENT_STATION_SCANNER_INL
 #define KENSHI_JOB_MANAGEMENT_STATION_SCANNER_INL
@@ -38,6 +38,11 @@
     // ultimately display.
     const size_t STATION_SCAN_TARGET_LIMIT = 2048;
     const unsigned int STATION_OWNERSHIP_COPY_LIMIT = 8192;
+    // Each guarded call remains bounded to one candidate. The Stations button
+    // runs the finite copied candidate list synchronously, then builds the grid
+    // once. Publish normalized results in small value-only batches internally
+    // so vector growth remains bounded without exposing partial UI state.
+    const size_t STATION_SCAN_PRESENTATION_BATCH_SIZE = 16;
 
     // These offsets are part of the reconstructed KenshiLib 0.4.0 ABI.  The
     // ownership source is read as a borrowed array of scalar records only;
@@ -201,9 +206,11 @@
         StationVisualSubtype visualSubtype;
         std::string name;
         bool naturalResourceException;
+        bool assignmentSupported;
         bool relevantSkillKnown;
         StatsEnumerated relevantStat;
         std::string relevantSkillName;
+        bool blockingStatusKnown;
         bool blocking;
         std::string blockingStatus;
         std::vector<StationAssignmentSnapshot> assignments;
@@ -211,8 +218,10 @@
         StationTargetSnapshot() :
             zoneX(0), zoneY(0), category(STATION_OTHER),
             visualSubtype(STATION_VISUAL_DEFAULT),
-            naturalResourceException(false), relevantSkillKnown(false),
-            relevantStat(STAT_NONE), blocking(false)
+            naturalResourceException(false), assignmentSupported(false),
+            relevantSkillKnown(false),
+            relevantStat(STAT_NONE), blockingStatusKnown(false),
+            blocking(false)
         {
         }
     };
@@ -290,6 +299,7 @@
         size_t targetsFailed;
         std::vector<StationOwnedHandRecord> ownedBuildingRecords;
         std::vector<hand> assignedTargetHandles;
+        std::vector<StationTargetSnapshot> pendingStations;
         std::vector<StationSquadSnapshot> squads;
         std::vector<StationTargetSnapshot> stations;
         std::vector<std::string> errors;
@@ -324,7 +334,8 @@
         // These are global worker behaviors in Kenshi. Their stored subject
         // does not define the scope of the permanent job, so it must not be
         // presented as a station assignment. Keep them in the Squad Jobs
-        // queue; exclude them only from this read-only station projection.
+        // queue; exclude them from the station projection and station-scoped
+        // bundle removal because their incidental subject is not authoritative.
         return taskType != JOB_BUILDER &&
             taskType != JOB_MEDIC &&
             taskType != JOB_REPAIR_ROBOT &&
@@ -660,41 +671,44 @@
         return false;
     }
 
-    bool StationTargetSnapshotLess(
-        const StationTargetSnapshot& left,
-        const StationTargetSnapshot& right)
+    bool StationTargetAlreadyPublishedOrPending(
+        const HandleIdentity& identity,
+        const StationScanState& state)
     {
-        if (left.areaName != right.areaName)
-        {
-            return left.areaName < right.areaName;
-        }
-        if (left.category != right.category)
-        {
-            return left.category < right.category;
-        }
-        if (left.name != right.name)
-        {
-            return left.name < right.name;
-        }
-        if (left.identity.container != right.identity.container)
-        {
-            return left.identity.container < right.identity.container;
-        }
-        if (left.identity.index != right.identity.index)
-        {
-            return left.identity.index < right.identity.index;
-        }
-        return left.identity.serial < right.identity.serial;
+        return StationTargetAlreadyScanned(identity, state.stations) ||
+            StationTargetAlreadyScanned(identity, state.pendingStations);
     }
 
-    void SortStationTargetsForDisplay(StationScanState* state)
+    void JoinStationAssignments(
+        const std::vector<StationSquadSnapshot>& squads,
+        StationTargetSnapshot* station);
+
+    size_t StationScanResultCount(const StationScanState& state)
     {
-        if (state != NULL)
+        return state.stations.size() + state.pendingStations.size();
+    }
+
+    // Append the pending value snapshots to the public list. StationView owns
+    // category and card-name sorting, so the scanner does not copy and merge
+    // every previously published snapshot at each presentation boundary. No
+    // engine pointer crosses this boundary; pendingStations contains only
+    // normalized snapshots.
+    void PublishPendingStationResults(StationScanState* state)
+    {
+        if (state == NULL || state->pendingStations.empty())
         {
-            std::sort(
-                state->stations.begin(), state->stations.end(),
-                StationTargetSnapshotLess);
+            return;
         }
+
+        for (size_t index = 0; index < state->pendingStations.size(); ++index)
+        {
+            JoinStationAssignments(
+                state->squads, &state->pendingStations[index]);
+        }
+        state->stations.insert(
+            state->stations.end(),
+            state->pendingStations.begin(), state->pendingStations.end());
+        state->pendingStations.clear();
     }
 
     bool TryBuildStationBaseStats(
@@ -1251,10 +1265,12 @@
         StatsEnumerated* statOut,
         bool* statKnownOut,
         bool* naturalOut,
-        bool* relevantOut)
+        bool* relevantOut,
+        bool* assignmentSupportedOut)
     {
         if (building == NULL || categoryOut == NULL || statOut == NULL ||
-            statKnownOut == NULL || naturalOut == NULL || relevantOut == NULL)
+            statKnownOut == NULL || naturalOut == NULL || relevantOut == NULL ||
+            assignmentSupportedOut == NULL)
         {
             return false;
         }
@@ -1264,6 +1280,7 @@
         *statKnownOut = false;
         *naturalOut = false;
         *relevantOut = false;
+        *assignmentSupportedOut = false;
 
         __try
         {
@@ -1286,6 +1303,12 @@
             case BCTYPE_RESEARCH:
                 *categoryOut = STATION_RESEARCH;
                 *statOut = STAT_SCIENCE;
+                *statKnownOut = true;
+                *relevantOut = true;
+                break;
+            case BCTYPE_ITEM_FURNACE:
+                *categoryOut = STATION_REFINING;
+                *statOut = STAT_LABOURING;
                 *statKnownOut = true;
                 *relevantOut = true;
                 break;
@@ -1348,6 +1371,21 @@
                 break;
             }
 
+            // A known stat refines the card's worker-skill label, but it does
+            // not make an object a workstation.  The relevance decision above
+            // is deliberately limited to the stable BuildingClassType and
+            // BuildingFunction allowlist.  In particular, do not use the
+            // generic default task: walls, lights, chairs, and other
+            // interactive furniture can expose one without being a station.
+            if (!*relevantOut)
+            {
+                return true;
+            }
+            TaskType normalizedTask = NULL_TASK;
+            bool automaticBundle = false;
+            *assignmentSupportedOut = NormalizeStationTaskScalars(
+                classType, function, building->getDefaultTask(),
+                &normalizedTask, &automaticBundle);
             UseableStuff* usable = building->getUseableStuff();
             if (usable != NULL)
             {
@@ -1357,17 +1395,6 @@
                     *statOut = engineStat;
                     *statKnownOut = true;
                 }
-                if (usable->getDefaultTask() != NULL_TASK)
-                {
-                    *relevantOut = true;
-                }
-            }
-            // The base Building virtual also covers modded or otherwise
-            // unclassified work targets whose concrete class is not exposed as
-            // UseableStuff by the reconstructed headers.
-            if (building->getDefaultTask() != NULL_TASK)
-            {
-                *relevantOut = true;
             }
             return true;
         }
@@ -1605,6 +1632,7 @@
         bool broken = false;
         bool disabled = false;
         bool noPower = false;
+        bool powerOff = false;
         __try
         {
             if (building->isDestroyed())
@@ -1625,7 +1653,18 @@
             {
                 broken = usable->isBroken();
                 disabled = usable->isDisabled();
-                noPower = usable->isOutOfPower() > 0.001f;
+                // isOutOfPower() alone is not an outage test. Kenshi resets a
+                // power consumer's current allocation while it is idle, so an
+                // unstaffed bench can report zero local power even when its
+                // town has a large surplus. howMuchPowerDoYouWantNow() is the
+                // remaining live demand after generator/battery allocation.
+                // It is zero for an idle bench and for a fully supplied one.
+                if (usable->isOutOfPower() > 0.001f)
+                {
+                    powerOff = !usable->isPowerOn();
+                    noPower = !powerOff &&
+                        usable->howMuchPowerDoYouWantNow() > 0.001f;
+                }
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -1648,6 +1687,11 @@
         {
             if (!statusOut->empty()) *statusOut += " / ";
             *statusOut += "DISABLED";
+        }
+        if (powerOff)
+        {
+            if (!statusOut->empty()) *statusOut += " / ";
+            *statusOut += "POWER OFF";
         }
         if (noPower)
         {
@@ -2069,8 +2113,13 @@
         }
 
         std::string queueTargetLabel;
-        const bool queueEvidence = TryFindAssignedStationTargetLabel(
-            squads, station.identity, &queueTargetLabel);
+        // Direct-owned records must pass the strict station allowlist and do
+        // not need a full squad/member/job search. Exact queue targets were
+        // copied separately and are resolved first with the natural-resource
+        // exception enabled.
+        const bool queueEvidence = allowNaturalException &&
+            TryFindAssignedStationTargetLabel(
+                squads, station.identity, &queueTargetLabel);
         if (allowNaturalException && !queueEvidence)
         {
             return true;
@@ -2100,7 +2149,8 @@
         bool natural = false;
         if (!TryClassifyStationBuilding(
                 building, &station.category, &station.relevantStat,
-                &station.relevantSkillKnown, &natural, &relevant))
+                &station.relevantSkillKnown, &natural, &relevant,
+                &station.assignmentSupported))
         {
             if (!queueEvidence)
             {
@@ -2133,9 +2183,10 @@
             building, natural, &station.visualSubtype);
 
         bool destroyed = false;
-        if (!TryGetStationBlockingStatus(
+        station.blockingStatusKnown = TryGetStationBlockingStatus(
                 building, &destroyed, &station.blocking,
-                &station.blockingStatus))
+                &station.blockingStatus);
+        if (!station.blockingStatusKnown)
         {
             station.blocking = false;
             station.blockingStatus.clear();
@@ -2144,6 +2195,12 @@
         {
             station.blocking = true;
             station.blockingStatus = "Destroyed";
+        }
+        if (destroyed)
+        {
+            // Existing exact queue rows remain removable, but the UI must not
+            // offer a new assignment that the guarded backend will reject.
+            station.assignmentSupported = false;
         }
 
         if (!TryReadRootObjectName(building, &station.name) ||
@@ -2243,23 +2300,27 @@
             return false;
         }
         if (!include ||
-            StationTargetAlreadyScanned(station.identity, state->stations))
+            StationTargetAlreadyPublishedOrPending(
+                station.identity, *state))
         {
             return true;
         }
         // Only report truncation after a 2,049th qualifying unique target is
         // observed.  Remaining non-station objects do not make the result
         // incomplete.
-        if (state->stations.size() >= STATION_SCAN_TARGET_LIMIT)
+        if (StationScanResultCount(*state) >= STATION_SCAN_TARGET_LIMIT)
         {
             state->truncated = true;
             state->complete = true;
             return true;
         }
-        JoinStationAssignments(state->squads, &station);
-        state->stations.push_back(station);
+        state->pendingStations.push_back(station);
         return true;
     }
+
+    void CaptureStationOwnedRecordIdentity(
+        const StationOwnedHandRecord& record,
+        HandleIdentity* identityOut);
 
     bool TryScanOwnedStationTarget(
         const StationOwnedHandRecord& record,
@@ -2268,6 +2329,18 @@
         if (state == NULL)
         {
             return false;
+        }
+
+        // Assigned handles are resolved before borrowed ownership records.
+        // Skip a matching record before reconstructing another live handle or
+        // reading metadata a second time. Failed assigned targets are not in
+        // either result list and still receive the normal direct-owned pass.
+        HandleIdentity recordIdentity;
+        CaptureStationOwnedRecordIdentity(record, &recordIdentity);
+        if (recordIdentity.valid &&
+            StationTargetAlreadyPublishedOrPending(recordIdentity, *state))
+        {
+            return true;
         }
 
         StationOwnedBuildingResolution resolution;
@@ -2296,18 +2369,18 @@
         }
 
         if (!include ||
-            StationTargetAlreadyScanned(station.identity, state->stations))
+            StationTargetAlreadyPublishedOrPending(
+                station.identity, *state))
         {
             return true;
         }
-        if (state->stations.size() >= STATION_SCAN_TARGET_LIMIT)
+        if (StationScanResultCount(*state) >= STATION_SCAN_TARGET_LIMIT)
         {
             state->truncated = true;
             state->complete = true;
             return true;
         }
-        JoinStationAssignments(state->squads, &station);
-        state->stations.push_back(station);
+        state->pendingStations.push_back(station);
         return true;
     }
 
@@ -2381,7 +2454,7 @@
         }
         // Copy borrowed ownership records into plug-in-owned scalar storage.
         // The list is bracket-validated; live handles are reconstructed later,
-        // one candidate per UI update.
+        // one candidate per guarded scanner call.
         CaptureStationOwnedBuildingRecords(player, state);
 
         std::vector<HandleIdentity> assignedTargets;
@@ -2396,6 +2469,12 @@
                 state,
                 "Assigned station target list reached its safety limit.");
         }
+
+        const size_t resultCapacity = std::min(
+            StationScanCandidateCount(*state), STATION_SCAN_TARGET_LIMIT);
+        state->stations.reserve(resultCapacity);
+        state->pendingStations.reserve(std::min(
+            resultCapacity, STATION_SCAN_PRESENTATION_BATCH_SIZE));
 
         state->complete = StationScanCandidateCount(*state) == 0;
         return true;
@@ -2414,6 +2493,7 @@
         (void)player;
         if (state->nextTarget >= StationScanCandidateCount(*state))
         {
+            PublishPendingStationResults(state);
             state->complete = true;
             return true;
         }
@@ -2447,7 +2527,15 @@
                 state, "An assigned station target could not be read safely.");
         }
         ++state->targetsCompleted;
-        SortStationTargetsForDisplay(state);
+        const bool presentationBatchComplete =
+            (state->targetsCompleted %
+             STATION_SCAN_PRESENTATION_BATCH_SIZE) == 0;
+        if (presentationBatchComplete ||
+            state->nextTarget >= candidateCount ||
+            state->truncated)
+        {
+            PublishPendingStationResults(state);
+        }
         if (state->nextTarget >= candidateCount ||
             state->truncated)
         {
@@ -2477,6 +2565,7 @@
         state->squads.swap(freshSquads);
         state->rosterIncomplete = incomplete;
         state->stations.clear();
+        state->pendingStations.clear();
         state->ownedBuildingRecords.clear();
         state->assignedTargetHandles.clear();
         state->errors.clear();
@@ -2504,6 +2593,11 @@
             AddStationScanError(
                 state, "Assigned station target list reached its safety limit.");
         }
+        const size_t resultCapacity = std::min(
+            StationScanCandidateCount(*state), STATION_SCAN_TARGET_LIMIT);
+        state->stations.reserve(resultCapacity);
+        state->pendingStations.reserve(std::min(
+            resultCapacity, STATION_SCAN_PRESENTATION_BATCH_SIZE));
         state->complete = StationScanCandidateCount(*state) == 0;
         return true;
     }

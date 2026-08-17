@@ -99,8 +99,13 @@ Also inspect the final DLL strings. It must not contain
 the removed crash-prone world-discovery implementations. The Stations view
 merges verified player-owned station-relevant BUILDING records from the
 bracketed borrowed ownership storage with exact targets in readable loaded-
-player permanent job queues. Ownership records are copied as scalar POD only,
-reconstructed one per UI tick, and never retain a borrowed source pointer or
-release engine memory. Assigned natural resource nodes remain the explicit
-non-owned exception. The final station result remains capped at 2,048; the
-source ownership copy uses its separate 8,192-record safety cap.
+player permanent job queues. The strict player-owned workstation allowlist
+excludes walls, lights, chairs, and generic default-task objects. Ownership
+records are copied as scalar POD only and reconstructed one per guarded scanner
+call. The Stations button processes the finite copied candidate list
+synchronously before it displays the grid. Normalized results are published
+internally in value-only batches of at most 16, followed by one grid build.
+Never retain a borrowed source pointer or release engine memory. Assigned natural
+resource nodes remain the explicit non-owned exception. The final station
+result remains capped at 2,048; the source ownership copy uses its separate
+8,192-record safety cap.

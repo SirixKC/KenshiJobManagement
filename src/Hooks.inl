@@ -30,6 +30,11 @@
         }
 
         g_playerInterface = player;
+        // Reacquire the native mainbar after vanilla has rebuilt/updated it.
+        // The button callback only sets a request flag, so opening the
+        // manager is also deferred until this post-vanilla point.
+        TickHudManagerButton();
+        ProcessHudManagerButtonRequest();
 #ifdef KJM_SCANNER_PROBE
         TickOwnershipProbe(player);
 #endif
@@ -42,6 +47,8 @@
 #ifdef KJM_SCANNER_PROBE
         OwnershipProbeOnWorldReset();
 #endif
+        RestoreHudManagerButton();
+        g_hudManagerButtonRequest = false;
         DestroyJobWindow(true);
         g_playerInterface = NULL;
         g_hotkeyWasDown = false;

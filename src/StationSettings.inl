@@ -37,13 +37,34 @@
     };
 
     bool g_stationCategoryEnabled[STATION_OTHER + 1];
+    bool g_stationCategoryCollapsed[STATION_OTHER + 1];
     bool g_stationSettingsLoaded = false;
     std::vector<StationCategoryOptionButton> g_stationOptionButtons;
+
+    bool SaveStationCategorySettings();
 
     bool IsStationCategoryEnabled(StationCategory category)
     {
         return category >= STATION_CRAFTING && category <= STATION_OTHER &&
             g_stationCategoryEnabled[static_cast<int>(category)];
+    }
+
+    bool IsStationCategoryCollapsed(StationCategory category)
+    {
+        return category >= STATION_CRAFTING && category <= STATION_OTHER &&
+            g_stationCategoryCollapsed[static_cast<int>(category)];
+    }
+
+    bool SetStationCategoryCollapsed(
+        StationCategory category,
+        bool collapsed)
+    {
+        if (category < STATION_CRAFTING || category > STATION_OTHER)
+        {
+            return false;
+        }
+        g_stationCategoryCollapsed[static_cast<int>(category)] = collapsed;
+        return SaveStationCategorySettings();
     }
 
     void ResetDefaultStationCategories()
@@ -69,6 +90,10 @@
             return;
         }
         ResetDefaultStationCategories();
+        for (int category = 0; category <= STATION_OTHER; ++category)
+        {
+            g_stationCategoryCollapsed[category] = false;
+        }
         EnsureSettingsPath();
         for (size_t index = 0;
              index < STATION_CATEGORY_DEFINITION_COUNT; ++index)
@@ -80,6 +105,12 @@
             g_stationCategoryEnabled[definition.category] =
                 GetPrivateProfileIntA(
                     "Stations", key, definition.defaultEnabled ? 1 : 0,
+                    g_settingsPath.c_str()) != 0;
+            std::sprintf(
+                key, "Collapsed_%d", static_cast<int>(definition.category));
+            g_stationCategoryCollapsed[definition.category] =
+                GetPrivateProfileIntA(
+                    "Stations", key, 0,
                     g_settingsPath.c_str()) != 0;
         }
         g_stationSettingsLoaded = true;
@@ -98,6 +129,15 @@
             if (WritePrivateProfileStringA(
                     "Stations", key,
                     g_stationCategoryEnabled[definition.category] ? "1" : "0",
+                    g_settingsPath.c_str()) == FALSE)
+            {
+                success = false;
+            }
+            std::sprintf(
+                key, "Collapsed_%d", static_cast<int>(definition.category));
+            if (WritePrivateProfileStringA(
+                    "Stations", key,
+                    g_stationCategoryCollapsed[definition.category] ? "1" : "0",
                     g_settingsPath.c_str()) == FALSE)
             {
                 success = false;

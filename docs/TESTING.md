@@ -17,10 +17,9 @@ The test terms below are intentional:
 - `Remove Selected` and drop-to-remove are immediate, irreversible actions with
   no prompt and no undo. `Clear Queue` is the only queue removal with a
   Yes/No/Esc review modal.
-- **station** means one displayed world building/node column. Short clicks only
-  select a column. Dragging an exact assignment card can move that job to a
-  different loaded member.
-- **station view incomplete** means the matrix is still resolving copied
+- **station** means one displayed world building/node card. A short card click
+  opens its centered detail modal; Stations has no drag-to-transfer action.
+- **station view incomplete** means the card grid is still resolving copied
   ownership records or known queue targets, an assigned target failed, an
   ownership validation fault occurred, or the 2,048-result safety cap was
   reached. Treat the result as incomplete until the banner clears and record
@@ -40,13 +39,37 @@ The test terms below are intentional:
 - If possible, place the squad at a player outpost with at least one crafting,
   farming, mining, or refining station. Keep one assigned natural iron or
   copper node available for the exact-target exception test.
+- If possible, include a player-owned wall, light, and chair near the outpost.
+  These must remain excluded from Stations even if a generic task is exposed.
 - If possible, include two jobs with the same visible job name but different
   targets. This is needed to test exact row identity.
-- Note each member's enabled base stats and values, the current game pause
+- Note each member's supported base stats and values, the current game pause
   state, game speed, squad membership, and Jobs state before opening the
   manager.
-- Record the current Options preference. On a clean installation, verify that
-  its documented defaults are **Sciences** and **Trades**.
+- Record the current station-category Options preference. On a clean
+  installation, verify the documented station-category defaults.
+
+### Native HUD JOBS entry
+
+- At the main menu and after loading the disposable save, confirm the vanilla
+  `JOBS` control has one square Job Manager sibling on its right. The sibling
+  must follow the live JOBS height and leave the native label readable.
+- Disable the native JOBS toggle and confirm only the native control becomes
+  disabled; the sibling remains independently enabled while its Orders-panel
+  parent is visible.
+- Hover the sibling and confirm the tooltip is exactly `Open Job Manager
+  (Ctrl+J)`. Click it and confirm the manager opens after the vanilla update;
+  no duplicate or re-entrant window appears. Press `Ctrl+J` and confirm the
+  same manager path still works as fallback.
+- Resize or rebuild the HUD, then confirm the sibling is reacquired under the
+  current Orders panel and remains square. Use a deliberately narrow or
+  incompatible JOBS rectangle and confirm the split is abandoned without
+  damaging the native JOBS control.
+- Return to the main menu or reset the save. Confirm the original JOBS
+  rectangle is restored when it still has the plugin split geometry. If a UI
+  mod changed that rectangle, confirm cleanup leaves the changed geometry
+  untouched. If the packaged icon is missing, confirm the sibling remains
+  usable with its `JM` caption.
 
 ## Startup, layout, pause ownership, and lifecycle
 
@@ -65,13 +88,13 @@ The test terms below are intentional:
 7. Confirm the heading resolves to `<squad name>  |  <N> member(s)` (or starts
    as `Current squad`) and appends `  |  read-only snapshot` only for a
    squad-level cached snapshot. Confirm the member-column header is exactly
-   `SQUAD MEMBER  |  TOP ENABLED STATS`.
+   `SQUAD MEMBER  |  TOP STATS`.
 8. Confirm every current-squad member has one card or row, including the
    member with no jobs. Confirm the member name and `Jobs: ON` or `Jobs: OFF`
    state match Kenshi. Confirm each portrait shows that member's actual
    character image, not only the gray `Background/Normal` layer, and compare
    it with the same member in Kenshi's vanilla squad interface.
-9. Confirm each member shows its own top three enabled base stats whose values
+9. Confirm each member shows its own top three supported base stats whose values
    are above 1. The three displayed stats must be computed per member, not
    selected as three aggregate stats across the squad. Confirm the three skills
    are stacked vertically in a larger, readable font and do not overlap the
@@ -131,40 +154,37 @@ The test terms below are intentional:
     only the new save's current squad.
 16. Return to the main menu with the manager open and confirm no crash.
 
-## Options and per-member stats
+## Options and station categories
 
-`Options` controls one global preference. It is not a separate filter stored on
-each member.
+`Options` controls one global set of station-category visibility preferences.
+It does not filter Squad Jobs or member stats.
 
-1. Open `Options` from the main manager. Confirm the defaults on a clean
-   installation are **Sciences** and **Trades**.
-   Confirm the modal title is `Displayed Stats`, its help text says
-   `Each member shows their three highest enabled base stats above 1. Changes
-   save globally now.`, and its controls are `Select All`, `Clear All`,
-   `Reset Default`, and `Close`.
-2. Change the enabled base-stat preference and close the Options modal. Confirm
-   the change saves immediately without a separate Apply button.
-3. Confirm every member now computes its own top three enabled base stats above
-   1 from that one preference. A member with fewer than three qualifying stats
-   must show only the qualifying stats; do not fill the list with stats at 1 or
-   below.
-4. Confirm changing Options changes display data only. It must not add/remove
-   jobs, change queue order or targets, change Jobs state, or change pause/speed.
+1. Open `Options` from the main manager. Confirm the modal is wider than the
+   old stat-filter layout and contains only `STATION CATEGORY FILTERS`, the
+   nine broad category buttons, `Reset Default`, and `Close`. Confirm the help
+   text says that category filters apply only to Stations and Squad Jobs shows
+   every permanent job while selecting each member's top three supported base
+   stats.
+2. Move the mouse over a category button and use the wheel. Confirm wheel
+   input reaches the shared Options scroll view and does not move the game
+   camera. Repeat at a low resolution if possible.
+3. Toggle each station category. Confirm changes save immediately, rebuild
+   only the Stations display, and do not add/remove jobs, change queue order or
+   targets, change Jobs state, or change pause/speed. Confirm Squad Jobs still
+   shows every job after each toggle.
+4. Confirm each member computes its own top three supported base stats above 1
+   from all supported stats. Old `[Skills]` / `Stat_*` settings must not hide a
+   qualifying stat.
 5. Press `TAB` while Options is open. The modal must block Kenshi's
    current-squad cycling until it closes.
-6. If `settings.ini` cannot be written, confirm the current display still
-   applies and the manager status says exactly `Displayed-stat options were
-   applied, but settings.ini could not be saved.`. Record that persistence is
-   not proven for that change.
-7. Save and reload the game. Confirm the changed preference remains; it must not
-   change during reload.
-8. Reinstall the same package over the disposable test installation. Confirm
-   the preference remains.
-9. Apply an update package without deleting the preference. Confirm the
-   preference remains after the update as well.
-10. Restore the default preference and record the result for the field report.
+6. If `settings.ini` cannot be written, confirm the current station display
+   still applies and the manager reports a station-category settings failure.
+7. Save and reload the game. Confirm the category choices remain. Reinstall
+   the same package and apply an update without deleting settings; confirm the
+   choices remain after both operations.
+8. Press `Reset Default` and record the documented station-category defaults.
 
-## Stations tab: player-station and assignment matrix
+## Stations tab: player-station card grid and assignment detail
 
 Use a save with at least one player outpost, several station types, multiple
 squads, and one permanent job aimed at a natural iron or copper node when
@@ -172,117 +192,129 @@ possible. Keep the vanilla building names visible so renamed-building support
 can be checked with a second save or rename mod.
 
 1. Open the manager with `Ctrl+J`. Confirm it opens on `Squad Jobs`. Click
-   `Stations` and confirm the tab does not change the current squad or the
-   selected character.
-2. Confirm the first station view starts a lazy player-station candidate pass.
-   While it runs, the prominent banner says
-   `READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE`, shows `Candidate
-   <N> of <M>`, and fills station columns as exact ownership and queue targets
-   resolve. Confirm the pass consumes no more than one stable assigned target or
-   one copied ownership record per UI update. Switch to `Squad Jobs`, then back;
-   confirm target resolution pauses while hidden and resumes later. Do not treat
-   the matrix as complete while the banner is present.
-3. Confirm the matrix contains loaded, player-owned station-relevant buildings
-   from the ownership pass, plus loaded building targets referenced by readable
-   permanent queues from every loaded player squad. Confirm an unrelated,
-   public, or city building does not appear, even when a player queue references
-   it. Confirm an assigned natural resource node can appear as the explicit
-   non-owned exception and an assigned unknown player target can remain `Other /
-   Unclassified`. Confirm an unavailable assigned target remains red on Squad
-   Jobs, is omitted from Stations, and increments the failed-target warning.
-   Confirm destroyed, incomplete, unpowered, broken, disabled, and dismantling
-   assigned targets also remain visible with their blocking status. Confirm an
-   unloaded ownership record is omitted without one red error per record.
-4. Confirm station columns are grouped and ordered by area, category, and exact
-   station name.
-   Confirm a building renamed by a rename mod uses that exact name. If two
-   names match in one area, confirm only the presentation adds `#1`, `#2`.
-   Check material-output stations and special benches: copper ore, iron ore,
-   UWE copper plates when UWE is loaded, iron plates, steel bars, copper alloy plates, electronics,
-   crossbows, and skeleton limbs must use their specific pictograms on both
-   tabs. Rename one of these buildings and confirm its icon does not change;
-   an unknown or modded identity must fall back to its broad category icon.
-5. Confirm each header shows a category label, exact station name, relevant
-   skill, and blocking status when the station cannot work. Confirm known-skill
-   stations disappear when that skill is disabled, while no-skill stations
-   show `Relevant skill: None`. Confirm unknown stations are controlled by
-   `Other / Unclassified`. Inspect the station header icon itself: its
-   `ImageBox` must be `33%` opaque (`67%` transparent), independent of the
-   dark overlay, and the same direct alpha rule must hold on Squad Jobs.
-6. Confirm all loaded player characters from all loaded squads appear in
-   vanilla order. Loaded squads start expanded. Collapse and reopen a squad;
-   confirm only its member rows hide. An unloaded squad must start collapsed
-   with `Live data unavailable`; a partly loaded squad must show its loaded
-   members and one `<N> members unavailable` placeholder.
-7. In the frozen roster, confirm each member shows the native portrait, name,
-   condition (including dead/unconscious), Jobs state, permanent job count,
-   `NO PERMANENT JOBS` or `N JOBS`, and the same filtered top-three skills as
-   `Squad Jobs`. A queue-read failure must show `JOBS UNAVAILABLE` without
-   hiding the member or blocking the matrix.
-8. Confirm assigned cells show one compact left-aligned card per permanent job, with its
-   exact queue priority and compact work label such as `Hauling...` or
-   `Operating...`. Give one member `Hauling to` and `Operating machine` jobs for
-   the same station and confirm they appear on separate rows. Confirm the cell
-   tooltip retains the full order text. Confirm light gray, 33%-opaque divider
-   lines separate the station columns in both the frozen header and scrolling
-   matrix. Confirm the cell also shows the worker's station-relevant
-   permanent base skill, including a value of 1 or below and a skill outside
-   the top three. If a disposable test queue has more than five jobs for one
-   station, confirm the cell shows `+N more jobs` and its tooltip still lists
-   every job. Empty cells remain empty. Hover a
-   cell and confirm the tooltip includes exact job text, station, priority,
-   squad, relevant skill/value, and blocking status. Hover a station header
-   and confirm its column and matching row highlight. Find a player-owned work
-   station that no readable loaded queue references. Confirm its column still
-   appears, every assignment cell is empty, and its header says `UNASSIGNED`.
-9. Give loaded members the generic Engineer, Medic, Robotics, and Rescue jobs.
-   Confirm all four remain visible on Squad Jobs and in each worker's total job
-   count, but none creates a Stations column or assignment cell. If the same
-   target also has a station-specific job, confirm only that specific job is
-   shown in the cell.
-10. Short-click a station header, empty cell, or assignment card. Confirm it
-   selects/highlights only the column. Drag one assignment card to a different
-   loaded member's roster row, then repeat using a matrix cell in that member's
-   row. Confirm the exact source job is appended to the destination queue with
-   the same station target, then removed from the source. Confirm the complete
-   destination row/cells highlight green while hovered. After a fully verified
-   successful transfer, confirm only the source and destination rows change:
-   station columns, scan progress/banner, filters, collapsed squads, scroll
-   positions, header widgets, and selection must not reset or visibly rebuild.
-   A same-member drop,
-   unreadable queue, duplicate task type plus target, or drop outside a member
-   row must make no change and show a nonblocking status. Jobs OFF, dead, and
-   unconscious members remain valid when their live queue is readable.
-11. During a station-card drag, switch tabs, close the window, press Esc, and
-   attempt wheel scrolling. Confirm the drag cancels, capture clears, no widget
-   is destroyed during its callback, and no mutation occurs. In a disposable
-   test, change either queue before the deferred action runs and confirm the
-   full-fingerprint check cancels the move. If source removal is forced to
-   fail after a verified destination add, confirm the duplicate remains and
-   the partial-failure status is explicit; there is no rollback.
-   Make a separate queue change through Kenshi's vanilla controls after the
-   transfer completes. Confirm that this external change uses the normal full
-   projection refresh path, while the successful manager transfer did not
-   restart the target scan or reset the board state.
-12. Test vertical member scrolling and horizontal station scrolling. Confirm
-    the roster and headers stay frozen and that scrolling remains usable with
-    more rows and columns than fit on screen. Drag a station header or the
-    gap between headers left and right. Confirm the matrix and scrollbar move,
-    newly exposed columns remain visible during a normal full-width drag, the
-    drag does not select a station, and a short click still selects one.
-    Open/close the tab repeatedly
-    and watch `RE_Kenshi_log.txt` for widget growth or access violations.
-13. Disable and re-enable skills and station categories in `Options`. Confirm
-    the page has clearly marked `CHARACTER SKILL FILTERS` and `STATION CATEGORY
-    FILTERS`, both tabs open the same page, filters save immediately, and
-    filters rebuild only the display. Restore the documented default categories
-    (Crafting, Refining, Farming, Mining, Research, Other / Unclassified).
-14. If a station target read fails, confirm target resolution continues and
-    shows a red incomplete warning with the failed-target count. Use a stress
-    save if possible to reach 2,048 unique stations; confirm the pass stops and
-    shows `Player station result list truncated at 2,048`. Record the target
-    count, station count, warning text, and whether any later target was skipped
-    unexpectedly.
+   `Stations` and confirm the tab does not change the current squad or selected
+   character. Confirm Stations contains a grouped card grid, not a member
+   roster, and has no station drag-to-transfer affordance.
+2. Confirm the first click on `Stations` causes one short input pause and then
+   opens a fully populated grid. Cards must not stream in afterward. Confirm
+   each guarded call resolves only one copied ownership record or exact assigned
+   target, normalized results append internally in batches of at most 16, and
+   the visible grid is built once after the bounded pass. Inspect the completion
+   log for candidate count and elapsed milliseconds. An extreme ownership list
+   may take longer than one frame; it must remain finite and must not retain an
+   engine pointer between candidates. Change a queue on Squad Jobs and confirm
+   no hidden scan pause occurs; the board refreshes synchronously on the next
+   Stations click.
+3. Test the source gate. Verified player-owned workstations may appear, but
+   walls, lights, chairs, public/city buildings, and other objects accepted
+   only through a generic default task must not appear. An assigned natural
+   resource node may appear as the one explicit non-owned exception. An assigned
+   unknown player target may remain `Other / Unclassified`. An unavailable
+   assigned target must remain red on Squad Jobs, be omitted from Stations, and
+   increment the failed-target warning. Destroyed, incomplete, unpowered,
+   broken, disabled, and dismantling assigned targets remain visible with their
+   blocking status when their live target is readable. A readable destroyed
+   station remains visible and red, shows assignment as unsupported in the
+   available-worker pane, and still permits removal of verified existing
+   assignments. An unloaded ownership record is
+   omitted without one red error per record.
+4. Confirm the nine categories are `Crafting`, `Refining`, `Farming`, `Mining`,
+   `Research`, `Training`, `Storage / Hauling`, `Defense`, and `Other /
+   Unclassified`. Each category header shows `+` or `-`, its station count, and
+   its unassigned count. Collapse several categories, switch tabs, close and
+   reopen the manager, and reload the save; confirm the documented collapse
+   preference persists. Within every expanded category, unassigned cards come
+   first, then exact names sort case-insensitively alphabetically.
+5. Confirm each card shows the exact station name, including a rename-mod name,
+   a translucent stable category/subtype icon, the number of unique assigned
+   people or a large red `X`, and a red status only when the station cannot work.
+   Confirm a usable unassigned station has a thin yellow outline. A recent blue
+   change marker temporarily takes priority; the yellow outline returns when
+   the detail modal closes. Leave several powered benches idle in a base with
+   adequate power and confirm they do not show `NO POWER`. Give an active
+   consumer unmet demand and confirm `NO POWER` is red; manually switch a
+   consumer off and confirm `POWER OFF` is red. Structural faults remain red
+   even when nobody is assigned.
+   The area must appear on cards and detail summaries only when more than one
+   area exists. Test a renamed material-output station and special benches:
+   copper ore, iron ore, UWE copper plates when UWE is loaded, iron plates,
+   steel bars, copper alloy plates, electronics, crossbows, and skeleton limbs
+   use stable subtype icons. Renaming one must not change its icon; unknown or
+   modded identities fall back to the broad category icon.
+6. Disable and re-enable station categories in `Options`. Confirm category
+   filters rebuild only the display, while Squad Jobs remains complete.
+   Confirm the category and unassigned counts update with the visible filtered
+   cards. Enable `Training` and `Defense`; confirm a player-owned training dummy
+   appears under Training and a player-owned double-barrel harpoon turret appears
+   under Defense without any per-skill setting. Restore the documented defaults
+   (Crafting, Refining, Farming, Mining, Research, Other / Unclassified).
+7. Give loaded members the generic Engineer, Medic, Robotics, and Rescue jobs.
+   Confirm all four remain visible on Squad Jobs and count in each worker's
+   total jobs, but none creates a Stations card or assigned person. If the same
+   target also has a station-specific job, only that station-specific job is
+   represented.
+8. Click a station card. Confirm the manager remains open and a centered modal
+   opens with exact name, category, conditional area, relevant skill, and
+   blocking status. Its interior must be fully opaque; the station grid and
+   game world must not show through it. `MyGUI.log` must not add a new
+   `Modal widget must be root`.
+   Confirm the modal is wider and keeps assigned workers on the left and
+   available workers on the right. Portraits must occupy a fixed column without
+   covering text. Normal title, summary, header, and worker text must be pure
+   white. Assigned people appear once per worker. Confirm ordinary stations
+   sort both panes by relevant skill from highest to lowest. Confirm Training
+   stations reverse both panes and sort from lowest to highest. Known values
+   remain ahead of unknown values; ties use total permanent jobs, then name.
+   Give one worker both a non-hauling
+   exact-target station job and `OPERATE_STORAGE` hauling: hide only that
+   redundant hauling row for that worker. A hauling job without the same
+   worker's non-hauling exact target remains represented. Never hide hauling
+   globally or for a different target.
+9. Confirm the always-visible right pane contains every loaded, readable player
+   character not already assigned, including characters from other loaded
+   squads. Each entry shows name, relevant skill/value, and total jobs using the
+   same sort order. Scroll the two panes independently with their scrollbars and
+   mouse wheel. An unloaded, cached, or unreadable station cannot be selected
+   for a mutation. An unsupported assignment contract replaces candidates with
+   an explicit unsupported message instead of guessing a task, while verified
+   existing assignments remain removable.
+10. Click an add candidate and repeat with keyboard `Enter`. Each action must
+    be immediate from the player's perspective, with no Apply button and no
+    undo. Verify the full queue and exact live station immediately before the
+    native call. A supported ordinary station adds the expected one permanent
+    job. An automatic-machine station uses Kenshi's native operation-plus-
+    hauling bundle and the manager verifies the expected two-row suffix.
+    Storage `LOOT_TARGET` defaults normalize to `OPERATE_STORAGE`. Duplicate
+    exact jobs, unsupported stations, stale queues, full queues, invalid
+    handles, or load transitions must fail closed and report no unsafe change.
+11. Right-click an assigned person. Confirm the action immediately requests
+    removal of all permanent station jobs whose target is that exact station
+    for that exact worker, including multiple rows. It must not remove jobs for
+    another target or another worker. Verify the full queue before each native
+    removal, remove from the end, and check each before/after queue. Force a
+    stale queue or removal failure if possible; the action must stop, report the
+    verified partial result, and leave remaining rows for review. There is no
+    Apply step and no undo.
+12. After a verified add and a verified removal, confirm only the affected
+    station card, detail list, category station/unassigned counts, and worker
+    cache update. Do not restart the candidate pass or rebuild unrelated
+    categories. Keep the card's position frozen while its modal is open. Show
+    blue recent-change feedback on the affected card/detail entry. Close the
+    modal and confirm normal unassigned-first/alphabetical ordering resumes.
+    Make an external queue change through Kenshi and confirm that only this
+    external/stale path uses the normal fail-closed full projection refresh.
+13. Scroll each detail pane with its wheel region and scrollbar. Confirm one
+    pane does not move the other and scrolling never assigns or removes a
+    worker. Press `Enter` on a focused available candidate and
+    confirm it commits immediately. Close the modal with its close control and
+    `Esc`; confirm the grid returns with its category collapse and card order.
+    Open and close the tab repeatedly while watching `RE_Kenshi_log.txt` for
+    widget growth, access violations, or stale-pointer errors.
+14. If a station target read fails, confirm later candidates still resolve and
+    the banner reports the failed-target count. Use a stress save if possible to
+    reach 2,048 unique stations; confirm the pass stops at the cap and records
+    truncation. Record candidate count, published station count, category and
+    unassigned counts, warning text, and whether any later target was skipped.
 
 ## Live refresh, native pause/speed, and TAB
 
@@ -461,7 +493,8 @@ Include:
 - active UI/AI mods;
 - save-backup name and whether the save was disposable;
 - current squad members and their loaded/cached state;
-- each member's displayed stats and enabled Options preference;
+- each member's displayed top-three supported stats and station-category
+  Options preference;
 - pause state and game speed before open, on open, and after close;
 - whether the user changed pause/speed while the manager was open;
 - exact queue before the action, including each job and target label;
@@ -473,12 +506,17 @@ Include:
 - whether the vanilla panel and custom panel agreed;
 - Stations tab target count, completion state, station count, failed-target
   count, truncation state, and every visible warning;
-- loaded squads/members shown in the station matrix, collapsed/unavailable
-  groups, omitted unavailable targets, renamed station names, filters, and
-  assignment priority cells tested;
-- station-card transfer source/destination names, task, exact station target,
-  both preflight fingerprints, and final queue result; also confirm all other
-  station-tab input did not change Jobs state, station state, or camera;
+- station categories, persistent collapse state, station/unassigned counts,
+  unassigned-first/alphabetical card order, omitted unavailable targets,
+  renamed station names, filters, conditional areas, icons, and blocking cards;
+- station detail name, assigned-person sort, hauling suppression case,
+  assigned-left/available-right pane entries and independent scrolling
+  (name/skill/value/total jobs), exact target,
+  normalized task, automatic operation-plus-hauling bundle, right-click
+  exact-target removal result, partial failures, blue recent-change feedback,
+  and localized projection updates; also confirm other station-tab input did
+  not change Jobs state, unrelated cards, or camera;
 - relevant `RE_Kenshi_log.txt` lines;
-- whether save/reload/reinstall/update preserved the Options preference;
+- whether save/reload/reinstall/update preserved the station-category Options
+  preference;
 - whether save/reload preserved the queue result.

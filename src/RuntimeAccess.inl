@@ -1,51 +1,51 @@
 // SPDX-License-Identifier: GPL-3.0-only
     const SkillDefinition SKILL_DEFINITIONS[] =
     {
-        { STAT_STRENGTH,        "Strength",           "Attributes", false },
-        { STAT_TOUGHNESS,       "Toughness",          "Attributes", false },
-        { STAT_DEXTERITY,       "Dexterity",          "Attributes", false },
-        { STAT_PERCEPTION,      "Perception",         "Attributes", false },
+        { STAT_STRENGTH,        "Strength" },
+        { STAT_TOUGHNESS,       "Toughness" },
+        { STAT_DEXTERITY,       "Dexterity" },
+        { STAT_PERCEPTION,      "Perception" },
 
-        { STAT_KATANAS,         "Katanas",            "Weapons", false },
-        { STAT_SABRES,          "Sabres",             "Weapons", false },
-        { STAT_HACKERS,         "Hackers",            "Weapons", false },
-        { STAT_HEAVYWEAPONS,    "Heavy weapons",      "Weapons", false },
-        { STAT_BLUNT,           "Blunt",              "Weapons", false },
-        { STAT_POLEARMS,        "Polearms",           "Weapons", false },
+        { STAT_KATANAS,         "Katanas" },
+        { STAT_SABRES,          "Sabres" },
+        { STAT_HACKERS,         "Hackers" },
+        { STAT_HEAVYWEAPONS,    "Heavy weapons" },
+        { STAT_BLUNT,           "Blunt" },
+        { STAT_POLEARMS,        "Polearms" },
 
-        { STAT_MELEE_ATTACK,    "Melee attack",       "Combat", false },
-        { STAT_MELEE_DEFENCE,   "Melee defence",      "Combat", false },
-        { STAT_DODGE,           "Dodge",              "Combat", false },
-        { STAT_MARTIALARTS,     "Martial arts",       "Combat", false },
-        { STAT_WEAPONS,         "Weapons",             "Combat", false },
-        { STAT_MASSCOMBAT,      "Mass combat",         "Combat", false },
+        { STAT_MELEE_ATTACK,    "Melee attack" },
+        { STAT_MELEE_DEFENCE,   "Melee defence" },
+        { STAT_DODGE,           "Dodge" },
+        { STAT_MARTIALARTS,     "Martial arts" },
+        { STAT_WEAPONS,         "Weapons" },
+        { STAT_MASSCOMBAT,      "Mass combat" },
 
-        { STAT_TURRETS,         "Turrets",            "Ranged", false },
-        { STAT_CROSSBOWS,       "Crossbows",          "Ranged", false },
-        { STAT_FRIENDLY_FIRE,   "Precision shooting", "Ranged", false },
+        { STAT_TURRETS,         "Turrets" },
+        { STAT_CROSSBOWS,       "Crossbows" },
+        { STAT_FRIENDLY_FIRE,   "Precision shooting" },
 
-        { STAT_STEALTH,         "Stealth",            "Thievery", false },
-        { STAT_LOCKPICKING,     "Lockpicking",        "Thievery", false },
-        { STAT_THIEVING,        "Thievery",           "Thievery", false },
-        { STAT_ASSASSINATION,   "Assassination",      "Thievery", false },
+        { STAT_STEALTH,         "Stealth" },
+        { STAT_LOCKPICKING,     "Lockpicking" },
+        { STAT_THIEVING,        "Thievery" },
+        { STAT_ASSASSINATION,   "Assassination" },
 
-        { STAT_ATHLETICS,       "Athletics",          "Athletics", false },
-        { STAT_SWIMMING,        "Swimming",           "Athletics", false },
-        { STAT_SURVIVAL,        "Survival",           "Athletics", false },
+        { STAT_ATHLETICS,       "Athletics" },
+        { STAT_SWIMMING,        "Swimming" },
+        { STAT_SURVIVAL,        "Survival" },
 
-        { STAT_MEDIC,           "Field medic",        "Sciences", true },
-        { STAT_HIVEMEDIC,       "Hive medic",         "Sciences", true },
-        { STAT_VET,             "Veterinary",         "Sciences", true },
-        { STAT_ENGINEERING,     "Engineer",           "Sciences", true },
-        { STAT_ROBOTICS,        "Robotics",           "Sciences", true },
-        { STAT_SCIENCE,         "Science",            "Sciences", true },
-        { STAT_FARMING,         "Farming",            "Sciences", true },
-        { STAT_COOKING,         "Cooking",            "Sciences", true },
+        { STAT_MEDIC,           "Field medic" },
+        { STAT_HIVEMEDIC,       "Hive medic" },
+        { STAT_VET,             "Veterinary" },
+        { STAT_ENGINEERING,     "Engineer" },
+        { STAT_ROBOTICS,        "Robotics" },
+        { STAT_SCIENCE,         "Science" },
+        { STAT_FARMING,         "Farming" },
+        { STAT_COOKING,         "Cooking" },
 
-        { STAT_SMITHING_WEAPON, "Weapon smith",       "Trades", true },
-        { STAT_SMITHING_ARMOUR, "Armour smith",       "Trades", true },
-        { STAT_SMITHING_BOW,    "Crossbow smith",     "Trades", true },
-        { STAT_LABOURING,       "Labouring",          "Trades", true }
+        { STAT_SMITHING_WEAPON, "Weapon smith" },
+        { STAT_SMITHING_ARMOUR, "Armour smith" },
+        { STAT_SMITHING_BOW,    "Crossbow smith" },
+        { STAT_LABOURING,       "Labouring" }
     };
 
     const size_t SKILL_DEFINITION_COUNT =
@@ -653,11 +653,6 @@
         for (size_t index = 0; index < SKILL_DEFINITION_COUNT; ++index)
         {
             const SkillDefinition& definition = SKILL_DEFINITIONS[index];
-            if (!g_skillEnabled[definition.stat])
-            {
-                continue;
-            }
-
             float raw = 0.0f;
             std::string name;
             if (!TryGetStatValue(character, definition.stat, &raw, &name))
@@ -1251,6 +1246,225 @@
         }
     }
 
+    bool NormalizeStationTaskScalars(
+        BuildingClassType classType,
+        BuildingFunction function,
+        TaskType nativeTask,
+        TaskType* taskOut,
+        bool* automaticBundleOut)
+    {
+        if (taskOut == NULL || automaticBundleOut == NULL)
+        {
+            return false;
+        }
+        *taskOut = NULL_TASK;
+        *automaticBundleOut = false;
+
+        const bool storage =
+            classType == BCTYPE_STORAGE ||
+            function == BF_RESOURCE_STORAGE ||
+            function == BF_GENERAL_STORAGE;
+        const bool training = function == BF_TRAINING;
+        const bool turret =
+            classType == BCTYPE_TURRET || function == BF_TURRET;
+
+        // These task types are themselves the stable production contract.
+        // Accept them for modded usable buildings even when the class or
+        // special-function metadata is generic.
+        if (nativeTask == OPERATE_MACHINERY)
+        {
+            *taskOut = OPERATE_MACHINERY;
+            return true;
+        }
+        if (nativeTask == OPERATE_AUTOMATIC_MACHINERY)
+        {
+            *taskOut = OPERATE_AUTOMATIC_MACHINERY;
+            *automaticBundleOut = true;
+            return true;
+        }
+        if (storage &&
+            (nativeTask == LOOT_TARGET || nativeTask == OPERATE_STORAGE))
+        {
+            // StorageBuilding::getDefaultTask can report LOOT_TARGET even
+            // though Kenshi's permanent hauling job is OPERATE_STORAGE.
+            *taskOut = OPERATE_STORAGE;
+            return true;
+        }
+        if (training && nativeTask == USE_TRAINING_DUMMY)
+        {
+            *taskOut = USE_TRAINING_DUMMY;
+            return true;
+        }
+        if (turret &&
+            (nativeTask == MAN_A_TURRET || nativeTask == USE_TURRET))
+        {
+            *taskOut = nativeTask;
+            return true;
+        }
+
+        // Do not pass an unknown building default through to addJob. A mod
+        // can expose a valid task which is not safe as a permanent station
+        // assignment.
+        return false;
+    }
+
+    bool StationActionHandleMatchesIdentity(
+        const hand& value,
+        const HandleIdentity& identity)
+    {
+        return identity.valid &&
+            value.type == identity.type &&
+            value.container == identity.container &&
+            value.containerSerial == identity.containerSerial &&
+            value.index == identity.index && value.serial == identity.serial;
+    }
+
+    bool IsStationActionPlayerManaged(
+        Building* building,
+        bool allowAssignedNaturalException)
+    {
+        if (building == NULL)
+        {
+            return false;
+        }
+        if (building->isThePlayer())
+        {
+            return true;
+        }
+        return allowAssignedNaturalException &&
+            building->getSpecialFunction() == BF_MINE_NATURAL;
+    }
+
+    __declspec(noinline) bool TryValidateStationActionTargetIdentity(
+        const HandleIdentity& station)
+    {
+        __try
+        {
+            if (!station.valid || station.type != BUILDING)
+            {
+                return false;
+            }
+            const hand stationHandle = RestoreHandleIdentity(station);
+            if (!stationHandle || !stationHandle.isValid())
+            {
+                return false;
+            }
+            Building* building = stationHandle.getBuilding();
+            if (building == NULL ||
+                !StationActionHandleMatchesIdentity(
+                    building->getHandle(), station) ||
+                !IsStationActionPlayerManaged(building, true))
+            {
+                return false;
+            }
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    enum StationAddJobResult
+    {
+        STATION_ADD_INVALID_TARGET,
+        STATION_ADD_UNSUPPORTED_TASK,
+        STATION_ADD_QUEUE_FULL,
+        STATION_ADD_CALLED,
+        STATION_ADD_FAULTED
+    };
+
+    __declspec(noinline) StationAddJobResult
+    TryResolveAndAddStationJobOnce(
+        const HandleIdentity& member,
+        const HandleIdentity& station,
+        size_t queueRowCount,
+        bool allowAssignedNaturalException,
+        TaskType* normalizedTaskOut,
+        bool* automaticBundleOut)
+    {
+        if (normalizedTaskOut == NULL || automaticBundleOut == NULL)
+        {
+            return STATION_ADD_INVALID_TARGET;
+        }
+        *normalizedTaskOut = NULL_TASK;
+        *automaticBundleOut = false;
+
+        bool addWasCalled = false;
+        __try
+        {
+            if (!member.valid || member.type != CHARACTER ||
+                !station.valid || station.type != BUILDING)
+            {
+                return STATION_ADD_INVALID_TARGET;
+            }
+            const hand memberHandle = RestoreHandleIdentity(member);
+            const hand stationHandle = RestoreHandleIdentity(station);
+            if (!memberHandle || !memberHandle.isValid() ||
+                !stationHandle || !stationHandle.isValid())
+            {
+                return STATION_ADD_INVALID_TARGET;
+            }
+            Character* character = memberHandle.getCharacter();
+            Building* building = stationHandle.getBuilding();
+            if (character == NULL || building == NULL ||
+                !character->isPlayerCharacter() ||
+                !StationActionHandleMatchesIdentity(
+                    character->getHandle(), member) ||
+                !StationActionHandleMatchesIdentity(
+                    building->getHandle(), station) ||
+                !IsStationActionPlayerManaged(
+                    building, allowAssignedNaturalException))
+            {
+                return STATION_ADD_INVALID_TARGET;
+            }
+            Faction* faction = character->getFaction();
+            if (faction == NULL || !faction->isThePlayer())
+            {
+                return STATION_ADD_INVALID_TARGET;
+            }
+            // Keep destroyed stations readable so existing exact jobs can be
+            // cleaned up, but never send a new job to one.
+            if (building->isDestroyed())
+            {
+                return STATION_ADD_INVALID_TARGET;
+            }
+
+            const BuildingClassType classType = building->getBuildingClass();
+            const BuildingFunction function = building->getSpecialFunction();
+            const TaskType nativeTask = building->getDefaultTask();
+            if (!NormalizeStationTaskScalars(
+                    classType, function, nativeTask,
+                    normalizedTaskOut, automaticBundleOut))
+            {
+                return STATION_ADD_UNSUPPORTED_TASK;
+            }
+            const size_t maximumAddedRows = *automaticBundleOut ? 2 : 1;
+            if (queueRowCount + maximumAddedRows >
+                static_cast<size_t>(MAX_SAFE_JOB_ROWS))
+            {
+                return STATION_ADD_QUEUE_FULL;
+            }
+
+            const Ogre::Vector3 position = building->getPosition();
+            // Call exactly once. Kenshi can append OPERATE_STORAGE as the
+            // native secondary job for OPERATE_AUTOMATIC_MACHINERY.
+            addWasCalled = true;
+            character->addJob(
+                *normalizedTaskOut, building, true, true, position);
+            character->reThinkCurrentAIAction();
+            return STATION_ADD_CALLED;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            // The caller must reacquire and inspect the whole queue when the
+            // fault happened after addJob was entered; the mutation can have
+            // completed before a later engine operation faulted.
+            return addWasCalled ?
+                STATION_ADD_FAULTED : STATION_ADD_INVALID_TARGET;
+        }
+    }
+
     void TryNotifyVanillaSelectionUI()
     {
         if (g_playerInterface == NULL)
@@ -1355,19 +1569,6 @@
         return TrySkipDeadCurrentSquad();
     }
 
-    void ResetDefaultSkills()
-    {
-        for (int index = 0; index < STAT_END; ++index)
-        {
-            g_skillEnabled[index] = false;
-        }
-        for (size_t index = 0; index < SKILL_DEFINITION_COUNT; ++index)
-        {
-            g_skillEnabled[SKILL_DEFINITIONS[index].stat] =
-                SKILL_DEFINITIONS[index].defaultEnabled;
-        }
-    }
-
     bool EnsureSettingsPath()
     {
         if (!g_settingsPath.empty())
@@ -1393,45 +1594,6 @@
             GetLastError() == ERROR_ALREADY_EXISTS;
         g_settingsPath = directory + "\\settings.ini";
         return directoryReady;
-    }
-
-    void LoadSkillSettings()
-    {
-        if (g_settingsLoaded)
-        {
-            return;
-        }
-        ResetDefaultSkills();
-        EnsureSettingsPath();
-
-        for (size_t index = 0; index < SKILL_DEFINITION_COUNT; ++index)
-        {
-            char key[32] = { 0 };
-            std::sprintf(key, "Stat_%d", static_cast<int>(SKILL_DEFINITIONS[index].stat));
-            const int fallback = SKILL_DEFINITIONS[index].defaultEnabled ? 1 : 0;
-            g_skillEnabled[SKILL_DEFINITIONS[index].stat] =
-                GetPrivateProfileIntA("Skills", key, fallback, g_settingsPath.c_str()) != 0;
-        }
-        g_settingsLoaded = true;
-    }
-
-    bool SaveSkillSettings()
-    {
-        bool success = EnsureSettingsPath();
-        for (size_t index = 0; index < SKILL_DEFINITION_COUNT; ++index)
-        {
-            char key[32] = { 0 };
-            std::sprintf(key, "Stat_%d", static_cast<int>(SKILL_DEFINITIONS[index].stat));
-            if (WritePrivateProfileStringA(
-                    "Skills",
-                    key,
-                    g_skillEnabled[SKILL_DEFINITIONS[index].stat] ? "1" : "0",
-                    g_settingsPath.c_str()) == FALSE)
-            {
-                success = false;
-            }
-        }
-        return success;
     }
 
     bool TryCaptureAndPauseGame()

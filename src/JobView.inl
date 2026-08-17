@@ -785,9 +785,10 @@
         bool statKnown = false;
         bool natural = false;
         bool relevant = false;
+        bool assignmentSupported = false;
         if (!TryClassifyStationBuilding(
                 building, categoryOut, &stat, &statKnown,
-                &natural, &relevant))
+                &natural, &relevant, &assignmentSupported))
         {
             *categoryOut = STATION_OTHER;
             *visualSubtypeOut = STATION_VISUAL_DEFAULT;
@@ -798,11 +799,12 @@
         return true;
     }
 
-    void ApplyJobStationCategoryArtwork(
+    bool ApplyJobStationCategoryArtwork(
         const HandleIdentity& target,
         StationCategory category,
         StationVisualSubtype visualSubtype)
     {
+        bool targetUsedBySquadJob = false;
         const size_t memberCount = std::min(
             g_memberWidgets.size(), g_squad.members.size());
         for (size_t memberIndex = 0; memberIndex < memberCount; ++memberIndex)
@@ -813,8 +815,12 @@
                 widgets.cards.size(), member.jobs.size());
             for (size_t slot = 0; slot < cardCount; ++slot)
             {
-                if (!SameHandleIdentity(member.jobs[slot].target, target) ||
-                    widgets.cards[slot].categoryIcon == NULL ||
+                if (!SameHandleIdentity(member.jobs[slot].target, target))
+                {
+                    continue;
+                }
+                targetUsedBySquadJob = true;
+                if (widgets.cards[slot].categoryIcon == NULL ||
                     widgets.cards[slot].categoryOverlay == NULL)
                 {
                     continue;
@@ -826,6 +832,7 @@
                     visualSubtype);
             }
         }
+        return targetUsedBySquadJob;
     }
 
     void TickJobStationCategoryCache()
@@ -838,6 +845,16 @@
         g_jobStationCategoryPending.erase(g_jobStationCategoryPending.begin());
         StationCategory category = STATION_OTHER;
         StationVisualSubtype visualSubtype = STATION_VISUAL_DEFAULT;
+        // The Stations pass may have resolved this target while the hidden
+        // Squad artwork queue was paused. Reuse that value snapshot instead
+        // of performing a second live-building lookup after scanning ends.
+        if (TryGetCachedJobStationCategory(
+                target, &category, &visualSubtype))
+        {
+            ApplyJobStationCategoryArtwork(
+                target, category, visualSubtype);
+            return;
+        }
         // A queue target can be unavailable even though its permanent job is
         // still editable.  Give that card the neutral Other artwork instead
         // of leaving it iconless or retrying an engine lookup every frame.
@@ -853,6 +870,24 @@
     void SyncJobStationArtworkFromSnapshot(
         const StationTargetSnapshot& station)
     {
+        // A scanner snapshot supersedes any queued live lookup for the same
+        // target. Remove all matches now so reopening Squad Jobs cannot repeat
+        // work that the guarded station pass already completed.
+        for (size_t pendingIndex = 0;
+             pendingIndex < g_jobStationCategoryPending.size();)
+        {
+            if (SameHandleIdentity(
+                    g_jobStationCategoryPending[pendingIndex],
+                    station.identity))
+            {
+                g_jobStationCategoryPending.erase(
+                    g_jobStationCategoryPending.begin() + pendingIndex);
+            }
+            else
+            {
+                ++pendingIndex;
+            }
+        }
         bool found = false;
         for (size_t index = 0; index < g_jobStationCategoryCache.size(); ++index)
         {
@@ -867,7 +902,9 @@
             found = true;
             break;
         }
-        if (!found && station.identity.valid &&
+        const bool targetUsedBySquadJob = ApplyJobStationCategoryArtwork(
+            station.identity, station.category, station.visualSubtype);
+        if (!found && targetUsedBySquadJob && station.identity.valid &&
             station.identity.type == BUILDING)
         {
             JobStationCategoryCacheEntry entry;
@@ -876,8 +913,6 @@
             entry.visualSubtype = station.visualSubtype;
             g_jobStationCategoryCache.push_back(entry);
         }
-        ApplyJobStationCategoryArtwork(
-            station.identity, station.category, station.visualSubtype);
     }
 
     void ClearJobStationCategoryCache()
@@ -941,7 +976,7 @@
         }
         if (member.skills.empty())
         {
-            return "No enabled stats above 1";
+            return "No stats above 1";
         }
 
         std::ostringstream caption;

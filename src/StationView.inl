@@ -1,125 +1,90 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Read-only, virtualized Stations matrix.
+// Category-grouped, virtualized Stations card grid.
 //
-// Integration contract
-// --------------------
-// Include this file inside the plug-in's anonymous namespace after JobView.inl
-// and JobActions.inl.  StationScanner.inl must define these value types first:
-//
-// StationScanState
-//   bool started, complete, truncated, rosterIncomplete;
-//   size_t targetsCompleted, targetsFailed, nextTarget;
-//   bool ownershipCopyTruncated, ownershipResolutionIncomplete;
-//   std::vector<StationOwnedHandRecord> ownedBuildingRecords;
-//   std::vector<hand> assignedTargetHandles;
-//   std::vector<std::string> errors;
-//   std::vector<StationTargetSnapshot> stations; // already display sorted
-//   std::vector<StationSquadSnapshot> squads;    // Kenshi vanilla squad order
-//
-// StationSquadSnapshot
-//   HandleIdentity identity; std::string name; bool loaded;
-//   int unavailableMemberCount;
-//   std::vector<StationMemberSnapshot> members;  // Kenshi vanilla member order
-//
-// StationMemberSnapshot
-//   HandleIdentity identity; hand handle; std::string name, condition;
-//   bool loaded, queueAvailable, jobsEnabled;
-//   int permanentJobCount;
-//   std::vector<SkillValue> topSkills;           // filtered top three
-//
-// StationTargetSnapshot
-//   HandleIdentity identity;
-//   std::string areaName, name, relevantSkillName, blockingStatus;
-//   StationCategory category; bool relevantSkillKnown, blocking;
-//   std::vector<StationAssignmentSnapshot> assignments;
-//
-// StationAssignmentSnapshot
-//   HandleIdentity member; int priority, relevantSkillValue;
-//   std::string jobLabel, squadName;
-//
-// IsStationCategoryEnabled(category), g_skillEnabled and
-// GetStationVisualIconResource(category, subtype) must be available.  The view applies
-// both filters and always controls unknown-skill stations through the
-// Other/Unclassified category checkbox.  Scanner code owns the 2,048-target
-// cap and sets truncated when it is reached.
-//
-// The owner calls CreateStationView(), SetStationBoardSnapshot(),
-// SetStationViewVisible(), and DestroyStationView().  RefreshStationView()
-// may be called after an assignment/filter update without resetting scroll,
-// collapsed squads, or the selected column. Queue mutations are never made in
-// a MyGUI callback. Assignment-card drops only enqueue a validated move for
-// the manager's next update tick.
+// This file is included in the plug-in anonymous namespace after the station
+// scanner and settings helpers.  It is deliberately a projection only: a
+// MyGUI callback never changes an engine queue.  Add/remove callbacks pass
+// stable HandleIdentity values to the manager for deferred validation.
 
-    const int STATION_HEADER_HEIGHT = 132;
-    const int STATION_AREA_BAND_HEIGHT = 23;
-    const int STATION_CATEGORY_BAND_HEIGHT = 23;
-    const int STATION_CARD_HEIGHT =
-        STATION_HEADER_HEIGHT - STATION_AREA_BAND_HEIGHT -
-        STATION_CATEGORY_BAND_HEIGHT;
-    const int STATION_COLUMN_WIDTH = 154;
-    const int STATION_COLUMN_GAP = 4;
-    const int STATION_COLUMN_STRIDE = STATION_COLUMN_WIDTH + STATION_COLUMN_GAP;
-    const int STATION_SQUAD_ROW_HEIGHT = 30;
+    void RequestAddStationAssignment(
+        const HandleIdentity& station,
+        const HandleIdentity& member);
+    void RequestRemoveStationAssignment(
+        const HandleIdentity& station,
+        const HandleIdentity& member);
+
+    const int STATION_GRID_BANNER_HEIGHT = 38;
+    const int STATION_GRID_SCROLL_SIZE = 20;
+    const int STATION_GRID_GROUP_HEADER_HEIGHT = 34;
+    const int STATION_GRID_CARD_WIDTH = 214;
+    const int STATION_GRID_CARD_HEIGHT = 128;
+    const int STATION_GRID_GAP = 10;
+    const int STATION_GRID_SIDE_PAD = 8;
+    const int STATION_GRID_OVERSCAN = STATION_GRID_CARD_HEIGHT;
+    const int STATION_DETAIL_ROW_HEIGHT = 48;
+    // JobWindow also uses these two historic sizing constants when it chooses
+    // a safe minimum client size.  Keep them as view-interface constants even
+    // though the matrix rows no longer exist.
+    const int STATION_HEADER_HEIGHT = STATION_GRID_CARD_HEIGHT;
     const int STATION_MEMBER_ROW_HEIGHT = 116;
-    const int STATION_UNAVAILABLE_ROW_HEIGHT = 28;
-    const int STATION_OVERSCAN = 1;
 
-    enum StationRosterRowKind
+    struct StationGridGroup
     {
-        STATION_ROSTER_SQUAD,
-        STATION_ROSTER_MEMBER,
-        STATION_ROSTER_UNAVAILABLE
-    };
-
-    struct StationRosterRow
-    {
-        StationRosterRowKind kind;
-        size_t squadIndex;
-        size_t memberIndex;
+        StationCategory category;
         int top;
         int height;
+        int unassignedCount;
+        std::vector<size_t> stations;
 
-        StationRosterRow() :
-            kind(STATION_ROSTER_SQUAD), squadIndex(0), memberIndex(0),
-            top(0), height(0)
+        StationGridGroup() :
+            category(STATION_OTHER), top(0), height(0), unassignedCount(0)
         {
         }
     };
 
-    struct StationVisibleWidget
+    struct StationDetailPerson
     {
-        MyGUI::Widget* root;
-        MyGUI::Widget* outlineTop;
-        MyGUI::Widget* outlineBottom;
-        MyGUI::Widget* outlineLeft;
-        MyGUI::Widget* outlineRight;
-        int rowIndex;
-        int stationIndex;
+        HandleIdentity identity;
+        std::string name;
+        int relevantSkill;
+        bool relevantSkillKnown;
+        int totalJobs;
 
-        StationVisibleWidget() :
-            root(NULL), outlineTop(NULL), outlineBottom(NULL),
-            outlineLeft(NULL), outlineRight(NULL), rowIndex(-1),
-            stationIndex(-1)
+        StationDetailPerson() :
+            relevantSkill(0), relevantSkillKnown(false), totalJobs(0)
         {
         }
     };
 
-    struct StationAssignmentDragState
+    struct StationGridCardBinding
     {
-        bool armed;
-        bool active;
-        MyGUI::IntPoint pressPoint;
-        HandleIdentity sourceMember;
-        HandleIdentity stationTarget;
-        JobRowSnapshot job;
-        std::vector<JobRowSnapshot> sourceSequence;
-        int sourceRow;
-        int sourceStation;
-        int destinationRow;
+        HandleIdentity identity;
+        MyGUI::Button* card;
+        MyGUI::Widget* tint;
+        MyGUI::Widget* unassignedTop;
+        MyGUI::Widget* unassignedBottom;
+        MyGUI::Widget* unassignedLeft;
+        MyGUI::Widget* unassignedRight;
+        MyGUI::Widget* recentMarker;
+        MyGUI::TextBox* assignment;
+        MyGUI::TextBox* status;
 
-        StationAssignmentDragState() :
-            armed(false), active(false), pressPoint(0, 0),
-            sourceRow(-1), sourceStation(-1), destinationRow(-1)
+        StationGridCardBinding() :
+            card(NULL), tint(NULL), unassignedTop(NULL),
+            unassignedBottom(NULL), unassignedLeft(NULL),
+            unassignedRight(NULL), recentMarker(NULL), assignment(NULL),
+            status(NULL)
+        {
+        }
+    };
+
+    struct StationGridHeaderBinding
+    {
+        StationCategory category;
+        MyGUI::Button* button;
+
+        StationGridHeaderBinding() :
+            category(STATION_OTHER), button(NULL)
         {
         }
     };
@@ -130,58 +95,75 @@
         MyGUI::TextBox* scanBanner;
         MyGUI::Widget* progressTrack;
         MyGUI::Widget* progressFill;
-        MyGUI::Widget* rosterHeader;
-        MyGUI::Widget* headerViewport;
-        MyGUI::Widget* headerCanvas;
-        MyGUI::Widget* rosterViewport;
-        MyGUI::Widget* rosterCanvas;
-        MyGUI::Widget* matrixViewport;
-        MyGUI::Widget* matrixCanvas;
+        MyGUI::Widget* viewport;
+        MyGUI::Widget* canvas;
         MyGUI::ScrollBar* verticalScroll;
-        MyGUI::ScrollBar* horizontalScroll;
         MyGUI::TextBox* emptyText;
         const StationScanState* snapshot;
-        std::vector<size_t> visibleStations;
-        std::vector<StationRosterRow> rows;
-        std::vector<StationVisibleWidget> rosterWidgets;
-        std::vector<StationVisibleWidget> headerWidgets;
-        std::vector<StationVisibleWidget> cellWidgets;
-        // These are kept separately from virtual station widgets because a
-        // divider spans the full header/body viewport rather than one row.
-        std::vector<MyGUI::Widget*> columnDividers;
-        std::vector<HandleIdentity> collapsedSquads;
-        HandleIdentity selectedStation;
+        std::vector<StationGridGroup> groups;
+        std::vector<MyGUI::Widget*> virtualWidgets;
+        std::vector<StationGridCardBinding> visibleCards;
+        std::vector<StationGridHeaderBinding> visibleHeaders;
+        std::vector<HandleIdentity> frozenCardOrder;
+        int columns;
+        int viewportWidth;
+        int viewportHeight;
+        int contentHeight;
         int verticalOffset;
-        int horizontalOffset;
         int maxVerticalOffset;
-        int maxHorizontalOffset;
-        int rosterWidth;
-        int matrixWidth;
-        int bodyHeight;
-        int hoveredRow;
-        int hoveredStation;
-        int headerDragStartX;
-        int headerDragStartOffset;
-        bool headerDragArmed;
-        bool headerDragActive;
-        bool suppressHeaderClick;
         bool changingScroll;
         bool visible;
         bool virtualRefreshRequested;
-        StationAssignmentDragState assignmentDrag;
+        bool multipleAreas;
+
+        HandleIdentity pendingDetail;
+        HandleIdentity detailStation;
+        MyGUI::Widget* modalShade;
+        MyGUI::Widget* modalPanel;
+        MyGUI::TextBox* detailAssignedHeader;
+        MyGUI::TextBox* detailAvailableHeader;
+        MyGUI::Widget* detailViewport;
+        MyGUI::Widget* detailCanvas;
+        MyGUI::ScrollBar* detailScroll;
+        MyGUI::Widget* detailAvailableViewport;
+        MyGUI::Widget* detailAvailableCanvas;
+        MyGUI::ScrollBar* detailAvailableScroll;
+        MyGUI::TextBox* detailStatus;
+        std::vector<MyGUI::Widget*> detailWidgets;
+        std::vector<StationDetailPerson> assignedPeople;
+        std::vector<StationDetailPerson> addPeople;
+        int detailOffset;
+        int detailContentHeight;
+        bool detailScrollChanging;
+        int detailAvailableOffset;
+        int detailAvailableContentHeight;
+        bool detailAvailableScrollChanging;
+        bool detailRefreshRequested;
+        bool fullRefreshRequested;
+        bool detailCloseRequested;
+        bool detailModalAdded;
+        std::string detailStatusText;
+        HandleIdentity recentStation;
+        std::vector<HandleIdentity> recentMembers;
 
         StationViewState() :
-            root(NULL), scanBanner(NULL), progressTrack(NULL), progressFill(NULL),
-            rosterHeader(NULL), headerViewport(NULL), headerCanvas(NULL),
-            rosterViewport(NULL), rosterCanvas(NULL), matrixViewport(NULL),
-            matrixCanvas(NULL), verticalScroll(NULL), horizontalScroll(NULL),
-            emptyText(NULL), snapshot(NULL), verticalOffset(0),
-            horizontalOffset(0), maxVerticalOffset(0), maxHorizontalOffset(0),
-            rosterWidth(310), matrixWidth(0), bodyHeight(0), hoveredRow(-1),
-            hoveredStation(-1), headerDragStartX(0), headerDragStartOffset(0),
-            headerDragArmed(false), headerDragActive(false),
-            suppressHeaderClick(false), changingScroll(false), visible(false),
-            virtualRefreshRequested(false)
+            root(NULL), scanBanner(NULL), progressTrack(NULL),
+            progressFill(NULL), viewport(NULL), canvas(NULL),
+            verticalScroll(NULL), emptyText(NULL), snapshot(NULL), columns(1),
+            viewportWidth(0), viewportHeight(0), contentHeight(0),
+            verticalOffset(0), maxVerticalOffset(0), changingScroll(false),
+            visible(false), virtualRefreshRequested(false), multipleAreas(false),
+            modalShade(NULL), modalPanel(NULL), detailAssignedHeader(NULL),
+            detailAvailableHeader(NULL), detailViewport(NULL),
+            detailCanvas(NULL), detailScroll(NULL),
+            detailAvailableViewport(NULL), detailAvailableCanvas(NULL),
+            detailAvailableScroll(NULL), detailStatus(NULL),
+            detailOffset(0),
+            detailContentHeight(0), detailScrollChanging(false),
+            detailAvailableOffset(0), detailAvailableContentHeight(0),
+            detailAvailableScrollChanging(false), detailRefreshRequested(false),
+            fullRefreshRequested(false), detailCloseRequested(false),
+            detailModalAdded(false)
         {
         }
     };
@@ -189,27 +171,35 @@
     StationViewState g_stationView;
 
     void RefreshStationView();
+    void RefreshStationVirtualWidgets();
+    void RefreshStationDetail();
+    void CloseStationDetail();
+    void SetStationDetailStatus(const std::string& text);
+    void MarkStationDetailChange(
+        const HandleIdentity& station,
+        const HandleIdentity& member);
     void OnStationVerticalScroll(MyGUI::ScrollBar*, size_t);
-    void OnStationHorizontalScroll(MyGUI::ScrollBar*, size_t);
     void OnStationMouseWheel(MyGUI::Widget*, int);
-    void OnStationSquadClicked(MyGUI::Widget*);
-    void OnStationColumnClicked(MyGUI::Widget*);
-    void OnStationHeaderPressed(
+    void OnStationCategoryClicked(MyGUI::Widget*);
+    void OnStationCardClicked(MyGUI::Widget*);
+    void OnStationDetailClose(MyGUI::Widget*);
+    void OnStationDetailScroll(MyGUI::ScrollBar*, size_t);
+    void OnStationAvailableScroll(MyGUI::ScrollBar*, size_t);
+    void OnStationDetailWheel(MyGUI::Widget*, int);
+    void OnStationAvailableWheel(MyGUI::Widget*, int);
+    void OnStationAddPressed(
         MyGUI::Widget*, int, int, MyGUI::MouseButton);
-    void OnStationHeaderDrag(
+    void OnStationAddKey(
+        MyGUI::Widget*, MyGUI::KeyCode, MyGUI::Char);
+    void OnStationAssignedPressed(
         MyGUI::Widget*, int, int, MyGUI::MouseButton);
-    void OnStationHeaderReleased(
-        MyGUI::Widget*, int, int, MyGUI::MouseButton);
-    void OnStationAssignmentPressed(
-        MyGUI::Widget*, int, int, MyGUI::MouseButton);
-    void OnStationAssignmentDrag(
-        MyGUI::Widget*, int, int, MyGUI::MouseButton);
-    void OnStationAssignmentReleased(
-        MyGUI::Widget*, int, int, MyGUI::MouseButton);
-    void OnStationWidgetFocus(MyGUI::Widget*, MyGUI::Widget*);
-    void OnStationWidgetLostFocus(MyGUI::Widget*, MyGUI::Widget*);
-    void ApplyStationOutlines();
-    void CancelStationAssignmentDrag();
+
+    std::string StationIntegerString(int value)
+    {
+        std::ostringstream stream;
+        stream << value;
+        return stream.str();
+    }
 
     int StationParseIndex(MyGUI::Widget* widget, const char* key)
     {
@@ -220,18 +210,61 @@
         return std::atoi(widget->getUserString(key).c_str());
     }
 
-    std::string StationIntegerString(int value)
+    std::string StationIdentityString(const HandleIdentity& identity)
     {
         std::ostringstream stream;
-        stream << value;
+        stream << (identity.valid ? 1 : 0) << ' '
+               << static_cast<int>(identity.type) << ' '
+               << identity.container << ' ' << identity.containerSerial << ' '
+               << identity.index << ' ' << identity.serial;
         return stream.str();
     }
 
-    bool IsStationSquadCollapsed(const HandleIdentity& identity)
+    bool ParseStationIdentity(
+        MyGUI::Widget* widget,
+        const char* key,
+        HandleIdentity* identityOut)
     {
-        for (size_t index = 0; index < g_stationView.collapsedSquads.size(); ++index)
+        if (widget == NULL || identityOut == NULL ||
+            !widget->isUserString(key))
         {
-            if (SameHandleIdentity(g_stationView.collapsedSquads[index], identity))
+            return false;
+        }
+        int valid = 0;
+        int type = 0;
+        HandleIdentity result;
+        std::istringstream stream(widget->getUserString(key));
+        stream >> valid >> type >> result.container >> result.containerSerial
+               >> result.index >> result.serial;
+        if (!stream || valid == 0)
+        {
+            return false;
+        }
+        result.valid = true;
+        result.type = static_cast<itemType>(type);
+        *identityOut = result;
+        return true;
+    }
+
+    std::string StationLower(const std::string& value)
+    {
+        std::string result = value;
+        for (size_t index = 0; index < result.size(); ++index)
+        {
+            const unsigned char character =
+                static_cast<unsigned char>(result[index]);
+            result[index] = static_cast<char>(std::tolower(character));
+        }
+        return result;
+    }
+
+    bool StationIdentityIn(
+        const std::vector<HandleIdentity>& identities,
+        const HandleIdentity& identity)
+    {
+        for (size_t index = 0; index < identities.size(); ++index)
+        {
+            if (SameHandleIdentity(identities[index], identity))
             {
                 return true;
             }
@@ -239,988 +272,316 @@
         return false;
     }
 
-    void ToggleStationSquadCollapsed(const HandleIdentity& identity)
+    const StationTargetSnapshot* FindStationSnapshot(
+        const HandleIdentity& identity,
+        size_t* indexOut)
     {
-        for (size_t index = 0; index < g_stationView.collapsedSquads.size(); ++index)
-        {
-            if (SameHandleIdentity(g_stationView.collapsedSquads[index], identity))
-            {
-                g_stationView.collapsedSquads.erase(
-                    g_stationView.collapsedSquads.begin() + index);
-                return;
-            }
-        }
-        g_stationView.collapsedSquads.push_back(identity);
-    }
-
-    void DestroyStationWidgetVector(std::vector<StationVisibleWidget>& widgets)
-    {
-        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
-        if (gui != NULL)
-        {
-            for (size_t index = 0; index < widgets.size(); ++index)
-            {
-                if (widgets[index].root != NULL)
-                {
-                    gui->destroyWidget(widgets[index].root);
-                }
-            }
-        }
-        widgets.clear();
-    }
-
-    void DestroyStationColumnDividers()
-    {
-        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
-        if (gui != NULL)
-        {
-            for (size_t index = 0; index < g_stationView.columnDividers.size();
-                 ++index)
-            {
-                if (g_stationView.columnDividers[index] != NULL)
-                {
-                    gui->destroyWidget(g_stationView.columnDividers[index]);
-                }
-            }
-        }
-        g_stationView.columnDividers.clear();
-    }
-
-    void DestroyStationVirtualWidgets()
-    {
-        if (g_tooltip != NULL)
-        {
-            g_tooltip->setVisible(false);
-        }
-        DestroyStationColumnDividers();
-        DestroyStationWidgetVector(g_stationView.cellWidgets);
-        DestroyStationWidgetVector(g_stationView.headerWidgets);
-        DestroyStationWidgetVector(g_stationView.rosterWidgets);
-    }
-
-    void CreateStationColumnDividers(int firstStation, int lastStation)
-    {
-        if (g_stationView.headerCanvas == NULL ||
-            g_stationView.matrixCanvas == NULL || firstStation > lastStation)
-        {
-            return;
-        }
-
-        // The four-pixel gap between station cards is intentionally retained.
-        // Put one thin neutral line in the middle of that gap, so the divider
-        // stays readable without covering station artwork or assignment text.
-        const int dividerWidth = 1;
-        const int dividerX = STATION_COLUMN_WIDTH + STATION_COLUMN_GAP / 2;
-        const MyGUI::Colour dividerColour(0.76f, 0.76f, 0.76f);
-        for (int stationIndex = firstStation;
-             stationIndex <= lastStation; ++stationIndex)
-        {
-            const int x = stationIndex * STATION_COLUMN_STRIDE -
-                g_stationView.horizontalOffset + dividerX;
-            MyGUI::Widget* headerDivider =
-                g_stationView.headerCanvas->createWidget<MyGUI::Widget>(
-                    "WhiteSkin",
-                    MyGUI::IntCoord(x, 0, dividerWidth,
-                        STATION_HEADER_HEIGHT),
-                    MyGUI::Align::Left | MyGUI::Align::Top,
-                    "KJM_StationColumnDividerHeader");
-            headerDivider->setColour(dividerColour);
-            headerDivider->setAlpha(0.33f);
-            headerDivider->setDepth(0);
-            headerDivider->setNeedMouseFocus(false);
-            headerDivider->setUserString(
-                "KJM_StationColumn", StationIntegerString(stationIndex));
-            g_stationView.columnDividers.push_back(headerDivider);
-
-            MyGUI::Widget* bodyDivider =
-                g_stationView.matrixCanvas->createWidget<MyGUI::Widget>(
-                    "WhiteSkin",
-                    MyGUI::IntCoord(x, 0, dividerWidth,
-                        g_stationView.bodyHeight),
-                    MyGUI::Align::Left | MyGUI::Align::Top,
-                    "KJM_StationColumnDividerBody");
-            bodyDivider->setColour(dividerColour);
-            bodyDivider->setAlpha(0.33f);
-            bodyDivider->setDepth(0);
-            bodyDivider->setNeedMouseFocus(false);
-            bodyDivider->setUserString(
-                "KJM_StationColumn", StationIntegerString(stationIndex));
-            g_stationView.columnDividers.push_back(bodyDivider);
-        }
-    }
-
-    void CreateStationOutlineWidgets(
-        StationVisibleWidget* visible,
-        int width,
-        int height)
-    {
-        if (visible == NULL || visible->root == NULL || width <= 0 ||
-            height <= 0)
-        {
-            return;
-        }
-        visible->outlineTop = visible->root->createWidget<MyGUI::Widget>(
-            "WhiteSkin", MyGUI::IntCoord(0, 0, width, 2),
-            MyGUI::Align::Top | MyGUI::Align::HStretch, "KJM_StationOutlineTop");
-        visible->outlineBottom = visible->root->createWidget<MyGUI::Widget>(
-            "WhiteSkin", MyGUI::IntCoord(0, height - 2, width, 2),
-            MyGUI::Align::Bottom | MyGUI::Align::HStretch, "KJM_StationOutlineBottom");
-        visible->outlineLeft = visible->root->createWidget<MyGUI::Widget>(
-            "WhiteSkin", MyGUI::IntCoord(0, 0, 2, height),
-            MyGUI::Align::Left | MyGUI::Align::VStretch, "KJM_StationOutlineLeft");
-        visible->outlineRight = visible->root->createWidget<MyGUI::Widget>(
-            "WhiteSkin", MyGUI::IntCoord(width - 2, 0, 2, height),
-            MyGUI::Align::Right | MyGUI::Align::VStretch, "KJM_StationOutlineRight");
-        visible->outlineTop->setVisible(false);
-        visible->outlineBottom->setVisible(false);
-        visible->outlineLeft->setVisible(false);
-        visible->outlineRight->setVisible(false);
-        visible->outlineTop->setNeedMouseFocus(false);
-        visible->outlineBottom->setNeedMouseFocus(false);
-        visible->outlineLeft->setNeedMouseFocus(false);
-        visible->outlineRight->setNeedMouseFocus(false);
-        visible->outlineTop->setDepth(0);
-        visible->outlineBottom->setDepth(0);
-        visible->outlineLeft->setDepth(0);
-        visible->outlineRight->setDepth(0);
-    }
-
-    void BuildStationRosterRows()
-    {
-        g_stationView.rows.clear();
-        if (g_stationView.snapshot == NULL)
-        {
-            return;
-        }
-
-        int top = 0;
-        const std::vector<StationSquadSnapshot>& squads =
-            g_stationView.snapshot->squads;
-        for (size_t squadIndex = 0; squadIndex < squads.size(); ++squadIndex)
-        {
-            StationRosterRow squadRow;
-            squadRow.kind = STATION_ROSTER_SQUAD;
-            squadRow.squadIndex = squadIndex;
-            squadRow.top = top;
-            squadRow.height = STATION_SQUAD_ROW_HEIGHT;
-            g_stationView.rows.push_back(squadRow);
-            top += squadRow.height;
-
-            const StationSquadSnapshot& squad = squads[squadIndex];
-            if (IsStationSquadCollapsed(squad.identity) || !squad.loaded)
-            {
-                continue;
-            }
-            for (size_t memberIndex = 0; memberIndex < squad.members.size(); ++memberIndex)
-            {
-                if (!squad.members[memberIndex].loaded)
-                {
-                    continue;
-                }
-                StationRosterRow memberRow;
-                memberRow.kind = STATION_ROSTER_MEMBER;
-                memberRow.squadIndex = squadIndex;
-                memberRow.memberIndex = memberIndex;
-                memberRow.top = top;
-                memberRow.height = STATION_MEMBER_ROW_HEIGHT;
-                g_stationView.rows.push_back(memberRow);
-                top += memberRow.height;
-            }
-            if (squad.unavailableMemberCount > 0)
-            {
-                StationRosterRow missingRow;
-                missingRow.kind = STATION_ROSTER_UNAVAILABLE;
-                missingRow.squadIndex = squadIndex;
-                missingRow.top = top;
-                missingRow.height = STATION_UNAVAILABLE_ROW_HEIGHT;
-                g_stationView.rows.push_back(missingRow);
-                top += missingRow.height;
-            }
-        }
-    }
-
-    int GetStationRosterContentHeight()
-    {
-        if (g_stationView.rows.empty())
-        {
-            return 0;
-        }
-        const StationRosterRow& last = g_stationView.rows.back();
-        return last.top + last.height;
-    }
-
-    bool IsStationRowVisible(const StationRosterRow& row)
-    {
-        const int top = g_stationView.verticalOffset - STATION_MEMBER_ROW_HEIGHT;
-        const int bottom = g_stationView.verticalOffset +
-            g_stationView.bodyHeight + STATION_MEMBER_ROW_HEIGHT;
-        return row.top + row.height > top && row.top < bottom;
-    }
-
-    int GetFirstVisibleStationIndex()
-    {
-        if (g_stationView.snapshot == NULL ||
-            g_stationView.visibleStations.empty())
-        {
-            return 0;
-        }
-        return ClampInt(
-            g_stationView.horizontalOffset / STATION_COLUMN_STRIDE -
-                STATION_OVERSCAN,
-            0,
-            static_cast<int>(g_stationView.visibleStations.size()) - 1);
-    }
-
-    int GetLastVisibleStationIndex()
-    {
-        if (g_stationView.snapshot == NULL ||
-            g_stationView.visibleStations.empty())
-        {
-            return -1;
-        }
-        return ClampInt(
-            (g_stationView.horizontalOffset + g_stationView.matrixWidth) /
-                STATION_COLUMN_STRIDE + STATION_OVERSCAN,
-            0,
-            static_cast<int>(g_stationView.visibleStations.size()) - 1);
-    }
-
-    const StationTargetSnapshot* GetVisibleStation(int stationIndex)
-    {
-        if (g_stationView.snapshot == NULL || stationIndex < 0 ||
-            stationIndex >= static_cast<int>(g_stationView.visibleStations.size()))
+        if (g_stationView.snapshot == NULL || !identity.valid)
         {
             return NULL;
         }
-        const size_t sourceIndex = g_stationView.visibleStations[stationIndex];
-        if (sourceIndex >= g_stationView.snapshot->stations.size())
+        for (size_t index = 0;
+             index < g_stationView.snapshot->stations.size(); ++index)
         {
-            return NULL;
-        }
-        return &g_stationView.snapshot->stations[sourceIndex];
-    }
-
-    void SetStationOutlineStyle(
-        const StationVisibleWidget& visible,
-        int width,
-        int height,
-        const MyGUI::Colour& colour,
-        int thickness,
-        bool shown)
-    {
-        if (visible.outlineTop == NULL || visible.outlineBottom == NULL ||
-            visible.outlineLeft == NULL || visible.outlineRight == NULL ||
-            width <= 0 || height <= 0)
-        {
-            return;
-        }
-        int edge = std::max(1, thickness);
-        edge = std::min(edge, std::max(1, std::min(width, height) / 2));
-        visible.outlineTop->setCoord(0, 0, width, edge);
-        visible.outlineBottom->setCoord(0, height - edge, width, edge);
-        visible.outlineLeft->setCoord(0, 0, edge, height);
-        visible.outlineRight->setCoord(width - edge, 0, edge, height);
-        visible.outlineTop->setColour(colour);
-        visible.outlineBottom->setColour(colour);
-        visible.outlineLeft->setColour(colour);
-        visible.outlineRight->setColour(colour);
-        visible.outlineTop->setVisible(shown);
-        visible.outlineBottom->setVisible(shown);
-        visible.outlineLeft->setVisible(shown);
-        visible.outlineRight->setVisible(shown);
-    }
-
-    void ApplyStationOutline(const StationVisibleWidget& visible)
-    {
-        if (visible.root == NULL)
-        {
-            return;
-        }
-
-        if (visible.stationIndex >= 0)
-        {
-            const StationTargetSnapshot* station =
-                GetVisibleStation(visible.stationIndex);
-            if (station == NULL)
+            if (SameHandleIdentity(
+                    g_stationView.snapshot->stations[index].identity,
+                    identity))
             {
-                SetStationOutlineStyle(
-                    visible, STATION_COLUMN_WIDTH, STATION_HEADER_HEIGHT,
-                    MyGUI::Colour(1.0f, 1.0f, 1.0f), 1, false);
-                return;
-            }
-            const bool selected = g_stationView.selectedStation.valid &&
-                SameHandleIdentity(
-                    g_stationView.selectedStation, station->identity);
-            const bool hoveredColumn =
-                g_stationView.hoveredStation == visible.stationIndex;
-            const bool hoveredRow = visible.rowIndex >= 0 &&
-                g_stationView.hoveredRow == visible.rowIndex;
-            const bool assignmentDestination =
-                g_stationView.assignmentDrag.active &&
-                visible.rowIndex >= 0 &&
-                g_stationView.assignmentDrag.destinationRow ==
-                    visible.rowIndex;
-            const bool header = visible.rowIndex < 0;
-            const bool highlighted = selected || hoveredColumn || hoveredRow ||
-                assignmentDestination;
-            const int height = header ? STATION_HEADER_HEIGHT :
-                (visible.rowIndex >= 0 &&
-                 visible.rowIndex < static_cast<int>(g_stationView.rows.size()) ?
-                    g_stationView.rows[visible.rowIndex].height :
-                    STATION_MEMBER_ROW_HEIGHT);
-            if (highlighted)
-            {
-                SetStationOutlineStyle(
-                    visible, STATION_COLUMN_WIDTH, height,
-                    assignmentDestination ? MyGUI::Colour(0.40f, 1.0f, 0.48f) :
-                    (selected ? MyGUI::Colour(1.0f, 0.72f, 0.20f) :
-                        MyGUI::Colour(0.71f, 0.58f, 0.32f)),
-                    assignmentDestination ? 3 : (selected ? 2 : 1), true);
-            }
-            else
-            {
-                SetStationOutlineStyle(
-                    visible, STATION_COLUMN_WIDTH, height,
-                    MyGUI::Colour(1.0f, 1.0f, 1.0f), 1, false);
-            }
-            return;
-        }
-
-        if (visible.rowIndex >= 0 &&
-            visible.rowIndex < static_cast<int>(g_stationView.rows.size()) &&
-            g_stationView.snapshot != NULL)
-        {
-            const StationRosterRow& row =
-                g_stationView.rows[visible.rowIndex];
-            if (g_stationView.assignmentDrag.active &&
-                g_stationView.assignmentDrag.destinationRow ==
-                    visible.rowIndex)
-            {
-                SetStationOutlineStyle(
-                    visible, g_stationView.rosterWidth, row.height,
-                    MyGUI::Colour(0.40f, 1.0f, 0.48f), 3, true);
-                return;
-            }
-            if (row.kind == STATION_ROSTER_SQUAD &&
-                row.squadIndex < g_stationView.snapshot->squads.size() &&
-                SameHandleIdentity(
-                    g_squad.identity,
-                    g_stationView.snapshot->squads[row.squadIndex].identity))
-            {
-                SetStationOutlineStyle(
-                    visible, g_stationView.rosterWidth, row.height,
-                    MyGUI::Colour(1.0f, 0.72f, 0.20f), 2, true);
-                return;
-            }
-            SetStationOutlineStyle(
-                visible, g_stationView.rosterWidth, row.height,
-                MyGUI::Colour(1.0f, 1.0f, 1.0f), 1, false);
-            return;
-        }
-
-        SetStationOutlineStyle(
-            visible, g_stationView.rosterWidth, STATION_MEMBER_ROW_HEIGHT,
-            MyGUI::Colour(1.0f, 1.0f, 1.0f), 1, false);
-    }
-
-    void ApplyStationOutlines()
-    {
-        for (size_t index = 0; index < g_stationView.rosterWidgets.size(); ++index)
-        {
-            ApplyStationOutline(g_stationView.rosterWidgets[index]);
-        }
-        for (size_t index = 0; index < g_stationView.headerWidgets.size(); ++index)
-        {
-            ApplyStationOutline(g_stationView.headerWidgets[index]);
-        }
-        for (size_t index = 0; index < g_stationView.cellWidgets.size(); ++index)
-        {
-            ApplyStationOutline(g_stationView.cellWidgets[index]);
-        }
-    }
-
-    std::string GetStationPresentationName(int stationIndex)
-    {
-        const StationTargetSnapshot* station = GetVisibleStation(stationIndex);
-        if (station == NULL)
-        {
-            return std::string();
-        }
-        int ordinal = 0;
-        int duplicateCount = 0;
-        for (size_t index = 0; index < g_stationView.visibleStations.size(); ++index)
-        {
-            const StationTargetSnapshot* candidate =
-                GetVisibleStation(static_cast<int>(index));
-            if (candidate != NULL && candidate->areaName == station->areaName &&
-                candidate->category == station->category &&
-                candidate->name == station->name)
-            {
-                ++duplicateCount;
-                if (static_cast<int>(index) <= stationIndex)
+                if (indexOut != NULL)
                 {
-                    ++ordinal;
+                    *indexOut = index;
                 }
-            }
-        }
-        if (duplicateCount <= 1)
-        {
-            return station->name;
-        }
-        std::ostringstream caption;
-        caption << station->name << " #" << ordinal;
-        return caption.str();
-    }
-
-    void BuildVisibleStationList()
-    {
-        g_stationView.visibleStations.clear();
-        if (g_stationView.snapshot == NULL)
-        {
-            return;
-        }
-        for (size_t index = 0; index < g_stationView.snapshot->stations.size(); ++index)
-        {
-            const StationTargetSnapshot& station =
-                g_stationView.snapshot->stations[index];
-            if (!IsStationCategoryEnabled(station.category))
-            {
-                continue;
-            }
-            // A known relevant skill participates in the shared skill filter.
-            // Stations with no known skill remain controlled by category only.
-            if (station.relevantSkillKnown &&
-                (station.relevantStat <= STAT_NONE ||
-                 station.relevantStat >= STAT_END ||
-                 !g_skillEnabled[station.relevantStat]))
-            {
-                continue;
-            }
-            g_stationView.visibleStations.push_back(index);
-        }
-    }
-
-    const StationAssignmentSnapshot* FindStationAssignment(
-        const StationTargetSnapshot& station,
-        const HandleIdentity& worker,
-        size_t occurrence)
-    {
-        size_t found = 0;
-        for (size_t index = 0; index < station.assignments.size(); ++index)
-        {
-            if (SameHandleIdentity(station.assignments[index].member, worker))
-            {
-                if (found == occurrence)
-                {
-                    return &station.assignments[index];
-                }
-                ++found;
+                return &g_stationView.snapshot->stations[index];
             }
         }
         return NULL;
     }
 
-    size_t CountStationAssignments(
-        const StationTargetSnapshot& station,
-        const HandleIdentity& worker)
+    const StationMemberSnapshot* FindStationMemberSnapshot(
+        const HandleIdentity& identity)
     {
-        size_t count = 0;
-        for (size_t index = 0; index < station.assignments.size(); ++index)
+        if (g_stationView.snapshot == NULL || !identity.valid)
         {
-            if (SameHandleIdentity(station.assignments[index].member, worker))
+            return NULL;
+        }
+        for (size_t squadIndex = 0;
+             squadIndex < g_stationView.snapshot->squads.size(); ++squadIndex)
+        {
+            const StationSquadSnapshot& squad =
+                g_stationView.snapshot->squads[squadIndex];
+            for (size_t memberIndex = 0;
+                 memberIndex < squad.members.size(); ++memberIndex)
             {
-                ++count;
+                if (SameHandleIdentity(
+                        squad.members[memberIndex].identity, identity))
+                {
+                    return &squad.members[memberIndex];
+                }
             }
         }
-        return count;
+        return NULL;
     }
 
-    void CopyStationMemberQueue(
-        const StationMemberSnapshot& member,
-        std::vector<JobRowSnapshot>* jobsOut)
+    bool StationPassesFilters(const StationTargetSnapshot& station)
     {
-        if (jobsOut == NULL)
-        {
-            return;
-        }
-        jobsOut->clear();
-        jobsOut->reserve(member.jobs.size());
-        for (size_t index = 0; index < member.jobs.size(); ++index)
-        {
-            jobsOut->push_back(member.jobs[index].exactJob);
-        }
+        // Stations are filtered only by the broad category preference. The
+        // former per-stat filter hid training, defense, and other stations
+        // when their associated character skill was disabled. Character
+        // stats are display-only on Squad Jobs and no longer affect this tab.
+        return IsStationCategoryEnabled(station.category);
     }
 
-    bool TryGetStationMemberForRow(
-        int rowIndex,
-        const StationMemberSnapshot** memberOut)
+    size_t CountUniqueStationPeople(const StationTargetSnapshot& station)
     {
-        if (memberOut == NULL || g_stationView.snapshot == NULL ||
-            rowIndex < 0 ||
-            rowIndex >= static_cast<int>(g_stationView.rows.size()))
+        std::vector<HandleIdentity> people;
+        for (size_t index = 0; index < station.assignments.size(); ++index)
         {
-            return false;
-        }
-        *memberOut = NULL;
-        const StationRosterRow& row = g_stationView.rows[rowIndex];
-        if (row.kind != STATION_ROSTER_MEMBER ||
-            row.squadIndex >= g_stationView.snapshot->squads.size())
-        {
-            return false;
-        }
-        const StationSquadSnapshot& squad =
-            g_stationView.snapshot->squads[row.squadIndex];
-        if (row.memberIndex >= squad.members.size())
-        {
-            return false;
-        }
-        *memberOut = &squad.members[row.memberIndex];
-        return true;
-    }
-
-    int FindStationMemberRowAtPoint(const MyGUI::IntPoint& mouse)
-    {
-        if (g_stationView.rosterViewport == NULL ||
-            g_stationView.matrixViewport == NULL)
-        {
-            return -1;
-        }
-        const MyGUI::IntCoord roster =
-            g_stationView.rosterViewport->getAbsoluteCoord();
-        const MyGUI::IntCoord matrix =
-            g_stationView.matrixViewport->getAbsoluteCoord();
-        const bool inRoster = PointInside(roster, mouse);
-        const bool inMatrix = PointInside(matrix, mouse);
-        if (!inRoster && !inMatrix)
-        {
-            return -1;
-        }
-        const int viewportTop = inRoster ? roster.top : matrix.top;
-        const int contentY = mouse.top - viewportTop +
-            g_stationView.verticalOffset;
-        for (size_t index = 0; index < g_stationView.rows.size(); ++index)
-        {
-            const StationRosterRow& row = g_stationView.rows[index];
-            if (row.kind == STATION_ROSTER_MEMBER &&
-                contentY >= row.top && contentY < row.top + row.height)
+            if (!StationIdentityIn(people, station.assignments[index].member))
             {
-                const StationMemberSnapshot* member = NULL;
-                if (TryGetStationMemberForRow(
-                        static_cast<int>(index), &member) && member != NULL &&
-                    member->loaded && member->queueAvailable &&
-                    !member->truncated)
-                {
-                    return static_cast<int>(index);
-                }
-                return -1;
+                people.push_back(station.assignments[index].member);
+            }
+        }
+        return people.size();
+    }
+
+    struct StationCardAlphabeticalLess
+    {
+        bool operator()(size_t left, size_t right) const
+        {
+            const StationTargetSnapshot& a =
+                g_stationView.snapshot->stations[left];
+            const StationTargetSnapshot& b =
+                g_stationView.snapshot->stations[right];
+            const bool aUnassigned = a.assignments.empty();
+            const bool bUnassigned = b.assignments.empty();
+            if (aUnassigned != bUnassigned)
+            {
+                return aUnassigned;
+            }
+            const std::string aName = StationLower(a.name);
+            const std::string bName = StationLower(b.name);
+            if (aName != bName)
+            {
+                return aName < bName;
+            }
+            const std::string aArea = StationLower(a.areaName);
+            const std::string bArea = StationLower(b.areaName);
+            if (aArea != bArea)
+            {
+                return aArea < bArea;
+            }
+            if (a.identity.container != b.identity.container)
+            {
+                return a.identity.container < b.identity.container;
+            }
+            if (a.identity.index != b.identity.index)
+            {
+                return a.identity.index < b.identity.index;
+            }
+            return a.identity.serial < b.identity.serial;
+        }
+    };
+
+    int FrozenStationOrder(const HandleIdentity& identity)
+    {
+        for (size_t index = 0;
+             index < g_stationView.frozenCardOrder.size(); ++index)
+        {
+            if (SameHandleIdentity(
+                    g_stationView.frozenCardOrder[index], identity))
+            {
+                return static_cast<int>(index);
             }
         }
         return -1;
     }
 
-    std::string BuildStationWorkerSkills(const StationMemberSnapshot& worker)
+    struct StationFrozenLess
     {
-        std::ostringstream caption;
-        const size_t count = std::min<size_t>(3, worker.topSkills.size());
-        for (size_t index = 0; index < count; ++index)
+        bool operator()(size_t left, size_t right) const
         {
-            if (index != 0)
+            const int leftOrder = FrozenStationOrder(
+                g_stationView.snapshot->stations[left].identity);
+            const int rightOrder = FrozenStationOrder(
+                g_stationView.snapshot->stations[right].identity);
+            if (leftOrder >= 0 && rightOrder >= 0)
             {
-                caption << "\n";
+                return leftOrder < rightOrder;
             }
-            caption << worker.topSkills[index].name << " " << worker.topSkills[index].value;
-        }
-        if (count == 0)
-        {
-            return worker.loaded ? "No enabled stats above 1" :
-                "Stats unavailable";
-        }
-        return caption.str();
-    }
-
-    std::string TrimStationAssignmentText(const std::string& text)
-    {
-        size_t first = 0;
-        while (first < text.size() &&
-            (text[first] == ' ' || text[first] == '\t' ||
-             text[first] == '\r' || text[first] == '\n'))
-        {
-            ++first;
-        }
-        size_t last = text.size();
-        while (last > first &&
-            (text[last - 1] == ' ' || text[last - 1] == '\t' ||
-             text[last - 1] == '\r' || text[last - 1] == '\n'))
-        {
-            --last;
-        }
-        return text.substr(first, last - first);
-    }
-
-    std::string GetStationAssignmentWorkLabel(
-        const StationTargetSnapshot& station,
-        const StationAssignmentSnapshot& assignment)
-    {
-        // Reuse the squad-card normalizer so MyGUI colour markup and the
-        // engine's leading queue number never leak into the station matrix.
-        std::string label = StripLeadingPriorityPrefix(assignment.jobLabel);
-        label = TrimStationAssignmentText(label);
-
-        // Station order text normally uses "work type: target".  The
-        // target is already the column header, so keep only the work type in
-        // the assignment row.  Prefer the exact target match when available,
-        // then fall back to the first task separator for older/localized
-        // labels whose target text cannot be matched exactly.
-        if (!station.name.empty())
-        {
-            const size_t target = label.rfind(station.name);
-            if (target != std::string::npos && target > 0)
+            if (leftOrder >= 0)
             {
-                // Do not require punctuation.  Some Kenshi order strings
-                // use "Hauling to Bread Oven" instead of a colon, and the
-                // renamed station is still the reliable suffix.
-                label = TrimStationAssignmentText(label.substr(0, target));
-                while (!label.empty() &&
-                    (label[label.size() - 1] == ':' ||
-                     label[label.size() - 1] == '-' ||
-                     label[label.size() - 1] == '|'))
+                return true;
+            }
+            if (rightOrder >= 0)
+            {
+                return false;
+            }
+            return StationCardAlphabeticalLess()(left, right);
+        }
+    };
+
+    int StationCardRowStride()
+    {
+        return STATION_GRID_CARD_HEIGHT + STATION_GRID_GAP;
+    }
+
+    void BuildStationGroups()
+    {
+        g_stationView.groups.clear();
+        g_stationView.multipleAreas = false;
+        if (g_stationView.snapshot == NULL)
+        {
+            g_stationView.contentHeight = 0;
+            return;
+        }
+
+        std::vector<std::string> areas;
+        int top = 0;
+        for (int categoryValue = static_cast<int>(STATION_CRAFTING);
+             categoryValue <= static_cast<int>(STATION_OTHER);
+             ++categoryValue)
+        {
+            StationGridGroup group;
+            group.category = static_cast<StationCategory>(categoryValue);
+            for (size_t index = 0;
+                 index < g_stationView.snapshot->stations.size(); ++index)
+            {
+                const StationTargetSnapshot& station =
+                    g_stationView.snapshot->stations[index];
+                if (station.category != group.category ||
+                    !StationPassesFilters(station))
                 {
-                    label = TrimStationAssignmentText(
-                        label.substr(0, label.size() - 1));
+                    continue;
+                }
+                group.stations.push_back(index);
+                if (station.assignments.empty())
+                {
+                    ++group.unassignedCount;
+                }
+                if (std::find(areas.begin(), areas.end(), station.areaName) ==
+                    areas.end())
+                {
+                    areas.push_back(station.areaName);
                 }
             }
-        }
-
-        const size_t separator = label.find(':');
-        if (separator != std::string::npos)
-        {
-            label = TrimStationAssignmentText(label.substr(0, separator));
-        }
-        if (label.empty())
-        {
-            label = "Assigned job";
-        }
-        return label;
-    }
-
-    std::string GetCompactStationAssignmentWorkLabel(
-        const StationTargetSnapshot& station,
-        const StationAssignmentSnapshot& assignment)
-    {
-        const std::string fullLabel =
-            GetStationAssignmentWorkLabel(station, assignment);
-        if (fullLabel.compare(0, 9, "Operating") == 0)
-        {
-            return "Operating...";
-        }
-        if (fullLabel.compare(0, 7, "Hauling") == 0)
-        {
-            return "Hauling...";
-        }
-
-        // Keep an unfamiliar/localized work type readable too.  The first
-        // word identifies the task category, while the tooltip retains the
-        // full order text and target.
-        const size_t separator = fullLabel.find_first_of(" \t");
-        if (separator != std::string::npos && separator > 0)
-        {
-            return fullLabel.substr(0, separator) + "...";
-        }
-        return fullLabel;
-    }
-
-    void SetFittedStationAssignmentLabel(
-        MyGUI::TextBox* text,
-        const std::string& caption,
-        int maxWidth,
-        int startingFontHeight)
-    {
-        if (text == NULL)
-        {
-            return;
-        }
-        text->setCaption(caption);
-        int fontHeight = startingFontHeight;
-        text->setFontHeight(fontHeight);
-        while (fontHeight > 10 && text->getTextSize().width > maxWidth)
-        {
-            --fontHeight;
-            text->setFontHeight(fontHeight);
-        }
-    }
-
-    void ApplyStationPortrait(
-        MyGUI::Button* border,
-        MyGUI::ImageBox* background,
-        MyGUI::ImageBox* portrait,
-        MyGUI::ImageBox* backOverlay,
-        MyGUI::ImageBox* frontOverlay,
-        const StationMemberSnapshot& worker)
-    {
-        bool selected = false;
-        std::string backgroundName;
-        std::string backName;
-        std::string frontName;
-        if (TryGetPortraitVisuals(
-                worker.handle, &selected, &backgroundName, &backName, &frontName))
-        {
-            border->setStateSelected(selected);
-            SetPortraitImage(background, "Background", backgroundName);
-            SetPortraitImage(backOverlay, "BackOverlay", backName);
-            SetPortraitImage(frontOverlay, "FrontOverlay", frontName);
-        }
-        portrait->setVisible(true);
-        if (!TryBindPortrait(worker.handle, portrait, false))
-        {
-            TryBindPortrait(worker.handle, portrait, true);
-        }
-    }
-
-    void AttachStationInput(
-        MyGUI::Widget* widget,
-        int rowIndex,
-        int stationIndex,
-        const std::string& tooltip)
-    {
-        if (widget == NULL)
-        {
-            return;
-        }
-        widget->setUserString("KJM_StationRow", StationIntegerString(rowIndex));
-        widget->setUserString(
-            "KJM_StationColumn", StationIntegerString(stationIndex));
-        widget->eventMouseSetFocus += MyGUI::newDelegate(OnStationWidgetFocus);
-        widget->eventMouseLostFocus += MyGUI::newDelegate(OnStationWidgetLostFocus);
-        widget->eventMouseWheel += MyGUI::newDelegate(OnStationMouseWheel);
-        if (stationIndex >= 0)
-        {
-            widget->eventMouseButtonClick +=
-                MyGUI::newDelegate(OnStationColumnClicked);
-        }
-        if (!tooltip.empty())
-        {
-            widget->setUserString("KJM_ToolTip", tooltip);
-            widget->setNeedToolTip(true);
-            widget->eventToolTip += MyGUI::newDelegate(OnCardToolTip);
-        }
-    }
-
-    // The header strip behaves like a small grab-to-pan surface.  Attach the
-    // handlers to both the header canvas (so the gaps between cards work) and
-    // each card (so a grab that starts on artwork still captures the pointer).
-    // The callbacks use the absolute mouse position because MyGUI reports
-    // drag coordinates in the sender's coordinate space.
-    void AttachStationHeaderDragInput(MyGUI::Widget* widget)
-    {
-        if (widget == NULL)
-        {
-            return;
-        }
-        widget->eventMouseButtonPressed +=
-            MyGUI::newDelegate(OnStationHeaderPressed);
-        widget->eventMouseDrag += MyGUI::newDelegate(OnStationHeaderDrag);
-        widget->eventMouseButtonReleased +=
-            MyGUI::newDelegate(OnStationHeaderReleased);
-    }
-
-    void CreateStationPortraitWidgets(
-        MyGUI::Widget* root,
-        const StationMemberSnapshot& worker)
-    {
-        MyGUI::Button* border = root->createWidget<MyGUI::Button>(
-            "Kenshi_PortraitFrameSkin",
-            MyGUI::IntCoord(7, 6, MEMBER_PORTRAIT_SIZE, MEMBER_PORTRAIT_SIZE),
-            MyGUI::Align::Left | MyGUI::Align::Top, "KJM_StationPortraitFrame");
-        border->setNeedMouseFocus(false);
-        MyGUI::ImageBox* background = border->createWidget<MyGUI::ImageBox>(
-            "ImageBox", MyGUI::IntCoord(
-                MEMBER_PORTRAIT_INSET, MEMBER_PORTRAIT_INSET,
-                MEMBER_PORTRAIT_SIZE - MEMBER_PORTRAIT_INSET * 2,
-                MEMBER_PORTRAIT_SIZE - MEMBER_PORTRAIT_INSET * 2),
-            MyGUI::Align::Stretch,
-            "KJM_StationPortraitBackground");
-        MyGUI::ImageBox* portrait = border->createWidget<MyGUI::ImageBox>(
-            "ImageBox", MyGUI::IntCoord(
-                MEMBER_PORTRAIT_INSET, MEMBER_PORTRAIT_INSET,
-                MEMBER_PORTRAIT_SIZE - MEMBER_PORTRAIT_INSET * 2,
-                MEMBER_PORTRAIT_SIZE - MEMBER_PORTRAIT_INSET * 2),
-            MyGUI::Align::Stretch,
-            "KJM_StationPortrait");
-        MyGUI::ImageBox* backOverlay = border->createWidget<MyGUI::ImageBox>(
-            "ImageBox", MyGUI::IntCoord(
-                MEMBER_PORTRAIT_INSET, MEMBER_PORTRAIT_INSET,
-                MEMBER_PORTRAIT_SIZE - MEMBER_PORTRAIT_INSET * 2,
-                MEMBER_PORTRAIT_SIZE - MEMBER_PORTRAIT_INSET * 2),
-            MyGUI::Align::Stretch,
-            "KJM_StationPortraitBackOverlay");
-        MyGUI::ImageBox* frontOverlay = border->createWidget<MyGUI::ImageBox>(
-            "ImageBox", MyGUI::IntCoord(
-                MEMBER_PORTRAIT_INSET, MEMBER_PORTRAIT_INSET,
-                MEMBER_PORTRAIT_SIZE - MEMBER_PORTRAIT_INSET * 2,
-                MEMBER_PORTRAIT_SIZE - MEMBER_PORTRAIT_INSET * 2),
-            MyGUI::Align::Stretch,
-            "KJM_StationPortraitFrontOverlay");
-        background->setDepth(5);
-        backOverlay->setDepth(4);
-        portrait->setDepth(3);
-        frontOverlay->setDepth(2);
-        background->setNeedMouseFocus(false);
-        portrait->setNeedMouseFocus(false);
-        backOverlay->setNeedMouseFocus(false);
-        frontOverlay->setNeedMouseFocus(false);
-        ApplyStationPortrait(
-            border, background, portrait, backOverlay, frontOverlay, worker);
-    }
-
-    void CreateStationRosterWidget(size_t rowIndex)
-    {
-        if (g_stationView.snapshot == NULL ||
-            rowIndex >= g_stationView.rows.size())
-        {
-            return;
-        }
-        const StationRosterRow& row = g_stationView.rows[rowIndex];
-        const StationSquadSnapshot& squad =
-            g_stationView.snapshot->squads[row.squadIndex];
-        const int y = row.top - g_stationView.verticalOffset;
-        StationVisibleWidget visible;
-        visible.rowIndex = static_cast<int>(rowIndex);
-        visible.root = g_stationView.rosterCanvas->createWidget<MyGUI::Widget>(
-            row.kind == STATION_ROSTER_MEMBER ? "Kenshi_SelectionPanel" : "WhiteSkin",
-            MyGUI::IntCoord(0, y, g_stationView.rosterWidth, row.height),
-            MyGUI::Align::Left | MyGUI::Align::Top, "KJM_StationRosterRow");
-        visible.root->setColour(
-            row.kind == STATION_ROSTER_SQUAD ? MyGUI::Colour(0.20f, 0.16f, 0.11f) :
-            MyGUI::Colour(0.12f, 0.10f, 0.08f));
-        if (row.kind != STATION_ROSTER_MEMBER)
-        {
-            visible.root->eventMouseWheel +=
-                MyGUI::newDelegate(OnStationMouseWheel);
-        }
-
-        if (row.kind == STATION_ROSTER_SQUAD)
-        {
-            MyGUI::Button* button = visible.root->createWidget<MyGUI::Button>(
-                "Kenshi_Button1", MyGUI::IntCoord(2, 2, g_stationView.rosterWidth - 4,
-                row.height - 4), MyGUI::Align::Stretch, "KJM_StationSquadHeader");
-            std::ostringstream caption;
-            caption << ((!squad.loaded || IsStationSquadCollapsed(squad.identity)) ?
-                    "> " : "V ")
-                    << squad.name;
-            if (!squad.loaded)
+            if (group.stations.empty())
             {
-                caption << "  -  LIVE DATA UNAVAILABLE";
+                continue;
             }
-            button->setCaption(caption.str());
-            button->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
-            button->setFontHeight(14);
-            button->setUserString("KJM_StationSquad", IntegerString(row.squadIndex));
-            button->eventMouseButtonClick += MyGUI::newDelegate(OnStationSquadClicked);
-            button->eventMouseWheel += MyGUI::newDelegate(OnStationMouseWheel);
-        }
-        else if (row.kind == STATION_ROSTER_UNAVAILABLE)
-        {
-            MyGUI::TextBox* label = visible.root->createWidget<MyGUI::TextBox>(
-                "Kenshi_TextboxStandardText_Small",
-                MyGUI::IntCoord(12, 3, g_stationView.rosterWidth - 20, row.height - 6),
-                MyGUI::Align::Stretch, "KJM_StationUnavailableMembers");
-            std::ostringstream caption;
-            caption << squad.unavailableMemberCount << " members unavailable";
-            label->setCaption(caption.str());
-            label->setTextColour(MyGUI::Colour(0.92f, 0.63f, 0.43f));
-            label->setNeedMouseFocus(false);
-        }
-        else
-        {
-            const StationMemberSnapshot& worker = squad.members[row.memberIndex];
-            CreateStationPortraitWidgets(visible.root, worker);
-            MyGUI::TextBox* name = visible.root->createWidget<MyGUI::TextBox>(
-                "Kenshi_TextboxStandardText",
-                MyGUI::IntCoord(
-                    MEMBER_TEXT_LEFT, 2,
-                    g_stationView.rosterWidth - MEMBER_TEXT_LEFT - 8, 25),
-                MyGUI::Align::Top | MyGUI::Align::HStretch,
-                "KJM_StationWorkerName");
-            name->setCaption(worker.name);
-            name->setFontHeight(21);
-            name->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
-            name->setNeedMouseFocus(false);
-            MyGUI::TextBox* condition = visible.root->createWidget<MyGUI::TextBox>(
-                "Kenshi_TextboxStandardText_Small",
-                MyGUI::IntCoord(
-                    MEMBER_TEXT_LEFT, 27,
-                    g_stationView.rosterWidth - MEMBER_TEXT_LEFT - 8, 16),
-                MyGUI::Align::Top | MyGUI::Align::HStretch,
-                "KJM_StationWorkerCondition");
-            condition->setCaption(worker.condition);
-            condition->setFontHeight(15);
-            condition->setTextColour(MyGUI::Colour(0.96f, 0.48f, 0.36f));
-            condition->setNeedMouseFocus(false);
-            MyGUI::TextBox* skills = visible.root->createWidget<MyGUI::TextBox>(
-                "Kenshi_TextboxStandardText_Small",
-                MyGUI::IntCoord(
-                    MEMBER_TEXT_LEFT, 43,
-                    g_stationView.rosterWidth - MEMBER_TEXT_LEFT - 8, 48),
-                MyGUI::Align::Top | MyGUI::Align::HStretch,
-                "KJM_StationWorkerSkills");
-            skills->setCaption(BuildStationWorkerSkills(worker));
-            skills->setFontHeight(16);
-            skills->setTextAlign(MyGUI::Align::Left | MyGUI::Align::Top);
-            skills->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
-            skills->setNeedMouseFocus(false);
-            MyGUI::TextBox* queue = visible.root->createWidget<MyGUI::TextBox>(
-                "Kenshi_TextboxStandardText_Small",
-                MyGUI::IntCoord(
-                    MEMBER_TEXT_LEFT, 94,
-                    g_stationView.rosterWidth - MEMBER_TEXT_LEFT - 8, 19),
-                MyGUI::Align::Top | MyGUI::Align::HStretch,
-                "KJM_StationWorkerQueueState");
-            queue->setFontHeight(13);
-            std::ostringstream queueCaption;
-            if (!worker.queueAvailable)
+            if (g_stationView.detailStation.valid &&
+                !g_stationView.frozenCardOrder.empty())
             {
-                queueCaption << "JOBS UNAVAILABLE";
-                queue->setTextColour(MyGUI::Colour(1.0f, 0.50f, 0.38f));
-            }
-            else if (worker.permanentJobCount == 0)
-            {
-                queueCaption << "NO PERMANENT JOBS";
-                queue->setTextColour(MyGUI::Colour(1.0f, 0.42f, 0.32f));
+                std::stable_sort(
+                    group.stations.begin(), group.stations.end(),
+                    StationFrozenLess());
             }
             else
             {
-                queueCaption << worker.permanentJobCount << " JOBS";
-                queue->setTextColour(MyGUI::Colour(0.94f, 0.88f, 0.69f));
+                std::stable_sort(
+                    group.stations.begin(), group.stations.end(),
+                    StationCardAlphabeticalLess());
             }
-            if (worker.queueAvailable && !worker.jobsEnabled)
+            group.top = top;
+            if (IsStationCategoryCollapsed(group.category))
             {
-                queueCaption << "  |  JOBS OFF";
+                group.height = STATION_GRID_GROUP_HEADER_HEIGHT;
             }
-            queue->setCaption(queueCaption.str());
-            queue->setNeedMouseFocus(false);
-            AttachStationInput(
-                visible.root, static_cast<int>(rowIndex), -1, std::string());
+            else
+            {
+                const int rows = static_cast<int>(
+                    (group.stations.size() + g_stationView.columns - 1) /
+                    g_stationView.columns);
+                group.height = STATION_GRID_GROUP_HEADER_HEIGHT +
+                    rows * StationCardRowStride();
+            }
+            top += group.height;
+            g_stationView.groups.push_back(group);
         }
-        CreateStationOutlineWidgets(
-            &visible, g_stationView.rosterWidth, row.height);
-        ApplyStationOutline(visible);
-        g_stationView.rosterWidgets.push_back(visible);
+        g_stationView.multipleAreas = areas.size() > 1;
+        g_stationView.contentHeight = top;
     }
 
-    std::string StationCategoryGlyph(StationCategory category)
+    bool FindStationCardTop(
+        const HandleIdentity& identity,
+        int* topOut)
     {
-        switch (category)
+        for (size_t groupIndex = 0;
+             groupIndex < g_stationView.groups.size(); ++groupIndex)
         {
-        case STATION_CRAFTING: return "ANVIL";
-        case STATION_REFINING: return "FURNACE";
-        case STATION_FARMING: return "WHEAT";
-        case STATION_MINING: return "PICK";
-        case STATION_RESEARCH: return "FLASK";
-        case STATION_TRAINING: return "TRAIN";
-        case STATION_STORAGE_HAULING: return "CRATE";
-        case STATION_DEFENSE: return "TURRET";
-        default: return "?";
+            const StationGridGroup& group = g_stationView.groups[groupIndex];
+            if (IsStationCategoryCollapsed(group.category))
+            {
+                continue;
+            }
+            for (size_t stationIndex = 0;
+                 stationIndex < group.stations.size(); ++stationIndex)
+            {
+                const StationTargetSnapshot& station =
+                    g_stationView.snapshot->stations[group.stations[stationIndex]];
+                if (SameHandleIdentity(station.identity, identity))
+                {
+                    *topOut = group.top + STATION_GRID_GROUP_HEADER_HEIGHT +
+                        static_cast<int>(stationIndex / g_stationView.columns) *
+                        StationCardRowStride();
+                    return true;
+                }
+            }
         }
+        return false;
+    }
+
+    bool CaptureStationScrollAnchor(HandleIdentity* identityOut, int* deltaOut)
+    {
+        if (identityOut == NULL || deltaOut == NULL ||
+            g_stationView.snapshot == NULL)
+        {
+            return false;
+        }
+        for (size_t groupIndex = 0;
+             groupIndex < g_stationView.groups.size(); ++groupIndex)
+        {
+            const StationGridGroup& group = g_stationView.groups[groupIndex];
+            if (IsStationCategoryCollapsed(group.category))
+            {
+                continue;
+            }
+            for (size_t stationIndex = 0;
+                 stationIndex < group.stations.size(); ++stationIndex)
+            {
+                const int top = group.top + STATION_GRID_GROUP_HEADER_HEIGHT +
+                    static_cast<int>(stationIndex / g_stationView.columns) *
+                    StationCardRowStride();
+                if (top + STATION_GRID_CARD_HEIGHT >=
+                    g_stationView.verticalOffset)
+                {
+                    *identityOut = g_stationView.snapshot->stations[
+                        group.stations[stationIndex]].identity;
+                    *deltaOut = g_stationView.verticalOffset - top;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    void DestroyStationWidgetList(std::vector<MyGUI::Widget*>* widgets)
+    {
+        if (widgets == NULL)
+        {
+            return;
+        }
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        if (gui != NULL)
+        {
+            for (size_t index = 0; index < widgets->size(); ++index)
+            {
+                if ((*widgets)[index] != NULL)
+                {
+                    gui->destroyWidget((*widgets)[index]);
+                }
+            }
+        }
+        widgets->clear();
     }
 
     bool TrySetStationCategoryIcon(
@@ -1234,8 +595,8 @@
         try
         {
             icon->setImageTexture(resource);
-            const MyGUI::IntSize imageSize = icon->getImageSize();
-            return imageSize.width > 0 && imageSize.height > 0;
+            const MyGUI::IntSize size = icon->getImageSize();
+            return size.width > 0 && size.height > 0;
         }
         catch (...)
         {
@@ -1243,695 +604,408 @@
         }
     }
 
-    void SetFittedStationName(
+    void AttachStationTooltip(MyGUI::Widget* widget, const std::string& text)
+    {
+        if (widget == NULL || text.empty())
+        {
+            return;
+        }
+        widget->setUserString("KJM_ToolTip", text);
+        widget->setNeedToolTip(true);
+        widget->eventToolTip += MyGUI::newDelegate(OnCardToolTip);
+    }
+
+    void SetStationGroupHeaderCaption(
+        MyGUI::Button* header,
+        const StationGridGroup& group)
+    {
+        if (header == NULL)
+        {
+            return;
+        }
+        std::ostringstream caption;
+        caption << (IsStationCategoryCollapsed(group.category) ? "+ " : "- ")
+                << GetStationCategoryName(group.category) << "  |  "
+                << group.stations.size() << " station";
+        if (group.stations.size() != 1)
+        {
+            caption << "s";
+        }
+        caption << "  |  " << group.unassignedCount << " unassigned";
+        header->setCaption(caption.str());
+    }
+
+    void CreateStationGroupHeader(const StationGridGroup& group)
+    {
+        const int y = group.top - g_stationView.verticalOffset;
+        MyGUI::Button* header =
+            g_stationView.canvas->createWidget<MyGUI::Button>(
+                "Kenshi_Button1",
+                MyGUI::IntCoord(4, y + 2, g_stationView.viewportWidth - 8,
+                    STATION_GRID_GROUP_HEADER_HEIGHT - 4),
+                MyGUI::Align::Top | MyGUI::Align::HStretch,
+                "KJM_StationCategoryHeader");
+        SetStationGroupHeaderCaption(header, group);
+        header->setFontHeight(16);
+        header->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
+        header->setUserString(
+            "KJM_StationCategory", StationIntegerString(group.category));
+        header->eventMouseButtonClick +=
+            MyGUI::newDelegate(OnStationCategoryClicked);
+        header->eventMouseWheel += MyGUI::newDelegate(OnStationMouseWheel);
+        g_stationView.virtualWidgets.push_back(header);
+        StationGridHeaderBinding binding;
+        binding.category = group.category;
+        binding.button = header;
+        g_stationView.visibleHeaders.push_back(binding);
+    }
+
+    void SetFittedStationGridName(
         MyGUI::TextBox* text,
         const std::string& caption)
+    {
+        text->setCaption(caption);
+        text->setFontHeight(22);
+        while (text->getFontHeight() > 10 &&
+            (text->getTextSize().width > STATION_GRID_CARD_WIDTH - 20 ||
+             text->getTextSize().height > 42))
+        {
+            text->setFontHeight(text->getFontHeight() - 1);
+        }
+    }
+
+    void SetStationCardAssignment(
+        MyGUI::TextBox* assignment,
+        const StationTargetSnapshot& station)
+    {
+        if (assignment == NULL)
+        {
+            return;
+        }
+        const size_t assignedCount = CountUniqueStationPeople(station);
+        if (assignedCount == 0)
+        {
+            assignment->setCaption("X");
+            assignment->setTextColour(MyGUI::Colour(1.0f, 0.20f, 0.16f));
+        }
+        else
+        {
+            std::ostringstream count;
+            count << assignedCount;
+            assignment->setCaption(count.str());
+            assignment->setTextColour(MyGUI::Colour(0.86f, 0.92f, 0.72f));
+        }
+        assignment->setFontHeight(28);
+        assignment->setTextAlign(MyGUI::Align::Center);
+        assignment->setNeedMouseFocus(false);
+    }
+
+    bool IsStationUsableAndUnassigned(
+        const StationTargetSnapshot& station)
+    {
+        return station.assignments.empty() && station.blockingStatusKnown &&
+            !station.blocking && station.blockingStatus.empty();
+    }
+
+    void SetStationUnassignedOutlineVisible(
+        StationGridCardBinding* binding,
+        bool visible)
+    {
+        if (binding == NULL)
+        {
+            return;
+        }
+        if (binding->unassignedTop != NULL)
+            binding->unassignedTop->setVisible(visible);
+        if (binding->unassignedBottom != NULL)
+            binding->unassignedBottom->setVisible(visible);
+        if (binding->unassignedLeft != NULL)
+            binding->unassignedLeft->setVisible(visible);
+        if (binding->unassignedRight != NULL)
+            binding->unassignedRight->setVisible(visible);
+    }
+
+    void SetFittedStationSingleLine(
+        MyGUI::TextBox* text,
+        const std::string& caption,
+        int initialFontHeight,
+        int minimumFontHeight)
     {
         if (text == NULL)
         {
             return;
         }
-        // The category artwork now fills the card background, so the name
-        // does not need to reserve a narrow strip beside a small icon.  Give
-        // it the full card width and start from a readable 16px size.  The
-        // fitter still reduces unusually long renamed buildings as needed.
-        const int maxWidth = STATION_COLUMN_WIDTH - 10;
-        const int maxHeight = 45;
         text->setCaption(caption);
-        text->setFontHeight(16);
-        if (text->getTextSize().width > maxWidth)
+        text->setFontHeight(initialFontHeight);
+        while (text->getFontHeight() > minimumFontHeight &&
+            text->getTextSize().width > text->getWidth() - 4)
         {
-            text->setCaption(WrapCardJobCaption(caption, 20));
-        }
-        int fontHeight = text->getFontHeight();
-        while (fontHeight > 9 &&
-            (text->getTextSize().width > maxWidth ||
-             text->getTextSize().height > maxHeight))
-        {
-            --fontHeight;
-            text->setFontHeight(fontHeight);
+            text->setFontHeight(text->getFontHeight() - 1);
         }
     }
 
-    void CreateStationHeaderWidget(int stationIndex)
+    void CreateStationGridCard(
+        const StationGridGroup& group,
+        size_t position)
     {
-        const StationTargetSnapshot* stationPointer =
-            GetVisibleStation(stationIndex);
-        if (stationPointer == NULL)
+        if (position >= group.stations.size())
         {
             return;
         }
-        const StationTargetSnapshot& station = *stationPointer;
-        const int x = stationIndex * STATION_COLUMN_STRIDE -
-            g_stationView.horizontalOffset;
-        StationVisibleWidget visible;
-        visible.stationIndex = stationIndex;
-        visible.root = g_stationView.headerCanvas->createWidget<MyGUI::Widget>(
-            "WhiteSkin", MyGUI::IntCoord(x, 0, STATION_COLUMN_WIDTH,
-            STATION_HEADER_HEIGHT), MyGUI::Align::Left | MyGUI::Align::Top,
-            "KJM_StationHeader");
-        visible.root->setColour(MyGUI::Colour(0.14f, 0.11f, 0.08f));
-        visible.root->setUserString("KJM_StationColumn", IntegerString(stationIndex));
-        visible.root->setUserString("KJM_StationHeaderCard", "1");
+        const StationTargetSnapshot& station =
+            g_stationView.snapshot->stations[group.stations[position]];
+        const int column = static_cast<int>(position % g_stationView.columns);
+        const int row = static_cast<int>(position / g_stationView.columns);
+        const int x = STATION_GRID_SIDE_PAD +
+            column * (STATION_GRID_CARD_WIDTH + STATION_GRID_GAP);
+        const int y = group.top + STATION_GRID_GROUP_HEADER_HEIGHT +
+            row * StationCardRowStride() - g_stationView.verticalOffset;
+        MyGUI::Button* card = g_stationView.canvas->createWidget<MyGUI::Button>(
+            "Kenshi_Button1",
+            MyGUI::IntCoord(x, y, STATION_GRID_CARD_WIDTH,
+                STATION_GRID_CARD_HEIGHT),
+            MyGUI::Align::Left | MyGUI::Align::Top, "KJM_StationCard");
+        card->setColour(MyGUI::Colour(0.16f, 0.13f, 0.09f));
+        card->setUserString(
+            "KJM_StationIdentity", StationIdentityString(station.identity));
+        card->eventMouseButtonClick += MyGUI::newDelegate(OnStationCardClicked);
+        card->eventMouseWheel += MyGUI::newDelegate(OnStationMouseWheel);
 
-        const bool viewportStart =
-            stationIndex == GetFirstVisibleStationIndex();
-        const bool areaStart = viewportStart || stationIndex == 0 ||
-            GetVisibleStation(stationIndex - 1)->areaName != station.areaName;
-        const bool categoryStart = viewportStart || areaStart || stationIndex == 0 ||
-            GetVisibleStation(stationIndex - 1)->category != station.category;
-        MyGUI::TextBox* area = visible.root->createWidget<MyGUI::TextBox>(
-            "Kenshi_TextboxStandardText_Small",
-            MyGUI::IntCoord(2, 1, STATION_COLUMN_WIDTH - 4,
-                STATION_AREA_BAND_HEIGHT - 2),
-            MyGUI::Align::Top | MyGUI::Align::HStretch, "KJM_StationAreaBand");
-        area->setCaption(areaStart ? station.areaName : "");
-        area->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
-        area->setFontHeight(14);
-        area->setTextColour(MyGUI::Colour(1.0f, 0.86f, 0.54f));
-        area->setNeedMouseFocus(false);
-        MyGUI::TextBox* category = visible.root->createWidget<MyGUI::TextBox>(
-            "Kenshi_TextboxStandardText_Small",
-            MyGUI::IntCoord(2, STATION_AREA_BAND_HEIGHT + 1,
-                STATION_COLUMN_WIDTH - 4, STATION_CATEGORY_BAND_HEIGHT - 2),
-            MyGUI::Align::Top | MyGUI::Align::HStretch,
-            "KJM_StationCategoryBand");
-        category->setCaption(
-            categoryStart ? GetStationCategoryName(station.category) : "");
-        category->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
-        category->setFontHeight(14);
-        category->setTextColour(MyGUI::Colour(0.87f, 0.75f, 0.53f));
-        category->setNeedMouseFocus(false);
-
-        const int cardTop = STATION_AREA_BAND_HEIGHT + STATION_CATEGORY_BAND_HEIGHT;
         const char* iconResource = GetStationVisualIconResource(
             station.category, station.visualSubtype);
-        bool iconApplied = false;
-        if (iconResource != NULL && iconResource[0] != '\0')
+        const int iconSize = STATION_GRID_CARD_HEIGHT;
+        MyGUI::ImageBox* icon = card->createWidget<MyGUI::ImageBox>(
+            "ImageBox", MyGUI::IntCoord(
+                (STATION_GRID_CARD_WIDTH - iconSize) / 2,
+                0, iconSize, iconSize),
+            MyGUI::Align::Top,
+            "KJM_StationCardBackground");
+        icon->setAlpha(0.33f);
+        icon->setInheritsAlpha(false);
+        icon->setNeedMouseFocus(false);
+        if (!TrySetStationCategoryIcon(icon, iconResource))
         {
-            MyGUI::ImageBox* icon = visible.root->createWidget<MyGUI::ImageBox>(
-                "ImageBox", MyGUI::IntCoord(0, 0,
-                    STATION_COLUMN_WIDTH, STATION_HEADER_HEIGHT),
-                MyGUI::Align::Stretch, "KJM_StationCategoryBackground");
-            icon->setDepth(10);
-            // Render category artwork as a true background watermark: the
-            // image itself is 33% opaque (67% transparent), while all header
-            // text remains fully opaque above it.
-            icon->setAlpha(0.33f);
-            icon->setInheritsAlpha(false);
-            icon->setNeedMouseFocus(false);
-            iconApplied = TrySetStationCategoryIcon(icon, iconResource);
-            if (!iconApplied)
-            {
-                icon->setVisible(false);
-            }
+            icon->setVisible(false);
         }
 
-        // Keep the existing dark card treatment behind the artwork. Both the
-        // image and tint cover the complete station header, including its
-        // area/category bands.  The near-square header also avoids severely
-        // stretching the square source artwork.  The root remains the dark
-        // fallback when an icon cannot load.
-        MyGUI::Widget* cardOverlay = visible.root->createWidget<MyGUI::Widget>(
-            "WhiteSkin", MyGUI::IntCoord(0, 0,
-                STATION_COLUMN_WIDTH, STATION_HEADER_HEIGHT),
-            MyGUI::Align::Stretch, "KJM_StationCardOverlay");
-        cardOverlay->setColour(MyGUI::Colour(0.14f, 0.11f, 0.08f));
-        cardOverlay->setAlpha(0.62f);
-        // Keep this dark base behind the icon. The ImageBox now owns the
-        // requested 67% transparency directly.
-        cardOverlay->setDepth(11);
-        cardOverlay->setNeedMouseFocus(false);
+        MyGUI::Widget* tint = card->createWidget<MyGUI::Widget>(
+            "WhiteSkin", MyGUI::IntCoord(0, 0, STATION_GRID_CARD_WIDTH,
+                STATION_GRID_CARD_HEIGHT), MyGUI::Align::Stretch,
+            "KJM_StationCardTint");
+        const bool recentlyChanged =
+            SameHandleIdentity(
+                g_stationView.recentStation, station.identity) &&
+            !g_stationView.recentMembers.empty();
+        tint->setColour(station.blocking || !station.blockingStatus.empty() ?
+            MyGUI::Colour(0.38f, 0.07f, 0.05f) :
+            MyGUI::Colour(0.09f, 0.07f, 0.05f));
+        tint->setAlpha(0.55f);
+        tint->setNeedMouseFocus(false);
 
-        if (!iconApplied)
+        // A usable station with nobody assigned is a planning warning, not a
+        // work-blocking failure. Four thin yellow edges keep that state
+        // distinct from the red blocking tint and the red zero-person X.
+        StationGridCardBinding binding;
+        binding.identity = station.identity;
+        binding.card = card;
+        binding.tint = tint;
+        binding.unassignedTop = card->createWidget<MyGUI::Widget>(
+            "WhiteSkin", MyGUI::IntCoord(1, 1,
+                STATION_GRID_CARD_WIDTH - 2, 3),
+            MyGUI::Align::Left | MyGUI::Align::Top,
+            "KJM_StationUnassignedTop");
+        binding.unassignedBottom = card->createWidget<MyGUI::Widget>(
+            "WhiteSkin", MyGUI::IntCoord(1, STATION_GRID_CARD_HEIGHT - 4,
+                STATION_GRID_CARD_WIDTH - 2, 3),
+            MyGUI::Align::Left | MyGUI::Align::Top,
+            "KJM_StationUnassignedBottom");
+        binding.unassignedLeft = card->createWidget<MyGUI::Widget>(
+            "WhiteSkin", MyGUI::IntCoord(1, 4, 3,
+                STATION_GRID_CARD_HEIGHT - 8),
+            MyGUI::Align::Left | MyGUI::Align::Top,
+            "KJM_StationUnassignedLeft");
+        binding.unassignedRight = card->createWidget<MyGUI::Widget>(
+            "WhiteSkin", MyGUI::IntCoord(STATION_GRID_CARD_WIDTH - 4, 4, 3,
+                STATION_GRID_CARD_HEIGHT - 8),
+            MyGUI::Align::Left | MyGUI::Align::Top,
+            "KJM_StationUnassignedRight");
+        MyGUI::Widget* unassignedEdges[4] = {
+            binding.unassignedTop, binding.unassignedBottom,
+            binding.unassignedLeft, binding.unassignedRight
+        };
+        for (int edge = 0; edge < 4; ++edge)
         {
-            MyGUI::TextBox* icon = visible.root->createWidget<MyGUI::TextBox>(
-                "Kenshi_TextboxStandardText_Small",
-                MyGUI::IntCoord(5, cardTop + 6,
-                    STATION_COLUMN_WIDTH - 10, 34),
-                MyGUI::Align::Left | MyGUI::Align::Top,
-                "KJM_StationCategoryGlyph");
-            icon->setCaption(StationCategoryGlyph(station.category));
-            icon->setDepth(8);
-            icon->setFontHeight(18);
-            icon->setTextAlign(MyGUI::Align::Center);
-            icon->setTextColour(MyGUI::Colour(0.91f, 0.77f, 0.48f, 0.45f));
-            icon->setNeedMouseFocus(false);
+            unassignedEdges[edge]->setColour(
+                MyGUI::Colour(1.0f, 0.80f, 0.20f));
+            unassignedEdges[edge]->setAlpha(0.92f);
+            unassignedEdges[edge]->setNeedMouseFocus(false);
         }
-        MyGUI::TextBox* name = visible.root->createWidget<MyGUI::TextBox>(
-            "Kenshi_TextboxStandardText_Small",
-            MyGUI::IntCoord(5, cardTop + 4, STATION_COLUMN_WIDTH - 10, 45),
-            MyGUI::Align::Top | MyGUI::Align::HStretch, "KJM_StationExactName");
-        SetFittedStationName(
-            name, GetStationPresentationName(stationIndex));
+        SetStationUnassignedOutlineVisible(
+            &binding,
+            IsStationUsableAndUnassigned(station) && !recentlyChanged);
+
+        // Keep recent successful changes visible even when the station is
+        // also blocked.  The blocking tint remains red; this separate blue
+        // bar is the non-competing recent-change indicator.
+        MyGUI::Widget* recentMarker = card->createWidget<MyGUI::Widget>(
+            "WhiteSkin", MyGUI::IntCoord(2, 2,
+                STATION_GRID_CARD_WIDTH - 4, 4),
+            MyGUI::Align::Top | MyGUI::Align::HStretch,
+            "KJM_StationRecentMarker");
+        recentMarker->setColour(MyGUI::Colour(0.48f, 0.82f, 1.0f));
+        recentMarker->setAlpha(0.92f);
+        recentMarker->setNeedMouseFocus(false);
+        recentMarker->setVisible(recentlyChanged);
+        binding.recentMarker = recentMarker;
+
+        MyGUI::TextBox* name = card->createWidget<MyGUI::TextBox>(
+            "Kenshi_TextboxStandardText",
+            MyGUI::IntCoord(8, 4, STATION_GRID_CARD_WIDTH - 16, 43),
+            MyGUI::Align::Top | MyGUI::Align::HStretch,
+            "KJM_StationExactName");
+        SetFittedStationGridName(name, station.name);
         name->setTextAlign(MyGUI::Align::Center);
         name->setTextColour(MyGUI::Colour(1.0f, 0.96f, 0.84f));
-        name->setColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
-        name->setAlpha(1.0f);
-        name->setInheritsAlpha(false);
         name->setNeedMouseFocus(false);
-        MyGUI::TextBox* skill = visible.root->createWidget<MyGUI::TextBox>(
+
+        int lineTop = 49;
+        if (g_stationView.multipleAreas)
+        {
+            MyGUI::TextBox* area = card->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText_Small",
+                MyGUI::IntCoord(7, lineTop, STATION_GRID_CARD_WIDTH - 14, 17),
+                MyGUI::Align::Top | MyGUI::Align::HStretch,
+                "KJM_StationArea");
+            SetFittedStationSingleLine(
+                area, station.areaName, 13, 9);
+            area->setTextAlign(MyGUI::Align::Center);
+            area->setTextColour(MyGUI::Colour(0.95f, 0.82f, 0.53f));
+            area->setNeedMouseFocus(false);
+            lineTop += 17;
+        }
+
+        MyGUI::TextBox* assignment = card->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText_Small",
-            MyGUI::IntCoord(4, cardTop + 49, STATION_COLUMN_WIDTH - 8, 19),
+            MyGUI::IntCoord(7, lineTop, STATION_GRID_CARD_WIDTH - 14, 35),
             MyGUI::Align::Top | MyGUI::Align::HStretch,
-            "KJM_StationRelevantSkill");
-        skill->setCaption(
-            station.relevantSkillName.empty() ? "Relevant skill: None" :
-            (std::string("Relevant skill: ") + station.relevantSkillName));
-        skill->setFontHeight(13);
-        skill->setTextAlign(MyGUI::Align::Center);
-        skill->setTextColour(MyGUI::Colour(1.0f, 0.96f, 0.84f));
-        skill->setColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
-        skill->setAlpha(1.0f);
-        skill->setInheritsAlpha(false);
-        skill->setNeedMouseFocus(false);
-        MyGUI::TextBox* status = visible.root->createWidget<MyGUI::TextBox>(
+            "KJM_StationAssignedCount");
+        SetStationCardAssignment(assignment, station);
+        binding.assignment = assignment;
+
+        MyGUI::TextBox* status = card->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText_Small",
-            MyGUI::IntCoord(4, cardTop + 68, STATION_COLUMN_WIDTH - 8, 14),
+            MyGUI::IntCoord(7, STATION_GRID_CARD_HEIGHT - 27,
+                STATION_GRID_CARD_WIDTH - 14, 20),
             MyGUI::Align::Bottom | MyGUI::Align::HStretch,
             "KJM_StationBlockingStatus");
-        if (!station.blockingStatus.empty())
+        if (station.blocking || !station.blockingStatus.empty())
         {
-            status->setCaption(station.blockingStatus);
-            status->setTextColour(MyGUI::Colour(1.0f, 0.38f, 0.27f));
+            SetFittedStationSingleLine(
+                status,
+                station.blockingStatus.empty() ?
+                    "CANNOT WORK" : station.blockingStatus,
+                12, 9);
+            status->setTextColour(MyGUI::Colour(1.0f, 0.32f, 0.22f));
         }
-        else if (station.assignments.empty())
-        {
-            status->setCaption("UNASSIGNED");
-            status->setTextColour(MyGUI::Colour(1.0f, 0.82f, 0.42f));
-        }
-        status->setFontHeight(10);
         status->setTextAlign(MyGUI::Align::Center);
         status->setNeedMouseFocus(false);
+        binding.status = status;
 
         std::ostringstream tooltip;
-        tooltip << station.name << "\nArea: " << station.areaName
-                << "\nCategory: " << GetStationCategoryName(station.category)
-                << "\nRelevant skill: "
+        tooltip << station.name << "\nCategory: "
+                << GetStationCategoryName(station.category);
+        if (g_stationView.multipleAreas)
+        {
+            tooltip << "\nArea: " << station.areaName;
+        }
+        tooltip << "\nRelevant skill: "
                 << (station.relevantSkillName.empty() ? "None" :
                     station.relevantSkillName);
-        if (!station.blockingStatus.empty())
+        if (!station.assignmentSupported)
         {
-            tooltip << "\nCannot work: " << station.blockingStatus;
-        }
-        if (station.assignments.empty())
-        {
-            tooltip << "\nAssignment: UNASSIGNED";
-        }
-        AttachStationInput(visible.root, -1, stationIndex, tooltip.str());
-        AttachStationHeaderDragInput(visible.root);
-        CreateStationOutlineWidgets(
-            &visible, STATION_COLUMN_WIDTH, STATION_HEADER_HEIGHT);
-        ApplyStationOutline(visible);
-        g_stationView.headerWidgets.push_back(visible);
-    }
-
-    std::string BuildStationAssignmentTooltip(
-        const StationTargetSnapshot& station,
-        const StationMemberSnapshot& worker,
-        const StationAssignmentSnapshot& assignment)
-    {
-        std::ostringstream tooltip;
-        tooltip << GetStationAssignmentWorkLabel(station, assignment)
-                << "\nStation: " << station.name
-                << "\nPriority: " << assignment.priority
-                << "\nSquad: " << assignment.squadName;
-        const std::string fullOrder = TrimStationAssignmentText(
-            StripLeadingPriorityPrefix(assignment.jobLabel));
-        if (!fullOrder.empty() && fullOrder !=
-            GetStationAssignmentWorkLabel(station, assignment))
-        {
-            tooltip << "\nOrder: " << fullOrder;
-        }
-        if (assignment.relevantSkillKnown &&
-            !station.relevantSkillName.empty())
-        {
-            tooltip << "\n" << station.relevantSkillName << ": "
-                    << assignment.relevantSkillValue;
-        }
-        if (!worker.jobsEnabled)
-        {
-            tooltip << "\nJobs: OFF";
+            tooltip << "\nAssignment: Not supported for this station";
         }
         if (!station.blockingStatus.empty())
         {
             tooltip << "\nCannot work: " << station.blockingStatus;
         }
-        return tooltip.str();
+        else if (!station.blockingStatusKnown)
+        {
+            tooltip << "\nWork status: Unavailable";
+        }
+        AttachStationTooltip(card, tooltip.str());
+        g_stationView.virtualWidgets.push_back(card);
+        g_stationView.visibleCards.push_back(binding);
     }
 
-    void AttachStationAssignmentCardInput(
-        MyGUI::Button* card,
-        int rowIndex,
-        int stationIndex,
-        size_t occurrence,
-        const std::string& tooltip)
+    void UpdateStationScrollRange()
     {
-        if (card == NULL)
+        g_stationView.maxVerticalOffset = std::max(
+            0, g_stationView.contentHeight - g_stationView.viewportHeight);
+        g_stationView.verticalOffset = ClampInt(
+            g_stationView.verticalOffset, 0, g_stationView.maxVerticalOffset);
+        if (g_stationView.verticalScroll == NULL)
         {
             return;
         }
-        card->setUserString("KJM_StationRow", StationIntegerString(rowIndex));
-        card->setUserString(
-            "KJM_StationColumn", StationIntegerString(stationIndex));
-        card->setUserString(
-            "KJM_StationAssignment",
-            StationIntegerString(static_cast<int>(occurrence)));
-        card->eventMouseButtonPressed +=
-            MyGUI::newDelegate(OnStationAssignmentPressed);
-        card->eventMouseDrag +=
-            MyGUI::newDelegate(OnStationAssignmentDrag);
-        card->eventMouseButtonReleased +=
-            MyGUI::newDelegate(OnStationAssignmentReleased);
-        card->eventMouseSetFocus +=
-            MyGUI::newDelegate(OnStationWidgetFocus);
-        card->eventMouseLostFocus +=
-            MyGUI::newDelegate(OnStationWidgetLostFocus);
-        card->eventMouseWheel += MyGUI::newDelegate(OnStationMouseWheel);
-        card->setUserString("KJM_ToolTip", tooltip);
-        card->setNeedToolTip(true);
-        card->eventToolTip += MyGUI::newDelegate(OnCardToolTip);
+        g_stationView.changingScroll = true;
+        g_stationView.verticalScroll->setScrollRange(
+            static_cast<size_t>(g_stationView.maxVerticalOffset + 1));
+        g_stationView.verticalScroll->setScrollPage(
+            static_cast<size_t>(std::max(1, g_stationView.viewportHeight)));
+        g_stationView.verticalScroll->setScrollViewPage(
+            static_cast<size_t>(StationCardRowStride()));
+        g_stationView.verticalScroll->setScrollPosition(
+            static_cast<size_t>(g_stationView.verticalOffset));
+        g_stationView.verticalScroll->setEnabled(
+            g_stationView.maxVerticalOffset > 0);
+        g_stationView.changingScroll = false;
     }
 
-    void CreateStationCellWidget(size_t rowIndex, int stationIndex)
+    void RefreshStationVirtualWidgets()
     {
-        if (g_stationView.snapshot == NULL || rowIndex >= g_stationView.rows.size() ||
-            stationIndex < 0 ||
-            stationIndex >= static_cast<int>(g_stationView.visibleStations.size()))
-        {
-            return;
-        }
-        const StationRosterRow& row = g_stationView.rows[rowIndex];
-        const StationTargetSnapshot* stationPointer = GetVisibleStation(stationIndex);
-        if (stationPointer == NULL)
-        {
-            return;
-        }
-        const StationTargetSnapshot& station = *stationPointer;
-        const int x = stationIndex * STATION_COLUMN_STRIDE -
-            g_stationView.horizontalOffset;
-        const int y = row.top - g_stationView.verticalOffset;
-        StationVisibleWidget visible;
-        visible.rowIndex = static_cast<int>(rowIndex);
-        visible.stationIndex = stationIndex;
-        visible.root = g_stationView.matrixCanvas->createWidget<MyGUI::Widget>(
-            "WhiteSkin", MyGUI::IntCoord(x, y, STATION_COLUMN_WIDTH, row.height),
-            MyGUI::Align::Left | MyGUI::Align::Top, "KJM_StationMatrixCell");
-        visible.root->setColour(
-            row.kind == STATION_ROSTER_SQUAD ? MyGUI::Colour(0.18f, 0.14f, 0.10f) :
-            MyGUI::Colour(0.105f, 0.09f, 0.07f));
-        visible.root->setAlpha(row.kind == STATION_ROSTER_MEMBER ? 0.78f : 0.60f);
-        if (row.kind != STATION_ROSTER_MEMBER)
-        {
-            visible.root->eventMouseWheel +=
-                MyGUI::newDelegate(OnStationMouseWheel);
-        }
-
-        if (row.kind == STATION_ROSTER_MEMBER)
-        {
-            const StationMemberSnapshot& worker =
-                g_stationView.snapshot->squads[row.squadIndex].members[row.memberIndex];
-            const size_t count = CountStationAssignments(station, worker.identity);
-            std::ostringstream tooltip;
-            for (size_t occurrence = 0; occurrence < count; ++occurrence)
-            {
-                const StationAssignmentSnapshot* assignment = FindStationAssignment(
-                    station, worker.identity, occurrence);
-                if (assignment == NULL)
-                {
-                    continue;
-                }
-                if (occurrence != 0)
-                {
-                    tooltip << "\n\n";
-                }
-                tooltip << BuildStationAssignmentTooltip(
-                    station, worker, *assignment);
-            }
-            // Use one compact queue card per visible assignment. The exact
-            // full order stays in that card's tooltip. A pathological queue
-            // uses an explicit overflow row instead of silently hiding jobs.
-            const size_t shownCount = std::min<size_t>(5, count);
-            const bool hasOverflow = count > shownCount;
-            const size_t lineCount = shownCount + (hasOverflow ? 1 : 0);
-            const int assignmentTop = lineCount <= 1 ? 17 :
-                (lineCount == 2 ? 11 :
-                 (lineCount == 3 ? 7 :
-                  (lineCount == 4 ? 4 :
-                   (lineCount == 5 ? 3 : 2))));
-            const int assignmentHeight = lineCount <= 1 ? 27 :
-                (lineCount == 2 ? 26 :
-                 (lineCount == 3 ? 24 :
-                  (lineCount == 4 ? 23 :
-                   (lineCount == 5 ? 21 : 18))));
-            const int assignmentFont = lineCount <= 1 ? 16 :
-                (lineCount == 2 ? 15 :
-                 (lineCount == 3 ? 14 :
-                  (lineCount == 4 ? 13 :
-                   (lineCount == 5 ? 12 : 11))));
-            for (size_t occurrence = 0; occurrence < shownCount; ++occurrence)
-            {
-                const StationAssignmentSnapshot* assignment =
-                    FindStationAssignment(station, worker.identity, occurrence);
-                if (assignment == NULL)
-                {
-                    continue;
-                }
-                std::ostringstream caption;
-                caption << assignment->priority << "  "
-                        << GetCompactStationAssignmentWorkLabel(
-                            station, *assignment);
-                MyGUI::Button* card = visible.root->createWidget<MyGUI::Button>(
-                    "Kenshi_Button1",
-                    MyGUI::IntCoord(4,
-                        assignmentTop + static_cast<int>(occurrence) * assignmentHeight,
-                        STATION_COLUMN_WIDTH - 8, assignmentHeight - 2),
-                    MyGUI::Align::Top | MyGUI::Align::HStretch,
-                    "KJM_StationAssignmentCard");
-                card->setCaption(caption.str());
-                card->setFontHeight(assignmentFont);
-                card->setTextAlign(
-                    MyGUI::Align::Left | MyGUI::Align::VCenter);
-                card->setTextColour(MyGUI::Colour(1.0f, 0.95f, 0.78f));
-                card->setColour(MyGUI::Colour(0.25f, 0.20f, 0.14f));
-                card->setAlpha(1.0f);
-                card->setInheritsAlpha(false);
-                AttachStationAssignmentCardInput(
-                    card, static_cast<int>(rowIndex), stationIndex,
-                    occurrence,
-                    BuildStationAssignmentTooltip(
-                        station, worker, *assignment));
-            }
-            if (hasOverflow)
-            {
-                std::ostringstream overflowCaption;
-                overflowCaption << "+" << (count - shownCount) << " more job";
-                if (count - shownCount != 1)
-                {
-                    overflowCaption << "s";
-                }
-                MyGUI::TextBox* overflow =
-                    visible.root->createWidget<MyGUI::TextBox>(
-                        "Kenshi_TextboxStandardText_Small",
-                        MyGUI::IntCoord(8,
-                            assignmentTop +
-                                static_cast<int>(shownCount) * assignmentHeight,
-                            STATION_COLUMN_WIDTH - 14, assignmentHeight),
-                        MyGUI::Align::Top | MyGUI::Align::HStretch,
-                        "KJM_StationAssignmentOverflow");
-                overflow->setCaption(overflowCaption.str());
-                overflow->setFontHeight(assignmentFont);
-                overflow->setTextAlign(
-                    MyGUI::Align::Left | MyGUI::Align::VCenter);
-                overflow->setTextColour(MyGUI::Colour(1.0f, 0.72f, 0.35f));
-                overflow->setColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
-                overflow->setAlpha(1.0f);
-                overflow->setInheritsAlpha(false);
-                overflow->setNeedMouseFocus(false);
-            }
-            if (count > 0 && lineCount <= 3)
-            {
-                const StationAssignmentSnapshot* first = FindStationAssignment(
-                    station, worker.identity, 0);
-                if (first != NULL && first->relevantSkillKnown &&
-                    !station.relevantSkillName.empty())
-                {
-                    const int skillTop = assignmentTop +
-                        static_cast<int>(shownCount) * assignmentHeight + 4;
-                    const int skillHeight = std::max(
-                        14, STATION_MEMBER_ROW_HEIGHT - 6 - skillTop);
-                    MyGUI::TextBox* skill = visible.root->createWidget<MyGUI::TextBox>(
-                        "Kenshi_TextboxStandardText_Small",
-                        MyGUI::IntCoord(4, skillTop, STATION_COLUMN_WIDTH - 8,
-                            skillHeight),
-                        MyGUI::Align::Top | MyGUI::Align::HStretch,
-                        "KJM_StationCellRelevantSkill");
-                    std::ostringstream skillCaption;
-                    skillCaption << station.relevantSkillName << " "
-                                 << first->relevantSkillValue;
-                    skill->setCaption(skillCaption.str());
-                    skill->setFontHeight(shownCount == 3 ? 11 : 13);
-                    skill->setTextAlign(MyGUI::Align::Center);
-                    skill->setTextColour(MyGUI::Colour(0.94f, 0.88f, 0.70f));
-                    skill->setColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
-                    skill->setAlpha(1.0f);
-                    skill->setInheritsAlpha(false);
-                    skill->setNeedMouseFocus(false);
-                }
-            }
-            AttachStationInput(
-                visible.root, static_cast<int>(rowIndex), stationIndex,
-                tooltip.str());
-        }
-
-        CreateStationOutlineWidgets(&visible, STATION_COLUMN_WIDTH, row.height);
-        ApplyStationOutline(visible);
-        g_stationView.cellWidgets.push_back(visible);
-    }
-
-    bool HasStationHeaderWidget(int stationIndex)
-    {
-        for (size_t index = 0; index < g_stationView.headerWidgets.size(); ++index)
-        {
-            if (g_stationView.headerWidgets[index].stationIndex == stationIndex)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    bool HasStationCellWidget(size_t rowIndex, int stationIndex)
-    {
-        for (size_t index = 0; index < g_stationView.cellWidgets.size(); ++index)
-        {
-            if (g_stationView.cellWidgets[index].rowIndex ==
-                    static_cast<int>(rowIndex) &&
-                g_stationView.cellWidgets[index].stationIndex == stationIndex)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    int FindStationMemberRow(const HandleIdentity& identity)
-    {
-        if (!identity.valid || g_stationView.snapshot == NULL)
-        {
-            return -1;
-        }
-        for (size_t rowIndex = 0; rowIndex < g_stationView.rows.size();
-             ++rowIndex)
-        {
-            const StationRosterRow& row = g_stationView.rows[rowIndex];
-            if (row.kind != STATION_ROSTER_MEMBER ||
-                row.squadIndex >= g_stationView.snapshot->squads.size())
-            {
-                continue;
-            }
-            const StationSquadSnapshot& squad =
-                g_stationView.snapshot->squads[row.squadIndex];
-            if (row.memberIndex < squad.members.size() &&
-                SameHandleIdentity(
-                    squad.members[row.memberIndex].identity, identity))
-            {
-                return static_cast<int>(rowIndex);
-            }
-        }
-        // A collapsed squad, an unavailable member, or an inactive Stations
-        // tab has no member row to redraw. The patched snapshot will be used
-        // the next time that row is created.
-        return -1;
-    }
-
-    bool DestroyStationWidgetsForRow(
-        std::vector<StationVisibleWidget>* widgets,
-        int rowIndex)
-    {
-        if (widgets == NULL || rowIndex < 0)
-        {
-            return false;
-        }
-        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
-        if (gui == NULL)
-        {
-            return false;
-        }
-        for (size_t index = widgets->size(); index > 0; --index)
-        {
-            const size_t itemIndex = index - 1;
-            if ((*widgets)[itemIndex].rowIndex != rowIndex)
-            {
-                continue;
-            }
-            // Remove the binding before asking MyGUI to destroy the widget.
-            // If MyGUI throws, the guarded caller can safely fall back to a
-            // full virtual redraw without retaining a possibly destroyed
-            // pointer and attempting to destroy it twice.
-            MyGUI::Widget* root = (*widgets)[itemIndex].root;
-            widgets->erase(widgets->begin() + itemIndex);
-            if (root != NULL)
-            {
-                gui->destroyWidget(root);
-            }
-        }
-        return true;
-    }
-
-    bool RefreshStationMemberRowWidgets(int rowIndex)
-    {
-        if (rowIndex < 0 ||
-            rowIndex >= static_cast<int>(g_stationView.rows.size()))
-        {
-            return true;
-        }
-        const StationRosterRow& row = g_stationView.rows[rowIndex];
-        if (row.kind != STATION_ROSTER_MEMBER)
-        {
-            return false;
-        }
-
-        bool rosterWasCreated = false;
-        std::vector<int> stationIndexes;
-        for (size_t index = 0; index < g_stationView.rosterWidgets.size();
-             ++index)
-        {
-            if (g_stationView.rosterWidgets[index].rowIndex == rowIndex)
-            {
-                rosterWasCreated = true;
-                break;
-            }
-        }
-        for (size_t index = 0; index < g_stationView.cellWidgets.size();
-             ++index)
-        {
-            if (g_stationView.cellWidgets[index].rowIndex == rowIndex)
-            {
-                stationIndexes.push_back(
-                    g_stationView.cellWidgets[index].stationIndex);
-            }
-        }
-
-        // No live widget means the row is collapsed, unavailable, off-screen,
-        // or the Stations tab is hidden. The snapshot is already current, so
-        // normal virtualization will create the new cards when needed.
-        if (!rosterWasCreated && stationIndexes.empty())
-        {
-            return !IsStationRowVisible(row);
-        }
-        if (!rosterWasCreated)
-        {
-            return false;
-        }
-
-        if (!DestroyStationWidgetsForRow(
-                &g_stationView.cellWidgets, rowIndex) ||
-            !DestroyStationWidgetsForRow(
-                &g_stationView.rosterWidgets, rowIndex))
-        {
-            return false;
-        }
-
-        CreateStationRosterWidget(static_cast<size_t>(rowIndex));
-        for (size_t index = 0; index < stationIndexes.size(); ++index)
-        {
-            CreateStationCellWidget(
-                static_cast<size_t>(rowIndex), stationIndexes[index]);
-        }
-        return true;
-    }
-
-    bool RefreshStationTransferredMemberRows(
-        const HandleIdentity& source,
-        const HandleIdentity& destination)
-    {
-        if (!source.valid || !destination.valid ||
-            SameHandleIdentity(source, destination) ||
-            g_stationView.headerDragArmed ||
-            g_stationView.assignmentDrag.armed)
-        {
-            return false;
-        }
-        if (!g_stationView.visible || g_stationView.snapshot == NULL ||
-            g_stationView.root == NULL)
-        {
-            g_stationView.virtualRefreshRequested = false;
-            return true;
-        }
-
-        const int sourceRow = FindStationMemberRow(source);
-        const int destinationRow = FindStationMemberRow(destination);
-        if (g_tooltip != NULL)
-        {
-            g_tooltip->setVisible(false);
-        }
-        if (!RefreshStationMemberRowWidgets(sourceRow) ||
-            !RefreshStationMemberRowWidgets(destinationRow))
-        {
-            return false;
-        }
-
-        // CancelStationAssignmentDrag requested a general virtual redraw after
-        // release. These two rows now contain the verified projection, and no
-        // other board structure changed, so that redraw is no longer needed.
+        g_stationView.visibleCards.clear();
+        g_stationView.visibleHeaders.clear();
+        DestroyStationWidgetList(&g_stationView.virtualWidgets);
         g_stationView.virtualRefreshRequested = false;
-        ApplyStationOutlines();
-        return true;
-    }
-
-    void EnsureStationHeaderDragBuffer()
-    {
-        if (g_stationView.snapshot == NULL ||
-            g_stationView.visibleStations.empty())
+        if (!g_stationView.visible || g_stationView.canvas == NULL ||
+            g_stationView.snapshot == NULL)
         {
             return;
         }
-        // A pointer cannot move farther than roughly one viewport in a normal
-        // drag. Pre-create that range on each side, without deleting any
-        // current widget, so the captured header remains valid and newly
-        // exposed columns do not turn blank while the pointer moves.
-        const int stationCount =
-            static_cast<int>(g_stationView.visibleStations.size());
-        const int bufferColumns = std::min(
-            12,
-            std::max(
-                1, g_stationView.matrixWidth / STATION_COLUMN_STRIDE + 2));
-        const int firstStation = ClampInt(
-            g_stationView.horizontalOffset / STATION_COLUMN_STRIDE -
-                bufferColumns,
-            0, stationCount - 1);
-        const int lastStation = ClampInt(
-            (g_stationView.horizontalOffset + g_stationView.matrixWidth) /
-                STATION_COLUMN_STRIDE + bufferColumns,
-            0, stationCount - 1);
-
-        for (int stationIndex = firstStation;
-             stationIndex <= lastStation; ++stationIndex)
+        const int visibleTop = g_stationView.verticalOffset -
+            STATION_GRID_OVERSCAN;
+        const int visibleBottom = g_stationView.verticalOffset +
+            g_stationView.viewportHeight + STATION_GRID_OVERSCAN;
+        for (size_t groupIndex = 0;
+             groupIndex < g_stationView.groups.size(); ++groupIndex)
         {
-            if (!HasStationHeaderWidget(stationIndex))
-            {
-                CreateStationHeaderWidget(stationIndex);
-            }
-        }
-        for (size_t rowIndex = 0; rowIndex < g_stationView.rows.size(); ++rowIndex)
-        {
-            if (!IsStationRowVisible(g_stationView.rows[rowIndex]))
+            const StationGridGroup& group = g_stationView.groups[groupIndex];
+            if (group.top + group.height < visibleTop ||
+                group.top > visibleBottom)
             {
                 continue;
             }
-            for (int stationIndex = firstStation;
-                 stationIndex <= lastStation; ++stationIndex)
+            CreateStationGroupHeader(group);
+            if (IsStationCategoryCollapsed(group.category))
             {
-                if (!HasStationCellWidget(rowIndex, stationIndex))
+                continue;
+            }
+            for (size_t position = 0;
+                 position < group.stations.size(); ++position)
+            {
+                const int cardTop = group.top +
+                    STATION_GRID_GROUP_HEADER_HEIGHT +
+                    static_cast<int>(position / g_stationView.columns) *
+                    StationCardRowStride();
+                if (cardTop + STATION_GRID_CARD_HEIGHT < visibleTop ||
+                    cardTop > visibleBottom)
                 {
-                    CreateStationCellWidget(rowIndex, stationIndex);
+                    continue;
                 }
+                CreateStationGridCard(group, position);
             }
         }
-        DestroyStationColumnDividers();
-        CreateStationColumnDividers(firstStation, lastStation);
-        ApplyStationOutlines();
     }
 
     void UpdateStationScanBanner()
@@ -1941,224 +1015,1031 @@
             return;
         }
         const StationScanState& snapshot = *g_stationView.snapshot;
-        std::ostringstream caption;
-        MyGUI::Colour colour(0.95f, 0.83f, 0.55f);
         const size_t candidateCount = StationScanCandidateCount(snapshot);
-        if (!snapshot.complete)
-        {
-            caption << "READING PLAYER STATION CANDIDATES - RESULTS INCOMPLETE  |  Candidate "
-                    << snapshot.targetsCompleted << " of "
-                    << candidateCount;
-        }
-        else if (snapshot.truncated)
+        const bool scanFault = snapshot.ownershipCopyTruncated ||
+            snapshot.ownershipResolutionIncomplete ||
+            snapshot.rosterIncomplete || snapshot.targetsFailed > 0 ||
+            !snapshot.errors.empty();
+        std::ostringstream caption;
+        MyGUI::Colour colour(0.80f, 0.86f, 0.65f);
+        if (snapshot.truncated)
         {
             caption << "PLAYER STATION RESULT LIST TRUNCATED AT 2,048 - RESULTS INCOMPLETE";
-            colour = MyGUI::Colour(1.0f, 0.38f, 0.27f);
+            caption << "  |  " << snapshot.targetsFailed
+                    << " target(s) failed";
+            colour = MyGUI::Colour(1.0f, 0.36f, 0.25f);
         }
-        else if (snapshot.ownershipCopyTruncated)
+        else if (!snapshot.complete)
         {
-            caption << "PLAYER STATION OWNERSHIP COPY TRUNCATED AT 8,192 - RESULTS INCOMPLETE";
-            colour = MyGUI::Colour(1.0f, 0.38f, 0.27f);
+            caption << "PARTIAL SCAN - RESULTS INCOMPLETE  |  "
+                    << snapshot.targetsCompleted << " of " << candidateCount
+                    << " candidates read";
+            caption << "  |  " << snapshot.targetsFailed
+                    << " target(s) failed";
+            colour = scanFault ?
+                MyGUI::Colour(1.0f, 0.36f, 0.25f) :
+                MyGUI::Colour(1.0f, 0.78f, 0.30f);
         }
-        else if (!snapshot.errors.empty() || snapshot.targetsFailed > 0 ||
-                 snapshot.rosterIncomplete)
+        else if (scanFault)
         {
-            caption << "PLAYER STATION VIEW INCOMPLETE";
+            caption << "PARTIAL SCAN - SOME STATION OR ROSTER DATA IS UNAVAILABLE";
             if (snapshot.targetsFailed > 0)
             {
-                caption << ": " << snapshot.targetsFailed
-                        << " station target(s) could not be read";
+                caption << "  |  " << snapshot.targetsFailed
+                        << " target(s) failed";
             }
-            if (snapshot.rosterIncomplete)
-            {
-                caption << (snapshot.targetsFailed > 0 ? "  |  " : ": ")
-                        << "some squad job data is unavailable";
-            }
-            colour = MyGUI::Colour(1.0f, 0.38f, 0.27f);
+            colour = MyGUI::Colour(1.0f, 0.36f, 0.25f);
         }
         else
         {
-            caption << g_stationView.visibleStations.size()
-                    << " PLAYER STATIONS LOADED";
-            colour = MyGUI::Colour(0.80f, 0.86f, 0.65f);
+            size_t visibleCount = 0;
+            for (size_t index = 0; index < g_stationView.groups.size(); ++index)
+            {
+                visibleCount += g_stationView.groups[index].stations.size();
+            }
+            caption << visibleCount << " PLAYER STATIONS";
         }
         g_stationView.scanBanner->setCaption(caption.str());
         g_stationView.scanBanner->setTextColour(colour);
-        std::ostringstream errorTooltip;
+        std::ostringstream errors;
         for (size_t index = 0; index < snapshot.errors.size(); ++index)
         {
             if (index != 0)
             {
-                errorTooltip << "\n";
+                errors << '\n';
             }
-            errorTooltip << snapshot.errors[index];
+            errors << snapshot.errors[index];
         }
-        g_stationView.scanBanner->setUserString(
-            "KJM_ToolTip", errorTooltip.str());
+        g_stationView.scanBanner->setUserString("KJM_ToolTip", errors.str());
         g_stationView.scanBanner->setNeedToolTip(!snapshot.errors.empty());
         if (g_stationView.progressTrack != NULL &&
             g_stationView.progressFill != NULL)
         {
-            const int trackWidth = g_stationView.progressTrack->getWidth();
-            int fillWidth = trackWidth;
-            if (candidateCount != 0)
+            const int width = g_stationView.progressTrack->getWidth();
+            int filled = width;
+            if (!snapshot.complete && candidateCount > 0)
             {
-                fillWidth = static_cast<int>(
-                    (static_cast<double>(snapshot.targetsCompleted) /
-                     static_cast<double>(candidateCount)) * trackWidth);
+                filled = static_cast<int>(
+                    static_cast<double>(snapshot.targetsCompleted) /
+                    static_cast<double>(candidateCount) * width);
             }
-            fillWidth = ClampInt(fillWidth, 0, trackWidth);
-            g_stationView.progressFill->setSize(fillWidth,
+            g_stationView.progressFill->setSize(
+                ClampInt(filled, 0, width),
                 g_stationView.progressFill->getHeight());
             g_stationView.progressTrack->setVisible(!snapshot.complete);
         }
     }
 
-    void UpdateStationScrollRanges()
+    int StationMemberRelevantSkill(
+        const StationMemberSnapshot& member,
+        const StationTargetSnapshot& station,
+        bool* knownOut)
     {
-        const int contentHeight = GetStationRosterContentHeight();
-        const int stationCount = g_stationView.snapshot == NULL ? 0 :
-            static_cast<int>(g_stationView.visibleStations.size());
-        const int contentWidth = stationCount * STATION_COLUMN_STRIDE;
-        g_stationView.maxVerticalOffset = std::max(
-            0, contentHeight - g_stationView.bodyHeight);
-        g_stationView.maxHorizontalOffset = std::max(
-            0, contentWidth - g_stationView.matrixWidth);
-        g_stationView.verticalOffset = ClampInt(
-            g_stationView.verticalOffset, 0, g_stationView.maxVerticalOffset);
-        g_stationView.horizontalOffset = ClampInt(
-            g_stationView.horizontalOffset, 0, g_stationView.maxHorizontalOffset);
-        g_stationView.changingScroll = true;
-        if (g_stationView.verticalScroll != NULL)
+        *knownOut = false;
+        if (!station.relevantSkillKnown)
         {
-            g_stationView.verticalScroll->setScrollRange(
-                static_cast<size_t>(g_stationView.maxVerticalOffset + 1));
-            g_stationView.verticalScroll->setScrollPage(
-                static_cast<size_t>(std::max(1, g_stationView.bodyHeight)));
-            g_stationView.verticalScroll->setScrollViewPage(
-                static_cast<size_t>(STATION_MEMBER_ROW_HEIGHT));
-            g_stationView.verticalScroll->setScrollPosition(
-                static_cast<size_t>(g_stationView.verticalOffset));
-            g_stationView.verticalScroll->setEnabled(
-                g_stationView.maxVerticalOffset > 0);
+            return 0;
         }
-        if (g_stationView.horizontalScroll != NULL)
+        for (size_t index = 0; index < member.baseStats.size(); ++index)
         {
-            g_stationView.horizontalScroll->setScrollRange(
-                static_cast<size_t>(g_stationView.maxHorizontalOffset + 1));
-            g_stationView.horizontalScroll->setScrollPage(
-                static_cast<size_t>(std::max(1, g_stationView.matrixWidth)));
-            g_stationView.horizontalScroll->setScrollViewPage(
-                static_cast<size_t>(STATION_COLUMN_STRIDE));
-            g_stationView.horizontalScroll->setScrollPosition(
-                static_cast<size_t>(g_stationView.horizontalOffset));
-            g_stationView.horizontalScroll->setEnabled(
-                g_stationView.maxHorizontalOffset > 0);
-        }
-        g_stationView.changingScroll = false;
-    }
-
-    void UpdateStationHorizontalWidgetPositions()
-    {
-        const int dividerX = STATION_COLUMN_WIDTH + STATION_COLUMN_GAP / 2;
-        for (size_t index = 0; index < g_stationView.headerWidgets.size(); ++index)
-        {
-            const StationVisibleWidget& visible =
-                g_stationView.headerWidgets[index];
-            if (visible.root != NULL && visible.stationIndex >= 0)
+            if (member.baseStats[index].stat == station.relevantStat)
             {
-                visible.root->setPosition(
-                    visible.stationIndex * STATION_COLUMN_STRIDE -
-                        g_stationView.horizontalOffset,
-                    visible.root->getTop());
+                *knownOut = true;
+                return member.baseStats[index].displayValue;
             }
         }
-        for (size_t index = 0; index < g_stationView.cellWidgets.size(); ++index)
-        {
-            const StationVisibleWidget& visible =
-                g_stationView.cellWidgets[index];
-            if (visible.root != NULL && visible.stationIndex >= 0)
-            {
-                visible.root->setPosition(
-                    visible.stationIndex * STATION_COLUMN_STRIDE -
-                        g_stationView.horizontalOffset,
-                    visible.root->getTop());
-            }
-        }
-        for (size_t index = 0; index < g_stationView.columnDividers.size(); ++index)
-        {
-            MyGUI::Widget* divider = g_stationView.columnDividers[index];
-            const int stationIndex = StationParseIndex(
-                divider, "KJM_StationColumn");
-            if (divider != NULL && stationIndex >= 0)
-            {
-                divider->setPosition(
-                    stationIndex * STATION_COLUMN_STRIDE -
-                        g_stationView.horizontalOffset + dividerX,
-                    divider->getTop());
-            }
-        }
+        return 0;
     }
 
-    void SetStationHorizontalOffset(int offset, bool requestVirtualRefresh)
+    struct StationDetailPersonLess
     {
-        g_stationView.horizontalOffset = ClampInt(
-            offset, 0, g_stationView.maxHorizontalOffset);
-        g_stationView.hoveredStation = -1;
-        g_stationView.changingScroll = true;
-        if (g_stationView.horizontalScroll != NULL)
-        {
-            g_stationView.horizontalScroll->setScrollPosition(
-                static_cast<size_t>(g_stationView.horizontalOffset));
-        }
-        g_stationView.changingScroll = false;
-        UpdateStationHorizontalWidgetPositions();
-        ApplyStationOutlines();
-        if (requestVirtualRefresh)
-        {
-            g_stationView.virtualRefreshRequested = true;
-        }
-    }
+        bool lowestSkillFirst;
 
-    void RefreshStationVirtualWidgets()
-    {
-        if (g_stationView.headerDragArmed ||
-            g_stationView.assignmentDrag.armed)
+        explicit StationDetailPersonLess(bool lowToHigh = false) :
+            lowestSkillFirst(lowToHigh) {}
+
+        bool operator()(
+            const StationDetailPerson& left,
+            const StationDetailPerson& right) const
         {
-            g_stationView.virtualRefreshRequested = true;
-            return;
+            if (left.relevantSkillKnown != right.relevantSkillKnown)
+            {
+                return left.relevantSkillKnown;
+            }
+            if (left.relevantSkillKnown &&
+                left.relevantSkill != right.relevantSkill)
+            {
+                return lowestSkillFirst ?
+                    left.relevantSkill < right.relevantSkill :
+                    left.relevantSkill > right.relevantSkill;
+            }
+            if (left.totalJobs != right.totalJobs)
+            {
+                return left.totalJobs < right.totalJobs;
+            }
+            return StationLower(left.name) < StationLower(right.name);
         }
-        DestroyStationVirtualWidgets();
-        g_stationView.virtualRefreshRequested = false;
-        if (!g_stationView.visible || g_stationView.snapshot == NULL ||
-            g_stationView.rosterCanvas == NULL ||
-            g_stationView.matrixCanvas == NULL ||
-            g_stationView.headerCanvas == NULL)
+    };
+
+    void CreateStationDetailPortrait(
+        MyGUI::Button* row,
+        const HandleIdentity& identity)
+    {
+        const StationMemberSnapshot* member =
+            FindStationMemberSnapshot(identity);
+        if (row == NULL || member == NULL)
         {
             return;
         }
-        const int firstStation = GetFirstVisibleStationIndex();
-        const int lastStation = GetLastVisibleStationIndex();
-        for (int stationIndex = firstStation;
-             stationIndex <= lastStation; ++stationIndex)
+        const int size = 36;
+        const int inset = 2;
+        MyGUI::Button* border = row->createWidget<MyGUI::Button>(
+            "Kenshi_PortraitFrameSkin", MyGUI::IntCoord(4, 4, size, size),
+            MyGUI::Align::Left | MyGUI::Align::VCenter,
+            "KJM_StationDetailPortraitFrame");
+        border->setNeedMouseFocus(false);
+        border->setNeedKeyFocus(false);
+        MyGUI::ImageBox* background = border->createWidget<MyGUI::ImageBox>(
+            "ImageBox", MyGUI::IntCoord(inset, inset,
+                size - inset * 2, size - inset * 2), MyGUI::Align::Stretch,
+            "KJM_StationDetailPortraitBackground");
+        MyGUI::ImageBox* portrait = border->createWidget<MyGUI::ImageBox>(
+            "ImageBox", MyGUI::IntCoord(inset, inset,
+                size - inset * 2, size - inset * 2), MyGUI::Align::Stretch,
+            "KJM_StationDetailPortrait");
+        MyGUI::ImageBox* back = border->createWidget<MyGUI::ImageBox>(
+            "ImageBox", MyGUI::IntCoord(inset, inset,
+                size - inset * 2, size - inset * 2), MyGUI::Align::Stretch,
+            "KJM_StationDetailPortraitBackOverlay");
+        MyGUI::ImageBox* front = border->createWidget<MyGUI::ImageBox>(
+            "ImageBox", MyGUI::IntCoord(inset, inset,
+                size - inset * 2, size - inset * 2), MyGUI::Align::Stretch,
+            "KJM_StationDetailPortraitFrontOverlay");
+        background->setDepth(5);
+        back->setDepth(4);
+        portrait->setDepth(3);
+        front->setDepth(2);
+        background->setNeedMouseFocus(false);
+        portrait->setNeedMouseFocus(false);
+        back->setNeedMouseFocus(false);
+        front->setNeedMouseFocus(false);
+        background->setNeedKeyFocus(false);
+        portrait->setNeedKeyFocus(false);
+        back->setNeedKeyFocus(false);
+        front->setNeedKeyFocus(false);
+        bool selected = false;
+        std::string backgroundName;
+        std::string backName;
+        std::string frontName;
+        if (TryGetPortraitVisuals(
+                member->handle, &selected, &backgroundName, &backName,
+                &frontName))
         {
-            CreateStationHeaderWidget(stationIndex);
+            border->setStateSelected(selected);
+            SetPortraitImage(background, "Background", backgroundName);
+            SetPortraitImage(back, "BackOverlay", backName);
+            SetPortraitImage(front, "FrontOverlay", frontName);
         }
-        for (size_t rowIndex = 0; rowIndex < g_stationView.rows.size(); ++rowIndex)
+        portrait->setVisible(true);
+        if (!TryBindPortrait(member->handle, portrait, false))
         {
-            if (!IsStationRowVisible(g_stationView.rows[rowIndex]))
+            TryBindPortrait(member->handle, portrait, true);
+        }
+    }
+
+    void BuildStationDetailPeople(const StationTargetSnapshot& station)
+    {
+        g_stationView.assignedPeople.clear();
+        g_stationView.addPeople.clear();
+        std::vector<HandleIdentity> assigned;
+        for (size_t index = 0; index < station.assignments.size(); ++index)
+        {
+            const StationAssignmentSnapshot& assignment =
+                station.assignments[index];
+            if (StationIdentityIn(assigned, assignment.member))
             {
                 continue;
             }
-            CreateStationRosterWidget(rowIndex);
-            for (int stationIndex = firstStation;
-                 stationIndex <= lastStation; ++stationIndex)
+            assigned.push_back(assignment.member);
+            StationDetailPerson person;
+            person.identity = assignment.member;
+            person.name = assignment.memberName;
+            person.relevantSkillKnown = assignment.relevantSkillKnown;
+            person.relevantSkill = assignment.relevantSkillValue;
+            const StationMemberSnapshot* member =
+                FindStationMemberSnapshot(person.identity);
+            if (member != NULL)
             {
-                CreateStationCellWidget(rowIndex, stationIndex);
+                if (person.name.empty())
+                {
+                    person.name = member->name;
+                }
+                person.totalJobs = member->permanentJobCount;
+                if (!person.relevantSkillKnown)
+                {
+                    person.relevantSkill = StationMemberRelevantSkill(
+                        *member, station, &person.relevantSkillKnown);
+                }
+            }
+            if (person.name.empty())
+            {
+                person.name = "Unknown person";
+            }
+            g_stationView.assignedPeople.push_back(person);
+        }
+
+        if (!station.assignmentSupported)
+        {
+            std::stable_sort(
+                g_stationView.assignedPeople.begin(),
+                g_stationView.assignedPeople.end(),
+                StationDetailPersonLess(
+                    station.category == STATION_TRAINING));
+            return;
+        }
+
+        // The detail view groups by member identity, not by queue row.  Thus
+        // OPERATE_STORAGE hauling is naturally hidden when the same member
+        // also has a non-hauling exact-target job, as required; neither job
+        // creates a duplicate person row.
+        for (size_t squadIndex = 0;
+             squadIndex < g_stationView.snapshot->squads.size(); ++squadIndex)
+        {
+            const StationSquadSnapshot& squad =
+                g_stationView.snapshot->squads[squadIndex];
+            if (!squad.loaded)
+            {
+                continue;
+            }
+            for (size_t memberIndex = 0;
+                 memberIndex < squad.members.size(); ++memberIndex)
+            {
+                const StationMemberSnapshot& member =
+                    squad.members[memberIndex];
+                if (!member.loaded || !member.queueAvailable ||
+                    member.truncated ||
+                    StationIdentityIn(assigned, member.identity))
+                {
+                    continue;
+                }
+                StationDetailPerson person;
+                person.identity = member.identity;
+                person.name = member.name;
+                person.totalJobs = member.permanentJobCount;
+                person.relevantSkill = StationMemberRelevantSkill(
+                    member, station, &person.relevantSkillKnown);
+                g_stationView.addPeople.push_back(person);
             }
         }
-        CreateStationColumnDividers(firstStation, lastStation);
-        ApplyStationOutlines();
+        std::stable_sort(
+            g_stationView.assignedPeople.begin(),
+            g_stationView.assignedPeople.end(),
+            StationDetailPersonLess(station.category == STATION_TRAINING));
+        std::stable_sort(
+            g_stationView.addPeople.begin(),
+            g_stationView.addPeople.end(),
+            StationDetailPersonLess(station.category == STATION_TRAINING));
+    }
+
+    void SetStationDetailPersonCaption(
+        MyGUI::Button* row,
+        const StationDetailPerson& person,
+        const StationTargetSnapshot& station,
+        bool addCandidate)
+    {
+        std::ostringstream caption;
+        caption << person.name << "  |  ";
+        if (!station.relevantSkillName.empty())
+        {
+            caption << station.relevantSkillName << ' ';
+        }
+        if (person.relevantSkillKnown)
+        {
+            caption << person.relevantSkill;
+        }
+        else
+        {
+            caption << "unknown";
+        }
+        caption << "  |  " << person.totalJobs << " total job";
+        if (person.totalJobs != 1)
+        {
+            caption << 's';
+        }
+        // A run of spaces in a proportional font did not reserve a reliable
+        // portrait column. Keep the button caption empty and render text in a
+        // separate child that begins after the fixed 36-pixel portrait.
+        row->setCaption("");
+        row->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        MyGUI::TextBox* label = row->createWidget<MyGUI::TextBox>(
+            "Kenshi_TextboxStandardText",
+            MyGUI::IntCoord(
+                48, 0, std::max(20, row->getWidth() - 54), row->getHeight()),
+            MyGUI::Align::Stretch,
+            addCandidate ? "KJM_StationAvailablePersonText" :
+                "KJM_StationAssignedPersonText");
+        SetFittedStationSingleLine(label, caption.str(), 16, 13);
+        label->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
+        label->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        label->setColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        label->setAlpha(1.0f);
+        label->setInheritsAlpha(false);
+        label->setNeedMouseFocus(false);
+        label->setNeedKeyFocus(false);
+        if (StationIdentityIn(
+                g_stationView.recentMembers, person.identity))
+        {
+            row->setColour(MyGUI::Colour(0.48f, 0.82f, 1.0f));
+        }
+        CreateStationDetailPortrait(row, person.identity);
+        row->setUserString(
+            "KJM_StationMemberIdentity",
+            StationIdentityString(person.identity));
+        if (addCandidate)
+        {
+            row->eventMouseWheel +=
+                MyGUI::newDelegate(OnStationAvailableWheel);
+            row->eventMouseButtonPressed +=
+                MyGUI::newDelegate(OnStationAddPressed);
+            row->eventKeyButtonPressed +=
+                MyGUI::newDelegate(OnStationAddKey);
+            AttachStationTooltip(row,
+                caption.str() +
+                "\n\nClick or press Enter to request assignment. Scrolling never assigns.");
+        }
+        else
+        {
+            row->eventMouseWheel +=
+                MyGUI::newDelegate(OnStationDetailWheel);
+            row->eventMouseButtonPressed +=
+                MyGUI::newDelegate(OnStationAssignedPressed);
+            AttachStationTooltip(row,
+                caption.str() +
+                "\n\nRight-click to request removal from this station.");
+        }
+    }
+
+    void UpdateStationDetailPaneScrollRange(
+        MyGUI::Widget* viewport,
+        MyGUI::ScrollBar* scroll,
+        int contentHeight,
+        int* offset,
+        bool* changing)
+    {
+        if (viewport == NULL || scroll == NULL || offset == NULL ||
+            changing == NULL)
+        {
+            return;
+        }
+        const int maxOffset = std::max(
+            0, contentHeight - viewport->getHeight());
+        *offset = ClampInt(*offset, 0, maxOffset);
+        *changing = true;
+        scroll->setScrollRange(
+            static_cast<size_t>(maxOffset + 1));
+        scroll->setScrollPage(
+            static_cast<size_t>(viewport->getHeight()));
+        scroll->setScrollViewPage(
+            static_cast<size_t>(STATION_DETAIL_ROW_HEIGHT));
+        scroll->setScrollPosition(static_cast<size_t>(*offset));
+        scroll->setEnabled(maxOffset > 0);
+        *changing = false;
+    }
+
+    void ApplyStationDetailPaneOffset(
+        MyGUI::Widget* viewport,
+        MyGUI::Widget* canvas,
+        int contentHeight,
+        int offset)
+    {
+        if (viewport == NULL || canvas == NULL)
+        {
+            return;
+        }
+        canvas->setSize(
+            viewport->getWidth(),
+            std::max(viewport->getHeight(), contentHeight));
+        canvas->setPosition(0, -offset);
+    }
+
+    void UpdateStationDetailScrollRange()
+    {
+        UpdateStationDetailPaneScrollRange(
+            g_stationView.detailViewport,
+            g_stationView.detailScroll,
+            g_stationView.detailContentHeight,
+            &g_stationView.detailOffset,
+            &g_stationView.detailScrollChanging);
+    }
+
+    void UpdateStationAvailableScrollRange()
+    {
+        UpdateStationDetailPaneScrollRange(
+            g_stationView.detailAvailableViewport,
+            g_stationView.detailAvailableScroll,
+            g_stationView.detailAvailableContentHeight,
+            &g_stationView.detailAvailableOffset,
+            &g_stationView.detailAvailableScrollChanging);
+    }
+
+    void ApplyStationDetailScrollOffset()
+    {
+        ApplyStationDetailPaneOffset(
+            g_stationView.detailViewport,
+            g_stationView.detailCanvas,
+            g_stationView.detailContentHeight,
+            g_stationView.detailOffset);
+    }
+
+    void ApplyStationAvailableScrollOffset()
+    {
+        ApplyStationDetailPaneOffset(
+            g_stationView.detailAvailableViewport,
+            g_stationView.detailAvailableCanvas,
+            g_stationView.detailAvailableContentHeight,
+            g_stationView.detailAvailableOffset);
+    }
+
+    void RefreshStationDetail()
+    {
+        g_stationView.detailRefreshRequested = false;
+        MyGUI::InputManager* detailInput =
+            MyGUI::InputManager::getInstancePtr();
+        if (detailInput != NULL && g_stationView.modalPanel != NULL)
+        {
+            try
+            {
+                // A successful add/remove destroys and recreates person rows.
+                // Move focus off the old row before its widget is destroyed.
+                detailInput->setKeyFocusWidget(g_stationView.modalPanel);
+            }
+            catch (...)
+            {
+            }
+        }
+        DestroyStationWidgetList(&g_stationView.detailWidgets);
+        if (g_stationView.modalPanel == NULL ||
+            g_stationView.detailCanvas == NULL ||
+            g_stationView.detailAvailableCanvas == NULL)
+        {
+            return;
+        }
+        const StationTargetSnapshot* station =
+            FindStationSnapshot(g_stationView.detailStation, NULL);
+        if (station == NULL)
+        {
+            // The previous grid refresh may have honored the modal's frozen
+            // card order. Close now, then request one normal-order rebuild on
+            // the next safe update.
+            g_stationView.fullRefreshRequested = true;
+            CloseStationDetail();
+            return;
+        }
+        BuildStationDetailPeople(*station);
+        if (g_stationView.detailAssignedHeader != NULL)
+        {
+            std::ostringstream assignedCaption;
+            assignedCaption << "ASSIGNED WORKERS ("
+                            << g_stationView.assignedPeople.size() << ")";
+            g_stationView.detailAssignedHeader->setCaption(
+                assignedCaption.str());
+            g_stationView.detailAssignedHeader->setTextColour(
+                MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        }
+        if (g_stationView.detailAvailableHeader != NULL)
+        {
+            std::ostringstream availableCaption;
+            availableCaption << "AVAILABLE WORKERS ("
+                             << g_stationView.addPeople.size() << ")";
+            g_stationView.detailAvailableHeader->setCaption(
+                availableCaption.str());
+            g_stationView.detailAvailableHeader->setTextColour(
+                MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        }
+
+        int assignedTop = 4;
+        if (g_stationView.assignedPeople.empty())
+        {
+            MyGUI::TextBox* empty =
+                g_stationView.detailCanvas->createWidget<MyGUI::TextBox>(
+                    "Kenshi_TextboxStandardText_Small",
+                    MyGUI::IntCoord(8, assignedTop,
+                        g_stationView.detailCanvas->getWidth() - 16,
+                        35), MyGUI::Align::Top | MyGUI::Align::HStretch,
+                    "KJM_StationNoAssignedPeople");
+            empty->setCaption("UNASSIGNED");
+            empty->setTextColour(MyGUI::Colour(1.0f, 0.76f, 0.31f));
+            empty->setNeedMouseFocus(false);
+            empty->setNeedKeyFocus(false);
+            g_stationView.detailWidgets.push_back(empty);
+            assignedTop += 37;
+        }
+        else
+        {
+            for (size_t index = 0;
+                 index < g_stationView.assignedPeople.size(); ++index)
+            {
+                MyGUI::Button* row =
+                    g_stationView.detailCanvas->createWidget<MyGUI::Button>(
+                        "Kenshi_Button1",
+                        MyGUI::IntCoord(4, assignedTop,
+                            g_stationView.detailCanvas->getWidth() - 8,
+                            STATION_DETAIL_ROW_HEIGHT - 4),
+                        MyGUI::Align::Top | MyGUI::Align::HStretch,
+                        "KJM_StationAssignedPerson");
+                SetStationDetailPersonCaption(
+                    row, g_stationView.assignedPeople[index], *station, false);
+                g_stationView.detailWidgets.push_back(row);
+                assignedTop += STATION_DETAIL_ROW_HEIGHT;
+            }
+        }
+        g_stationView.detailContentHeight = assignedTop + 6;
+
+        int availableTop = 4;
+        if (!station->assignmentSupported)
+        {
+            MyGUI::TextBox* unsupported =
+                g_stationView.detailAvailableCanvas->createWidget<MyGUI::TextBox>(
+                    "Kenshi_TextboxStandardText_Small",
+                    MyGUI::IntCoord(8, availableTop,
+                        g_stationView.detailAvailableCanvas->getWidth() - 16,
+                        52),
+                    MyGUI::Align::Top | MyGUI::Align::HStretch,
+                    "KJM_StationAssignmentUnsupported");
+            unsupported->setCaption(
+                "This station does not expose a verified permanent-job mapping.");
+            unsupported->setTextColour(
+                MyGUI::Colour(1.0f, 0.38f, 0.27f));
+            unsupported->setNeedMouseFocus(false);
+            unsupported->setNeedKeyFocus(false);
+            g_stationView.detailWidgets.push_back(unsupported);
+            availableTop += 54;
+        }
+        else if (g_stationView.addPeople.empty())
+        {
+            MyGUI::TextBox* none =
+                g_stationView.detailAvailableCanvas->createWidget<MyGUI::TextBox>(
+                    "Kenshi_TextboxStandardText_Small",
+                    MyGUI::IntCoord(8, availableTop,
+                        g_stationView.detailAvailableCanvas->getWidth() - 16,
+                        34),
+                    MyGUI::Align::Top | MyGUI::Align::HStretch,
+                    "KJM_StationNoAddCandidates");
+            none->setCaption("No loaded readable unassigned characters.");
+            none->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+            none->setNeedMouseFocus(false);
+            none->setNeedKeyFocus(false);
+            g_stationView.detailWidgets.push_back(none);
+            availableTop += 36;
+        }
+        else
+        {
+            for (size_t index = 0;
+                 index < g_stationView.addPeople.size(); ++index)
+            {
+                MyGUI::Button* row =
+                    g_stationView.detailAvailableCanvas->createWidget<MyGUI::Button>(
+                        "Kenshi_Button1",
+                        MyGUI::IntCoord(4, availableTop,
+                            g_stationView.detailAvailableCanvas->getWidth() - 8,
+                            STATION_DETAIL_ROW_HEIGHT - 4),
+                        MyGUI::Align::Top | MyGUI::Align::HStretch,
+                        "KJM_StationAddCandidate");
+                SetStationDetailPersonCaption(
+                    row, g_stationView.addPeople[index], *station, true);
+                g_stationView.detailWidgets.push_back(row);
+                availableTop += STATION_DETAIL_ROW_HEIGHT;
+            }
+        }
+        g_stationView.detailAvailableContentHeight = availableTop + 6;
+        UpdateStationDetailScrollRange();
+        UpdateStationAvailableScrollRange();
+        ApplyStationDetailScrollOffset();
+        ApplyStationAvailableScrollOffset();
+    }
+
+    void FreezeStationCardOrder()
+    {
+        g_stationView.frozenCardOrder.clear();
+        if (g_stationView.snapshot == NULL)
+        {
+            return;
+        }
+        for (size_t groupIndex = 0;
+             groupIndex < g_stationView.groups.size(); ++groupIndex)
+        {
+            const StationGridGroup& group = g_stationView.groups[groupIndex];
+            for (size_t index = 0; index < group.stations.size(); ++index)
+            {
+                g_stationView.frozenCardOrder.push_back(
+                    g_stationView.snapshot->stations[
+                        group.stations[index]].identity);
+            }
+        }
+    }
+
+    void OpenStationDetailNow(const HandleIdentity& identity)
+    {
+        if (g_stationView.root == NULL ||
+            FindStationSnapshot(identity, NULL) == NULL)
+        {
+            return;
+        }
+        CloseStationDetail();
+        if (g_tooltip != NULL)
+        {
+            g_tooltip->setVisible(false);
+        }
+        g_stationView.detailStation = identity;
+        FreezeStationCardOrder();
+        const StationTargetSnapshot* station =
+            FindStationSnapshot(identity, NULL);
+        if (station == NULL)
+        {
+            CloseStationDetail();
+            return;
+        }
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        if (gui == NULL)
+        {
+            CloseStationDetail();
+            return;
+        }
+        const int rootWidth = g_stationView.root->getWidth();
+        const int rootHeight = g_stationView.root->getHeight();
+        const MyGUI::IntSize view =
+            MyGUI::RenderManager::getInstance().getViewSize();
+        const int panelWidth = std::min(
+            1120,
+            std::max(
+                480, std::min(rootWidth - 40, view.width - 24)));
+        const int panelHeight = std::min(
+            720,
+            std::max(
+                350, std::min(rootHeight - 50, view.height - 24)));
+        const int left = (view.width - panelWidth) / 2;
+        const int top = (view.height - panelHeight) / 2;
+        // MyGUI modal widgets must be roots. The manager itself is already a
+        // root modal, so create the detail shade and panel on the Popup layer
+        // just like the confirmation/options modals. Registering the former
+        // child panel as modal raised "Modal widget must be root" and the
+        // guarded failure path correctly closed the whole manager.
+        g_stationView.modalShade =
+            gui->createWidget<MyGUI::Widget>(
+                "WhiteSkin", MyGUI::IntCoord(0, 0, view.width, view.height),
+                MyGUI::Align::Stretch, "Popup",
+                "KJM_StationDetailShade");
+        g_stationView.modalShade->setColour(MyGUI::Colour(0.0f, 0.0f, 0.0f));
+        g_stationView.modalShade->setAlpha(0.63f);
+        g_stationView.modalShade->setNeedMouseFocus(true);
+        g_stationView.modalPanel =
+            gui->createWidget<MyGUI::Widget>(
+                "Kenshi_SelectionPanel",
+                MyGUI::IntCoord(left, top, panelWidth, panelHeight),
+                MyGUI::Align::Center, "Popup",
+                "KJM_StationDetailModal");
+        // Kenshi_SelectionPanel uses a translucent native texture. Give the
+        // detail popup the same fully opaque interior as the main manager so
+        // the world and station grid cannot reduce text contrast. Keep this
+        // as the first child so every detail control renders above it.
+        MyGUI::Widget* modalBackground =
+            g_stationView.modalPanel->createWidget<MyGUI::Widget>(
+                "WhiteSkin",
+                MyGUI::IntCoord(4, 4, panelWidth - 8, panelHeight - 8),
+                MyGUI::Align::Stretch,
+                "KJM_StationDetailBackground");
+        modalBackground->setColour(
+            MyGUI::Colour(0.105f, 0.085f, 0.065f));
+        modalBackground->setAlpha(1.0f);
+        modalBackground->setDepth(100);
+        modalBackground->setNeedMouseFocus(false);
+
+        MyGUI::TextBox* title =
+            g_stationView.modalPanel->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText",
+                MyGUI::IntCoord(14, 8, panelWidth - 70, 34),
+                MyGUI::Align::Top | MyGUI::Align::HStretch,
+                "KJM_StationDetailTitle");
+        title->setCaption(station->name);
+        title->setFontHeight(23);
+        title->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        while (title->getFontHeight() > 15 &&
+            title->getTextSize().width > panelWidth - 70)
+        {
+            title->setFontHeight(title->getFontHeight() - 1);
+        }
+        title->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
+        AttachStationTooltip(title, station->name);
+        MyGUI::Button* close =
+            g_stationView.modalPanel->createWidget<MyGUI::Button>(
+                "Kenshi_Button1", MyGUI::IntCoord(panelWidth - 48, 7, 38, 32),
+                MyGUI::Align::Right | MyGUI::Align::Top,
+                "KJM_StationDetailClose");
+        close->setCaption("X");
+        close->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        close->eventMouseButtonClick +=
+            MyGUI::newDelegate(OnStationDetailClose);
+
+        MyGUI::TextBox* summary =
+            g_stationView.modalPanel->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText_Small",
+                MyGUI::IntCoord(14, 43, panelWidth - 28, 66),
+                MyGUI::Align::Top | MyGUI::Align::HStretch,
+                "KJM_StationDetailSummary");
+        summary->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        std::ostringstream summaryCaption;
+        summaryCaption << GetStationCategoryName(station->category)
+                       << "  |  Relevant skill: "
+                       << (station->relevantSkillName.empty() ? "None" :
+                           station->relevantSkillName);
+        if (g_stationView.multipleAreas)
+        {
+            summaryCaption << "\nArea: " << station->areaName;
+        }
+        if (!station->blockingStatus.empty())
+        {
+            summaryCaption << "\nCannot work: " << station->blockingStatus;
+            summary->setTextColour(MyGUI::Colour(1.0f, 0.38f, 0.27f));
+        }
+        else if (!station->blockingStatusKnown)
+        {
+            summaryCaption << "\nWork status: Unavailable";
+        }
+        if (!station->assignmentSupported)
+        {
+            summaryCaption << "\nAssignment: Not supported for this station";
+        }
+        summary->setCaption(summaryCaption.str());
+        summary->setFontHeight(14);
+        AttachStationTooltip(summary, summaryCaption.str());
+
+        const int listTop = 114;
+        const int statusHeight = 30;
+        const int listHeight = panelHeight - listTop - statusHeight - 12;
+        const int detailHeaderHeight = 32;
+        const int detailPaneGap = 14;
+        const int detailScrollWidth = 20;
+        const int detailPaneWidth =
+            (panelWidth - 24 - detailPaneGap) / 2;
+        const int detailViewportWidth =
+            detailPaneWidth - detailScrollWidth - 3;
+        const int detailListTop = listTop + detailHeaderHeight;
+        const int detailViewportHeight = listHeight - detailHeaderHeight;
+        const int assignedLeft = 12;
+        const int availableLeft =
+            assignedLeft + detailPaneWidth + detailPaneGap;
+
+        g_stationView.detailAssignedHeader =
+            g_stationView.modalPanel->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText",
+                MyGUI::IntCoord(
+                    assignedLeft + 4, listTop, detailPaneWidth - 8,
+                    detailHeaderHeight),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_StationAssignedHeader");
+        g_stationView.detailAssignedHeader->setFontHeight(17);
+        g_stationView.detailAssignedHeader->setTextAlign(
+            MyGUI::Align::Left | MyGUI::Align::VCenter);
+        g_stationView.detailAssignedHeader->setTextColour(
+            MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        g_stationView.detailAssignedHeader->setNeedMouseFocus(false);
+        g_stationView.detailAssignedHeader->setNeedKeyFocus(false);
+
+        g_stationView.detailAvailableHeader =
+            g_stationView.modalPanel->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText",
+                MyGUI::IntCoord(
+                    availableLeft + 4, listTop, detailPaneWidth - 8,
+                    detailHeaderHeight),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_StationAvailableHeader");
+        g_stationView.detailAvailableHeader->setFontHeight(17);
+        g_stationView.detailAvailableHeader->setTextAlign(
+            MyGUI::Align::Left | MyGUI::Align::VCenter);
+        g_stationView.detailAvailableHeader->setTextColour(
+            MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        g_stationView.detailAvailableHeader->setNeedMouseFocus(false);
+        g_stationView.detailAvailableHeader->setNeedKeyFocus(false);
+
+        MyGUI::Widget* detailDivider =
+            g_stationView.modalPanel->createWidget<MyGUI::Widget>(
+                "WhiteSkin",
+                MyGUI::IntCoord(
+                    assignedLeft + detailPaneWidth + detailPaneGap / 2,
+                    listTop, 1, listHeight),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_StationDetailDivider");
+        detailDivider->setColour(MyGUI::Colour(0.72f, 0.72f, 0.72f));
+        detailDivider->setAlpha(0.33f);
+        detailDivider->setNeedMouseFocus(false);
+
+        g_stationView.detailViewport =
+            g_stationView.modalPanel->createWidget<MyGUI::Widget>(
+                "PanelEmpty", MyGUI::IntCoord(
+                    assignedLeft, detailListTop,
+                    detailViewportWidth, detailViewportHeight),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_StationDetailViewport");
+        g_stationView.detailViewport->eventMouseWheel +=
+            MyGUI::newDelegate(OnStationDetailWheel);
+        g_stationView.detailCanvas =
+            g_stationView.detailViewport->createWidget<MyGUI::Widget>(
+                "PanelEmpty", MyGUI::IntCoord(0, 0,
+                    g_stationView.detailViewport->getWidth(),
+                    detailViewportHeight),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_StationDetailCanvas");
+        g_stationView.detailCanvas->eventMouseWheel +=
+            MyGUI::newDelegate(OnStationDetailWheel);
+        g_stationView.detailScroll =
+            g_stationView.modalPanel->createWidget<MyGUI::ScrollBar>(
+                "Kenshi_ScrollBarV",
+                MyGUI::IntCoord(
+                    assignedLeft + detailViewportWidth + 2,
+                    detailListTop, detailScrollWidth, detailViewportHeight),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_StationDetailScroll");
+        g_stationView.detailScroll->eventScrollChangePosition +=
+            MyGUI::newDelegate(OnStationDetailScroll);
+
+        g_stationView.detailAvailableViewport =
+            g_stationView.modalPanel->createWidget<MyGUI::Widget>(
+                "PanelEmpty", MyGUI::IntCoord(
+                    availableLeft, detailListTop,
+                    detailViewportWidth, detailViewportHeight),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_StationAvailableViewport");
+        g_stationView.detailAvailableViewport->eventMouseWheel +=
+            MyGUI::newDelegate(OnStationAvailableWheel);
+        g_stationView.detailAvailableCanvas =
+            g_stationView.detailAvailableViewport->createWidget<MyGUI::Widget>(
+                "PanelEmpty", MyGUI::IntCoord(0, 0,
+                    g_stationView.detailAvailableViewport->getWidth(),
+                    detailViewportHeight),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_StationAvailableCanvas");
+        g_stationView.detailAvailableCanvas->eventMouseWheel +=
+            MyGUI::newDelegate(OnStationAvailableWheel);
+        g_stationView.detailAvailableScroll =
+            g_stationView.modalPanel->createWidget<MyGUI::ScrollBar>(
+                "Kenshi_ScrollBarV",
+                MyGUI::IntCoord(
+                    availableLeft + detailViewportWidth + 2,
+                    detailListTop, detailScrollWidth, detailViewportHeight),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_StationAvailableScroll");
+        g_stationView.detailAvailableScroll->eventScrollChangePosition +=
+            MyGUI::newDelegate(OnStationAvailableScroll);
+        g_stationView.detailStatus =
+            g_stationView.modalPanel->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText_Small",
+                MyGUI::IntCoord(12, panelHeight - statusHeight - 6,
+                    panelWidth - 24, statusHeight),
+                MyGUI::Align::Bottom | MyGUI::Align::HStretch,
+                "KJM_StationDetailStatus");
+        g_stationView.detailStatus->setTextAlign(
+            MyGUI::Align::Center | MyGUI::Align::VCenter);
+        g_stationView.detailStatus->setFontHeight(13);
+        g_stationView.detailStatus->setTextColour(
+            MyGUI::Colour(1.0f, 0.78f, 0.34f));
+        g_stationView.detailStatus->setNeedMouseFocus(false);
+        g_stationView.detailStatusText.clear();
+        g_stationView.detailStatus->setCaption("");
+        g_stationView.detailOffset = 0;
+        g_stationView.detailContentHeight = 0;
+        g_stationView.detailAvailableOffset = 0;
+        g_stationView.detailAvailableContentHeight = 0;
+        MyGUI::InputManager* input =
+            MyGUI::InputManager::getInstancePtr();
+        if (input != NULL)
+        {
+            input->addWidgetModal(g_stationView.modalPanel);
+            g_stationView.detailModalAdded = true;
+            input->setKeyFocusWidget(g_stationView.modalPanel);
+        }
+        RefreshStationDetail();
+    }
+
+    bool IsStationDetailOpen()
+    {
+        return g_stationView.modalPanel != NULL &&
+            g_stationView.detailStation.valid;
+    }
+
+    void CloseStationDetail()
+    {
+        MyGUI::InputManager* input = MyGUI::InputManager::getInstancePtr();
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        try
+        {
+            DestroyStationWidgetList(&g_stationView.detailWidgets);
+        }
+        catch (...)
+        {
+            // The parent panel still owns any rows not destroyed before the
+            // exception. Clear the non-owning list so no later close retries a
+            // child pointer that MyGUI may already have invalidated.
+            g_stationView.detailWidgets.clear();
+            ErrorLog("[KenshiJobManagement] MyGUI could not destroy every station-detail row cleanly.");
+        }
+        if (input != NULL && g_stationView.detailModalAdded &&
+            g_stationView.modalPanel != NULL)
+        {
+            try
+            {
+                input->removeWidgetModal(g_stationView.modalPanel);
+            }
+            catch (...)
+            {
+                ErrorLog("[KenshiJobManagement] MyGUI could not remove the station-detail modal cleanly.");
+            }
+        }
+        if (gui != NULL && g_stationView.modalPanel != NULL)
+        {
+            try
+            {
+                gui->destroyWidget(g_stationView.modalPanel);
+            }
+            catch (...)
+            {
+                ErrorLog("[KenshiJobManagement] MyGUI could not destroy the station-detail panel cleanly.");
+            }
+        }
+        if (gui != NULL && g_stationView.modalShade != NULL)
+        {
+            try
+            {
+                gui->destroyWidget(g_stationView.modalShade);
+            }
+            catch (...)
+            {
+                ErrorLog("[KenshiJobManagement] MyGUI could not destroy the station-detail shade cleanly.");
+            }
+        }
+        g_stationView.detailWidgets.clear();
+        g_stationView.modalShade = NULL;
+        g_stationView.modalPanel = NULL;
+        g_stationView.detailAssignedHeader = NULL;
+        g_stationView.detailAvailableHeader = NULL;
+        g_stationView.detailViewport = NULL;
+        g_stationView.detailCanvas = NULL;
+        g_stationView.detailScroll = NULL;
+        g_stationView.detailAvailableViewport = NULL;
+        g_stationView.detailAvailableCanvas = NULL;
+        g_stationView.detailAvailableScroll = NULL;
+        g_stationView.detailStatus = NULL;
+        g_stationView.detailOffset = 0;
+        g_stationView.detailContentHeight = 0;
+        g_stationView.detailScrollChanging = false;
+        g_stationView.detailAvailableOffset = 0;
+        g_stationView.detailAvailableContentHeight = 0;
+        g_stationView.detailAvailableScrollChanging = false;
+        g_stationView.detailRefreshRequested = false;
+        g_stationView.detailCloseRequested = false;
+        g_stationView.detailModalAdded = false;
+        g_stationView.frozenCardOrder.clear();
+        g_stationView.recentMembers.clear();
+        ResetHandleIdentity(&g_stationView.recentStation);
+        ResetHandleIdentity(&g_stationView.detailStation);
+        if (input != NULL && g_window != NULL)
+        {
+            try
+            {
+                input->setKeyFocusWidget(g_window);
+            }
+            catch (...)
+            {
+                ErrorLog("[KenshiJobManagement] MyGUI could not restore manager focus after closing station detail.");
+            }
+        }
+    }
+
+    void SetStationDetailStatus(const std::string& text)
+    {
+        g_stationView.detailStatusText = text;
+        if (g_stationView.detailStatus != NULL)
+        {
+            g_stationView.detailStatus->setCaption(text);
+        }
+    }
+
+    void MarkStationDetailChange(
+        const HandleIdentity& station,
+        const HandleIdentity& member)
+    {
+        if (!station.valid || !member.valid)
+        {
+            return;
+        }
+        g_stationView.recentStation = station;
+        if (!StationIdentityIn(g_stationView.recentMembers, member))
+        {
+            g_stationView.recentMembers.push_back(member);
+        }
+        if (SameHandleIdentity(g_stationView.detailStation, station))
+        {
+            g_stationView.detailRefreshRequested = true;
+        }
     }
 
     void RefreshStationView()
@@ -2167,125 +2048,62 @@
         {
             return;
         }
-        if (g_stationView.headerDragArmed ||
-            g_stationView.assignmentDrag.armed)
+        HandleIdentity anchor;
+        int anchorDelta = 0;
+        const bool haveAnchor = CaptureStationScrollAnchor(
+            &anchor, &anchorDelta);
+        BuildStationGroups();
+        if (haveAnchor)
         {
-            g_stationView.virtualRefreshRequested = true;
-            return;
+            int anchorTop = 0;
+            if (FindStationCardTop(anchor, &anchorTop))
+            {
+                g_stationView.verticalOffset = anchorTop + anchorDelta;
+            }
         }
-        BuildVisibleStationList();
-        BuildStationRosterRows();
         UpdateStationScanBanner();
-        UpdateStationScrollRanges();
+        UpdateStationScrollRange();
+        size_t visibleCount = 0;
+        for (size_t index = 0; index < g_stationView.groups.size(); ++index)
+        {
+            visibleCount += g_stationView.groups[index].stations.size();
+        }
         if (g_stationView.emptyText != NULL)
         {
             const bool empty = g_stationView.snapshot != NULL &&
-                g_stationView.visibleStations.empty();
+                visibleCount == 0;
             g_stationView.emptyText->setVisible(empty);
             if (empty)
             {
                 g_stationView.emptyText->setCaption(
                     g_stationView.snapshot->complete ?
-                    "No player-owned station targets match the current filters." :
-                    "Reading player-owned stations and exact assigned targets. Results are not complete yet.");
+                    "No stations match the current category filters." :
+                    "Partial scan in progress. No matching stations are available yet.");
             }
         }
         RefreshStationVirtualWidgets();
+        if (IsStationDetailOpen())
+        {
+            g_stationView.detailRefreshRequested = true;
+        }
     }
 
     void SetStationBoardSnapshot(const StationScanState* snapshot)
     {
         g_stationView.snapshot = snapshot;
-        if (g_stationView.selectedStation.valid && snapshot != NULL)
+        if (IsStationDetailOpen() &&
+            FindStationSnapshot(g_stationView.detailStation, NULL) == NULL)
         {
-            bool stillPresent = false;
-            for (size_t index = 0; index < snapshot->stations.size(); ++index)
-            {
-                if (SameHandleIdentity(
-                        g_stationView.selectedStation,
-                        snapshot->stations[index].identity))
-                {
-                    stillPresent = true;
-                    break;
-                }
-            }
-            if (!stillPresent)
-            {
-                ResetHandleIdentity(&g_stationView.selectedStation);
-            }
+            CloseStationDetail();
         }
         RefreshStationView();
-    }
-
-    bool IsStationHeaderDragArmed()
-    {
-        return g_stationView.headerDragArmed;
-    }
-
-    bool IsStationAssignmentDragArmed()
-    {
-        return g_stationView.assignmentDrag.armed;
-    }
-
-    bool IsStationInteractionDragArmed()
-    {
-        return g_stationView.headerDragArmed ||
-            g_stationView.assignmentDrag.armed;
-    }
-
-    void CancelStationHeaderDrag()
-    {
-        if (!g_stationView.headerDragArmed)
-        {
-            return;
-        }
-        g_stationView.headerDragArmed = false;
-        g_stationView.headerDragActive = false;
-        g_stationView.suppressHeaderClick = false;
-        MyGUI::InputManager* input = MyGUI::InputManager::getInstancePtr();
-        if (input != NULL)
-        {
-            try
-            {
-                input->resetMouseCaptureWidget();
-            }
-            catch (...)
-            {
-            }
-        }
-        g_stationView.virtualRefreshRequested = true;
-    }
-
-    void CancelStationAssignmentDrag()
-    {
-        if (!g_stationView.assignmentDrag.armed)
-        {
-            return;
-        }
-        g_stationView.assignmentDrag = StationAssignmentDragState();
-        g_stationView.hoveredRow = -1;
-        g_stationView.hoveredStation = -1;
-        MyGUI::InputManager* input = MyGUI::InputManager::getInstancePtr();
-        if (input != NULL)
-        {
-            try
-            {
-                input->resetMouseCaptureWidget();
-            }
-            catch (...)
-            {
-            }
-        }
-        ApplyStationOutlines();
-        g_stationView.virtualRefreshRequested = true;
     }
 
     void SetStationViewVisible(bool visible)
     {
         if (!visible)
         {
-            CancelStationHeaderDrag();
-            CancelStationAssignmentDrag();
+            CloseStationDetail();
         }
         g_stationView.visible = visible;
         if (g_stationView.root != NULL)
@@ -2298,24 +2116,21 @@
         }
         else
         {
-            DestroyStationVirtualWidgets();
+            g_stationView.visibleCards.clear();
+            g_stationView.visibleHeaders.clear();
+            DestroyStationWidgetList(&g_stationView.virtualWidgets);
         }
     }
 
-    // Root-facing switch alias.  Keeping this wrapper separate lets the tab
-    // controller remain independent of the view implementation.
     void SwitchStationView(bool visible)
     {
         SetStationViewVisible(visible);
     }
 
-    // Call from the manager update after scanner work.  The snapshot address
-    // may remain stable; pass snapshotChanged when its vectors or scan state
-    // were changed.  Deferred virtual refresh avoids destroying a MyGUI widget
-    // from inside that widget's own mouse callback.
     void TickStationView(
         const StationScanState* snapshot,
-        bool snapshotChanged)
+        bool snapshotChanged,
+        bool scanProgressChanged)
     {
         if (snapshot != g_stationView.snapshot)
         {
@@ -2326,22 +2141,40 @@
         {
             return;
         }
-        if (g_stationView.headerDragArmed ||
-            g_stationView.assignmentDrag.armed)
+        if (g_stationView.detailCloseRequested)
         {
-            if (snapshotChanged)
-            {
-                g_stationView.virtualRefreshRequested = true;
-            }
-            return;
-        }
-        if (snapshotChanged)
-        {
+            g_stationView.detailCloseRequested = false;
+            CloseStationDetail();
             RefreshStationView();
         }
-        else if (g_stationView.virtualRefreshRequested)
+        if (g_stationView.pendingDetail.valid)
         {
-            RefreshStationVirtualWidgets();
+            const HandleIdentity requested = g_stationView.pendingDetail;
+            ResetHandleIdentity(&g_stationView.pendingDetail);
+            OpenStationDetailNow(requested);
+        }
+        if (snapshotChanged || g_stationView.fullRefreshRequested)
+        {
+            g_stationView.fullRefreshRequested = false;
+            RefreshStationView();
+        }
+        else
+        {
+            if (scanProgressChanged)
+            {
+                // Candidate progress and validation warnings do not change
+                // card groups. Update only the banner and progress bar so a
+                // presentation boundary does not destroy visible widgets.
+                UpdateStationScanBanner();
+            }
+            if (g_stationView.virtualRefreshRequested)
+            {
+                RefreshStationVirtualWidgets();
+            }
+        }
+        if (g_stationView.detailRefreshRequested)
+        {
+            RefreshStationDetail();
         }
     }
 
@@ -2352,126 +2185,78 @@
             return;
         }
         g_stationView = StationViewState();
-        g_stationView.rosterWidth = ClampInt(bounds.width / 4, 280, 340);
-        const int bannerHeight = 37;
-        const int scrollSize = 20;
-        const int matrixLeft = g_stationView.rosterWidth + 8;
-        g_stationView.matrixWidth = std::max(
-            STATION_COLUMN_WIDTH,
-            bounds.width - matrixLeft - scrollSize);
-        g_stationView.bodyHeight = std::max(
-            STATION_MEMBER_ROW_HEIGHT,
-            bounds.height - bannerHeight - STATION_HEADER_HEIGHT - scrollSize);
         g_stationView.root = client->createWidget<MyGUI::Widget>(
             "PanelEmpty", bounds, MyGUI::Align::Stretch, "KJM_StationsTab");
         g_stationView.root->setVisible(false);
+        g_stationView.viewportWidth = std::max(
+            STATION_GRID_CARD_WIDTH,
+            bounds.width - STATION_GRID_SCROLL_SIZE);
+        g_stationView.viewportHeight = std::max(
+            STATION_GRID_CARD_HEIGHT,
+            bounds.height - STATION_GRID_BANNER_HEIGHT);
+        g_stationView.columns = std::max(
+            1, (g_stationView.viewportWidth - STATION_GRID_SIDE_PAD * 2 +
+                STATION_GRID_GAP) /
+                (STATION_GRID_CARD_WIDTH + STATION_GRID_GAP));
 
-        g_stationView.scanBanner = g_stationView.root->createWidget<MyGUI::TextBox>(
-            "Kenshi_TextboxStandardText_Small",
-            MyGUI::IntCoord(4, 0, bounds.width - 8, 27),
-            MyGUI::Align::Top | MyGUI::Align::HStretch,
-            "KJM_StationScanBanner");
+        g_stationView.scanBanner =
+            g_stationView.root->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText_Small",
+                MyGUI::IntCoord(4, 0, bounds.width - 8, 28),
+                MyGUI::Align::Top | MyGUI::Align::HStretch,
+                "KJM_StationScanBanner");
         g_stationView.scanBanner->setTextAlign(MyGUI::Align::Center);
-        g_stationView.scanBanner->setNeedToolTip(true);
         g_stationView.scanBanner->eventToolTip +=
             MyGUI::newDelegate(OnCardToolTip);
-        g_stationView.progressTrack = g_stationView.root->createWidget<MyGUI::Widget>(
-            "WhiteSkin", MyGUI::IntCoord(4, 28, bounds.width - 8, 5),
-            MyGUI::Align::Top | MyGUI::Align::HStretch,
-            "KJM_StationProgressTrack");
-        g_stationView.progressTrack->setColour(MyGUI::Colour(0.20f, 0.16f, 0.12f));
+        g_stationView.progressTrack =
+            g_stationView.root->createWidget<MyGUI::Widget>(
+                "WhiteSkin", MyGUI::IntCoord(4, 29, bounds.width - 8, 5),
+                MyGUI::Align::Top | MyGUI::Align::HStretch,
+                "KJM_StationProgressTrack");
+        g_stationView.progressTrack->setColour(
+            MyGUI::Colour(0.20f, 0.16f, 0.12f));
         g_stationView.progressTrack->setNeedMouseFocus(false);
         g_stationView.progressFill =
             g_stationView.progressTrack->createWidget<MyGUI::Widget>(
                 "WhiteSkin", MyGUI::IntCoord(0, 0, 0, 5),
                 MyGUI::Align::Left | MyGUI::Align::VStretch,
                 "KJM_StationProgressFill");
-        g_stationView.progressFill->setColour(MyGUI::Colour(0.86f, 0.65f, 0.25f));
+        g_stationView.progressFill->setColour(
+            MyGUI::Colour(0.86f, 0.65f, 0.25f));
         g_stationView.progressFill->setNeedMouseFocus(false);
 
-        g_stationView.rosterHeader = g_stationView.root->createWidget<MyGUI::Widget>(
-            "WhiteSkin",
-            MyGUI::IntCoord(0, bannerHeight, g_stationView.rosterWidth,
-                STATION_HEADER_HEIGHT),
-            MyGUI::Align::Left | MyGUI::Align::Top,
-            "KJM_StationRosterHeader");
-        g_stationView.rosterHeader->setColour(MyGUI::Colour(0.15f, 0.12f, 0.09f));
-        MyGUI::TextBox* rosterCaption =
-            g_stationView.rosterHeader->createWidget<MyGUI::TextBox>(
-                "Kenshi_TextboxStandardText",
-                MyGUI::IntCoord(8, 8, g_stationView.rosterWidth - 16,
-                    STATION_HEADER_HEIGHT - 16),
-                MyGUI::Align::Stretch, "KJM_StationRosterCaption");
-        rosterCaption->setCaption(
-            "ALL LOADED SQUADS\nPortrait  |  Name  |  Top enabled skills\nPermanent job count");
-        rosterCaption->setTextAlign(MyGUI::Align::Center);
-        rosterCaption->setNeedMouseFocus(false);
-
-        g_stationView.headerViewport = g_stationView.root->createWidget<MyGUI::Widget>(
-            "PanelEmpty", MyGUI::IntCoord(matrixLeft, bannerHeight,
-                g_stationView.matrixWidth, STATION_HEADER_HEIGHT),
-            MyGUI::Align::Top | MyGUI::Align::HStretch,
-            "KJM_StationHeaderViewport");
-        g_stationView.headerViewport->eventMouseWheel +=
+        g_stationView.viewport =
+            g_stationView.root->createWidget<MyGUI::Widget>(
+                "PanelEmpty",
+                MyGUI::IntCoord(0, STATION_GRID_BANNER_HEIGHT,
+                    g_stationView.viewportWidth, g_stationView.viewportHeight),
+                MyGUI::Align::Stretch, "KJM_StationGridViewport");
+        g_stationView.viewport->eventMouseWheel +=
             MyGUI::newDelegate(OnStationMouseWheel);
-        AttachStationHeaderDragInput(g_stationView.headerViewport);
-        g_stationView.headerCanvas =
-            g_stationView.headerViewport->createWidget<MyGUI::Widget>(
-                "PanelEmpty", MyGUI::IntCoord(0, 0, g_stationView.matrixWidth,
-                    STATION_HEADER_HEIGHT),
+        g_stationView.canvas =
+            g_stationView.viewport->createWidget<MyGUI::Widget>(
+                "PanelEmpty", MyGUI::IntCoord(0, 0,
+                    g_stationView.viewportWidth, g_stationView.viewportHeight),
                 MyGUI::Align::Left | MyGUI::Align::Top,
-                "KJM_StationHeaderCanvas");
-        AttachStationHeaderDragInput(g_stationView.headerCanvas);
-
-        const int bodyTop = bannerHeight + STATION_HEADER_HEIGHT;
-        g_stationView.rosterViewport = g_stationView.root->createWidget<MyGUI::Widget>(
-            "PanelEmpty", MyGUI::IntCoord(0, bodyTop, g_stationView.rosterWidth,
-                g_stationView.bodyHeight),
-            MyGUI::Align::Left | MyGUI::Align::VStretch,
-            "KJM_StationRosterViewport");
-        g_stationView.rosterViewport->eventMouseWheel +=
+                "KJM_StationGridCanvas");
+        g_stationView.canvas->eventMouseWheel +=
             MyGUI::newDelegate(OnStationMouseWheel);
-        g_stationView.rosterCanvas =
-            g_stationView.rosterViewport->createWidget<MyGUI::Widget>(
-                "PanelEmpty", MyGUI::IntCoord(0, 0, g_stationView.rosterWidth,
-                    g_stationView.bodyHeight),
-                MyGUI::Align::Left | MyGUI::Align::Top,
-                "KJM_StationRosterCanvas");
-        g_stationView.matrixViewport = g_stationView.root->createWidget<MyGUI::Widget>(
-            "PanelEmpty", MyGUI::IntCoord(matrixLeft, bodyTop,
-                g_stationView.matrixWidth, g_stationView.bodyHeight),
-            MyGUI::Align::Stretch, "KJM_StationMatrixViewport");
-        g_stationView.matrixViewport->eventMouseWheel +=
-            MyGUI::newDelegate(OnStationMouseWheel);
-        g_stationView.matrixCanvas =
-            g_stationView.matrixViewport->createWidget<MyGUI::Widget>(
-                "PanelEmpty", MyGUI::IntCoord(0, 0, g_stationView.matrixWidth,
-                    g_stationView.bodyHeight),
-                MyGUI::Align::Left | MyGUI::Align::Top,
-                "KJM_StationMatrixCanvas");
-
-        g_stationView.verticalScroll = g_stationView.root->createWidget<MyGUI::ScrollBar>(
-            "Kenshi_ScrollBarV",
-            MyGUI::IntCoord(matrixLeft + g_stationView.matrixWidth, bodyTop,
-                scrollSize, g_stationView.bodyHeight),
-            MyGUI::Align::Right | MyGUI::Align::VStretch,
-            "KJM_StationVerticalScroll");
+        g_stationView.verticalScroll =
+            g_stationView.root->createWidget<MyGUI::ScrollBar>(
+                "Kenshi_ScrollBarV",
+                MyGUI::IntCoord(g_stationView.viewportWidth,
+                    STATION_GRID_BANNER_HEIGHT, STATION_GRID_SCROLL_SIZE,
+                    g_stationView.viewportHeight),
+                MyGUI::Align::Right | MyGUI::Align::VStretch,
+                "KJM_StationGridScroll");
         g_stationView.verticalScroll->eventScrollChangePosition +=
             MyGUI::newDelegate(OnStationVerticalScroll);
-        g_stationView.horizontalScroll =
-            g_stationView.root->createWidget<MyGUI::ScrollBar>(
-                "Kenshi_ScrollBarH",
-                MyGUI::IntCoord(matrixLeft, bodyTop + g_stationView.bodyHeight,
-                    g_stationView.matrixWidth, scrollSize),
-                MyGUI::Align::Bottom | MyGUI::Align::HStretch,
-                "KJM_StationHorizontalScroll");
-        g_stationView.horizontalScroll->eventScrollChangePosition +=
-            MyGUI::newDelegate(OnStationHorizontalScroll);
-        g_stationView.emptyText = g_stationView.root->createWidget<MyGUI::TextBox>(
-            "Kenshi_TextboxStandardText",
-            MyGUI::IntCoord(matrixLeft + 20, bodyTop + 40,
-                g_stationView.matrixWidth - 40, 80),
-            MyGUI::Align::Center, "KJM_StationEmpty");
+        g_stationView.emptyText =
+            g_stationView.root->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText",
+                MyGUI::IntCoord(40, STATION_GRID_BANNER_HEIGHT + 50,
+                    bounds.width - 80, 80),
+                MyGUI::Align::Center, "KJM_StationEmpty");
         g_stationView.emptyText->setTextAlign(MyGUI::Align::Center);
         g_stationView.emptyText->setNeedMouseFocus(false);
         g_stationView.emptyText->setVisible(false);
@@ -2479,9 +2264,10 @@
 
     void DestroyStationView()
     {
-        CancelStationHeaderDrag();
-        CancelStationAssignmentDrag();
-        DestroyStationVirtualWidgets();
+        CloseStationDetail();
+        g_stationView.visibleCards.clear();
+        g_stationView.visibleHeaders.clear();
+        DestroyStationWidgetList(&g_stationView.virtualWidgets);
         if (g_stationView.root != NULL)
         {
             MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
@@ -2501,376 +2287,317 @@
         }
         g_stationView.verticalOffset = ClampInt(
             static_cast<int>(position), 0, g_stationView.maxVerticalOffset);
-        g_stationView.hoveredRow = -1;
-        ApplyStationOutlines();
         g_stationView.virtualRefreshRequested = true;
-    }
-
-    void OnStationHorizontalScroll(MyGUI::ScrollBar*, size_t position)
-    {
-        if (g_stationView.changingScroll)
-        {
-            return;
-        }
-        SetStationHorizontalOffset(static_cast<int>(position), true);
     }
 
     void OnStationMouseWheel(MyGUI::Widget*, int relative)
     {
-        if (g_stationView.assignmentDrag.armed)
+        g_stationView.verticalOffset = ClampInt(
+            g_stationView.verticalOffset - relative * 52,
+            0, g_stationView.maxVerticalOffset);
+        g_stationView.changingScroll = true;
+        if (g_stationView.verticalScroll != NULL)
         {
-            return;
+            g_stationView.verticalScroll->setScrollPosition(
+                static_cast<size_t>(g_stationView.verticalOffset));
         }
-        MyGUI::InputManager* input = MyGUI::InputManager::getInstancePtr();
-        const bool horizontal = input != NULL && input->isShiftPressed();
-        if (horizontal)
-        {
-            SetStationHorizontalOffset(
-                g_stationView.horizontalOffset - relative * 48, true);
-        }
-        else
-        {
-            g_stationView.verticalOffset = ClampInt(
-                g_stationView.verticalOffset - relative * 48,
-                0, g_stationView.maxVerticalOffset);
-        }
-        if (!horizontal)
-        {
-            g_stationView.changingScroll = true;
-            if (g_stationView.verticalScroll != NULL)
-            {
-                g_stationView.verticalScroll->setScrollPosition(
-                    static_cast<size_t>(g_stationView.verticalOffset));
-            }
-            g_stationView.changingScroll = false;
-        }
-        g_stationView.hoveredRow = -1;
-        g_stationView.hoveredStation = -1;
-        ApplyStationOutlines();
+        g_stationView.changingScroll = false;
         g_stationView.virtualRefreshRequested = true;
     }
 
-    void OnStationHeaderPressed(
-        MyGUI::Widget*, int, int, MyGUI::MouseButton button)
+    void OnStationCategoryClicked(MyGUI::Widget* widget)
     {
-        if (button != MyGUI::MouseButton::Left || !g_stationView.visible)
+        const int value = StationParseIndex(widget, "KJM_StationCategory");
+        if (value < static_cast<int>(STATION_CRAFTING) ||
+            value > static_cast<int>(STATION_OTHER))
         {
             return;
         }
-        if (g_stationView.assignmentDrag.armed)
+        const StationCategory category = static_cast<StationCategory>(value);
+        if (!SetStationCategoryCollapsed(
+                category, !IsStationCategoryCollapsed(category)))
         {
-            return;
+            SetStatus(
+                "The category was changed, but settings.ini could not be saved.");
         }
-        const MyGUI::IntPoint mouse =
-            MyGUI::InputManager::getInstance().getMousePosition();
-        g_stationView.headerDragStartX = mouse.left;
-        g_stationView.headerDragStartOffset =
-            g_stationView.horizontalOffset;
-        g_stationView.headerDragArmed = true;
-        g_stationView.headerDragActive = false;
-        // A new press starts a new click/drag sequence.  This also clears a
-        // stale suppression flag if a previous drag ended outside a card.
-        g_stationView.suppressHeaderClick = false;
-        EnsureStationHeaderDragBuffer();
+        // Rebuild only after this header callback returns. The current header
+        // belongs to the virtual widget tree that the rebuild destroys.
+        g_stationView.fullRefreshRequested = true;
     }
 
-    void OnStationHeaderDrag(
-        MyGUI::Widget*, int, int, MyGUI::MouseButton button)
+    void OnStationCardClicked(MyGUI::Widget* widget)
     {
-        if (button != MyGUI::MouseButton::Left ||
-            !g_stationView.headerDragArmed)
+        HandleIdentity identity;
+        if (!ParseStationIdentity(
+                widget, "KJM_StationIdentity", &identity))
         {
             return;
         }
-        const MyGUI::IntPoint mouse =
-            MyGUI::InputManager::getInstance().getMousePosition();
-        const int delta = mouse.left - g_stationView.headerDragStartX;
-        if (!g_stationView.headerDragActive)
-        {
-            if (std::abs(delta) < 6)
-            {
-                return;
-            }
-            g_stationView.headerDragActive = true;
-            g_stationView.suppressHeaderClick = true;
-        }
-        // Move the content with the pointer: dragging left increases the
-        // content offset, while dragging right moves back toward column zero.
-        // Defer virtual widget replacement until release so MyGUI's captured
-        // sender remains alive for the complete press/drag/release sequence.
-        SetStationHorizontalOffset(
-            g_stationView.headerDragStartOffset - delta, false);
+        // Defer creation until TickStationView.  The clicked virtual card may
+        // be destroyed by modal/card refresh, so it must leave its callback
+        // before the widget tree changes.
+        g_stationView.pendingDetail = identity;
     }
 
-    void OnStationHeaderReleased(
-        MyGUI::Widget* widget, int, int, MyGUI::MouseButton button)
+    void OnStationDetailClose(MyGUI::Widget*)
     {
-        if (button != MyGUI::MouseButton::Left ||
-            !g_stationView.headerDragArmed)
-        {
-            return;
-        }
-        const bool dragged = g_stationView.headerDragActive;
-        g_stationView.headerDragArmed = false;
-        g_stationView.headerDragActive = false;
-        if (dragged)
-        {
-            // The meaningful drag must not be converted into a station
-            // selection by MyGUI's subsequent click notification.  Rebuild
-            // the virtual range only after release, when capture is safe.
-            // Only a release from an actual header card can emit that click.
-            // A canvas/viewport drag must not suppress the next real card
-            // click after the pan finishes.
-            g_stationView.suppressHeaderClick =
-                widget != NULL &&
-                widget->isUserString("KJM_StationHeaderCard");
-            g_stationView.virtualRefreshRequested = true;
-        }
+        // The close button is a child of the modal. Destroy it only after its
+        // callback returns to MyGUI.
+        g_stationView.detailCloseRequested = true;
     }
 
-    void OnStationSquadClicked(MyGUI::Widget* widget)
+    void OnStationDetailScroll(MyGUI::ScrollBar*, size_t position)
     {
-        if (g_stationView.snapshot == NULL)
+        if (g_stationView.detailScrollChanging)
         {
             return;
         }
-        const int squadIndex = StationParseIndex(widget, "KJM_StationSquad");
-        if (squadIndex < 0 ||
-            squadIndex >= static_cast<int>(g_stationView.snapshot->squads.size()))
-        {
-            return;
-        }
-        ToggleStationSquadCollapsed(
-            g_stationView.snapshot->squads[squadIndex].identity);
-        BuildStationRosterRows();
-        UpdateStationScrollRanges();
-        g_stationView.virtualRefreshRequested = true;
+        g_stationView.detailOffset = static_cast<int>(position);
+        ApplyStationDetailScrollOffset();
     }
 
-    void ToggleStationColumnSelection(int stationIndex)
+    void OnStationAvailableScroll(MyGUI::ScrollBar*, size_t position)
     {
-        if (g_stationView.snapshot == NULL || stationIndex < 0 ||
-            stationIndex >= static_cast<int>(
-                g_stationView.visibleStations.size()))
+        if (g_stationView.detailAvailableScrollChanging)
         {
             return;
         }
-        const StationTargetSnapshot* station =
-            GetVisibleStation(stationIndex);
-        if (station == NULL)
-        {
-            return;
-        }
-        const HandleIdentity& identity = station->identity;
-        if (g_stationView.selectedStation.valid &&
-            SameHandleIdentity(g_stationView.selectedStation, identity))
-        {
-            ResetHandleIdentity(&g_stationView.selectedStation);
-        }
-        else
-        {
-            g_stationView.selectedStation = identity;
-        }
-        ApplyStationOutlines();
+        g_stationView.detailAvailableOffset = static_cast<int>(position);
+        ApplyStationAvailableScrollOffset();
     }
 
-    void OnStationColumnClicked(MyGUI::Widget* widget)
+    void OnStationDetailWheel(MyGUI::Widget*, int relative)
     {
-        if (g_stationView.suppressHeaderClick && widget != NULL &&
-            widget->isUserString("KJM_StationHeaderCard"))
+        if (g_stationView.detailViewport == NULL)
         {
-            g_stationView.suppressHeaderClick = false;
             return;
         }
-        g_stationView.suppressHeaderClick = false;
-        const int stationIndex = StationParseIndex(widget, "KJM_StationColumn");
-        ToggleStationColumnSelection(stationIndex);
+        const int maximum = std::max(
+            0, g_stationView.detailContentHeight -
+                g_stationView.detailViewport->getHeight());
+        g_stationView.detailOffset = ClampInt(
+            g_stationView.detailOffset - relative * 46, 0, maximum);
+        g_stationView.detailScrollChanging = true;
+        if (g_stationView.detailScroll != NULL)
+        {
+            g_stationView.detailScroll->setScrollPosition(
+                static_cast<size_t>(g_stationView.detailOffset));
+        }
+        g_stationView.detailScrollChanging = false;
+        // Wheel input only moves the retained canvas. It never rebuilds live
+        // portraits, changes selection, or commits a person.
+        ApplyStationDetailScrollOffset();
     }
 
-    void OnStationAssignmentPressed(
+    void OnStationAvailableWheel(MyGUI::Widget*, int relative)
+    {
+        if (g_stationView.detailAvailableViewport == NULL)
+        {
+            return;
+        }
+        const int maximum = std::max(
+            0, g_stationView.detailAvailableContentHeight -
+                g_stationView.detailAvailableViewport->getHeight());
+        g_stationView.detailAvailableOffset = ClampInt(
+            g_stationView.detailAvailableOffset - relative * 46,
+            0, maximum);
+        g_stationView.detailAvailableScrollChanging = true;
+        if (g_stationView.detailAvailableScroll != NULL)
+        {
+            g_stationView.detailAvailableScroll->setScrollPosition(
+                static_cast<size_t>(
+                    g_stationView.detailAvailableOffset));
+        }
+        g_stationView.detailAvailableScrollChanging = false;
+        // Available-worker wheel input changes only the right retained canvas.
+        // It never selects or assigns a worker.
+        ApplyStationAvailableScrollOffset();
+    }
+
+    void RequestStationAddFromWidget(MyGUI::Widget* widget)
+    {
+        HandleIdentity member;
+        if (!IsStationDetailOpen() ||
+            !ParseStationIdentity(
+                widget, "KJM_StationMemberIdentity", &member))
+        {
+            return;
+        }
+        RequestAddStationAssignment(g_stationView.detailStation, member);
+        // Keep the modal open.  The next verified scanner snapshot refreshes
+        // both lists and can apply a recent-change treatment externally.
+    }
+
+    void OnStationAddPressed(
         MyGUI::Widget* widget,
         int,
         int,
         MyGUI::MouseButton button)
     {
-        if (button != MyGUI::MouseButton::Left ||
-            g_stationView.snapshot == NULL ||
-            g_stationView.headerDragArmed ||
-            g_pendingAction.type != ACTION_NONE)
+        if (button == MyGUI::MouseButton::Left)
+        {
+            RequestStationAddFromWidget(widget);
+        }
+    }
+
+    void OnStationAddKey(
+        MyGUI::Widget* widget,
+        MyGUI::KeyCode key,
+        MyGUI::Char)
+    {
+        if (key == MyGUI::KeyCode::Return ||
+            key == MyGUI::KeyCode::NumpadEnter)
+        {
+            RequestStationAddFromWidget(widget);
+        }
+    }
+
+    void OnStationAssignedPressed(
+        MyGUI::Widget* widget,
+        int,
+        int,
+        MyGUI::MouseButton button)
+    {
+        if (button != MyGUI::MouseButton::Right || !IsStationDetailOpen())
         {
             return;
         }
-        const int rowIndex = StationParseIndex(widget, "KJM_StationRow");
-        const int stationIndex =
-            StationParseIndex(widget, "KJM_StationColumn");
-        const int occurrence =
-            StationParseIndex(widget, "KJM_StationAssignment");
-        const StationMemberSnapshot* member = NULL;
+        HandleIdentity member;
+        if (!ParseStationIdentity(
+                widget, "KJM_StationMemberIdentity", &member))
+        {
+            return;
+        }
+        RequestRemoveStationAssignment(g_stationView.detailStation, member);
+        // Removal is deferred and the modal intentionally stays open.
+    }
+
+    // Compatibility surface used by JobWindow while the old matrix drag UI
+    // is removed.  The grouped card grid has no armed drag interaction.
+    bool IsStationHeaderDragArmed()
+    {
+        return false;
+    }
+
+    bool IsStationAssignmentDragArmed()
+    {
+        return false;
+    }
+
+    bool IsStationInteractionDragArmed()
+    {
+        return false;
+    }
+
+    void CancelStationHeaderDrag()
+    {
+    }
+
+    void CancelStationAssignmentDrag()
+    {
+    }
+
+    bool RefreshStationActionProjection(
+        const HandleIdentity& stationIdentity)
+    {
         const StationTargetSnapshot* station =
-            GetVisibleStation(stationIndex);
-        if (occurrence < 0 || station == NULL ||
-            !TryGetStationMemberForRow(rowIndex, &member) || member == NULL ||
-            !member->loaded || !member->queueAvailable || member->truncated)
+            FindStationSnapshot(stationIdentity, NULL);
+        if (station == NULL)
         {
-            SetStatus("This assignment is read-only because its queue is unavailable.");
-            return;
-        }
-        const StationAssignmentSnapshot* assignment =
-            FindStationAssignment(
-                *station, member->identity,
-                static_cast<size_t>(occurrence));
-        if (assignment == NULL || assignment->exactJob.taskToken == 0 ||
-            !assignment->exactJob.hasTarget ||
-            !SameHandleIdentity(
-                assignment->exactJob.target, station->identity))
-        {
-            SetStatus("The exact assignment could not be identified. No jobs were changed.");
-            return;
+            return false;
         }
 
-        g_stationView.assignmentDrag = StationAssignmentDragState();
-        g_stationView.assignmentDrag.armed = true;
-        g_stationView.assignmentDrag.pressPoint =
-            MyGUI::InputManager::getInstance().getMousePosition();
-        g_stationView.assignmentDrag.sourceMember = member->identity;
-        g_stationView.assignmentDrag.stationTarget = station->identity;
-        g_stationView.assignmentDrag.job = assignment->exactJob;
-        CopyStationMemberQueue(
-            *member, &g_stationView.assignmentDrag.sourceSequence);
-        g_stationView.assignmentDrag.sourceRow = rowIndex;
-        g_stationView.assignmentDrag.sourceStation = stationIndex;
-    }
-
-    void OnStationAssignmentDrag(
-        MyGUI::Widget*, int, int, MyGUI::MouseButton button)
-    {
-        if (button != MyGUI::MouseButton::Left ||
-            !g_stationView.assignmentDrag.armed)
+        for (size_t groupIndex = 0;
+             groupIndex < g_stationView.groups.size(); ++groupIndex)
         {
-            return;
-        }
-        const MyGUI::IntPoint mouse =
-            MyGUI::InputManager::getInstance().getMousePosition();
-        if (!g_stationView.assignmentDrag.active)
-        {
-            const int dx = std::abs(
-                mouse.left - g_stationView.assignmentDrag.pressPoint.left);
-            const int dy = std::abs(
-                mouse.top - g_stationView.assignmentDrag.pressPoint.top);
-            if (dx < DRAG_THRESHOLD && dy < DRAG_THRESHOLD)
+            StationGridGroup& group = g_stationView.groups[groupIndex];
+            if (group.category != station->category)
             {
-                return;
+                continue;
             }
-            g_stationView.assignmentDrag.active = true;
-            if (g_tooltip != NULL)
+            group.unassignedCount = 0;
+            for (size_t index = 0; index < group.stations.size(); ++index)
             {
-                g_tooltip->setVisible(false);
+                if (g_stationView.snapshot->stations[
+                        group.stations[index]].assignments.empty())
+                {
+                    ++group.unassignedCount;
+                }
             }
-            SetStatus("Drop this job on another loaded member row.");
+            for (size_t headerIndex = 0;
+                 headerIndex < g_stationView.visibleHeaders.size();
+                 ++headerIndex)
+            {
+                StationGridHeaderBinding& header =
+                    g_stationView.visibleHeaders[headerIndex];
+                if (header.category == group.category)
+                {
+                    SetStationGroupHeaderCaption(header.button, group);
+                }
+            }
+            break;
         }
 
-        int destinationRow = FindStationMemberRowAtPoint(mouse);
-        const StationMemberSnapshot* destination = NULL;
-        if (destinationRow >= 0 &&
-            TryGetStationMemberForRow(destinationRow, &destination) &&
-            destination != NULL &&
-            SameHandleIdentity(
-                destination->identity,
-                g_stationView.assignmentDrag.sourceMember))
+        for (size_t index = 0;
+             index < g_stationView.visibleCards.size(); ++index)
         {
-            destinationRow = -1;
+            StationGridCardBinding& binding =
+                g_stationView.visibleCards[index];
+            if (!SameHandleIdentity(binding.identity, stationIdentity))
+            {
+                continue;
+            }
+            if (binding.assignment != NULL)
+            {
+                SetStationCardAssignment(binding.assignment, *station);
+            }
+            if (binding.tint != NULL)
+            {
+                binding.tint->setColour(
+                    station->blocking || !station->blockingStatus.empty() ?
+                    MyGUI::Colour(0.38f, 0.07f, 0.05f) :
+                    MyGUI::Colour(0.09f, 0.07f, 0.05f));
+            }
+            const bool recentlyChanged =
+                SameHandleIdentity(
+                    g_stationView.recentStation, stationIdentity) &&
+                !g_stationView.recentMembers.empty();
+            SetStationUnassignedOutlineVisible(
+                &binding,
+                IsStationUsableAndUnassigned(*station) && !recentlyChanged);
+            if (binding.recentMarker != NULL)
+            {
+                binding.recentMarker->setVisible(recentlyChanged);
+            }
         }
-        if (destinationRow !=
-            g_stationView.assignmentDrag.destinationRow)
+        if (SameHandleIdentity(
+                g_stationView.detailStation, stationIdentity))
         {
-            g_stationView.assignmentDrag.destinationRow = destinationRow;
-            ApplyStationOutlines();
+            g_stationView.detailRefreshRequested = true;
         }
+        return true;
     }
 
-    void OnStationAssignmentReleased(
-        MyGUI::Widget*, int, int, MyGUI::MouseButton button)
+    bool RefreshStationTransferredMemberRows(
+        const HandleIdentity& source,
+        const HandleIdentity& destination)
     {
-        if (button != MyGUI::MouseButton::Left ||
-            !g_stationView.assignmentDrag.armed)
+        if (!g_stationView.visible)
         {
-            return;
+            return true;
         }
-        const StationAssignmentDragState drag =
-            g_stationView.assignmentDrag;
-        if (!drag.active)
+        if (SameHandleIdentity(source, destination) &&
+            g_stationView.recentStation.valid)
         {
-            ToggleStationColumnSelection(drag.sourceStation);
-            CancelStationAssignmentDrag();
-            return;
+            // Add/remove actions patch one member and one station. Update the
+            // visible card, its category summary, and the open detail list in
+            // place. Keep every other card/widget and the frozen order intact.
+            return RefreshStationActionProjection(
+                g_stationView.recentStation);
         }
-
-        const MyGUI::IntPoint mouse =
-            MyGUI::InputManager::getInstance().getMousePosition();
-        const int destinationRow = FindStationMemberRowAtPoint(mouse);
-        const StationMemberSnapshot* destination = NULL;
-        if (destinationRow < 0 ||
-            !TryGetStationMemberForRow(destinationRow, &destination) ||
-            destination == NULL)
+        if (!SameHandleIdentity(source, destination))
         {
-            SetStatus("Drop cancelled. Choose another loaded member row.");
-            CancelStationAssignmentDrag();
-            return;
+            RefreshStationView();
         }
-        if (SameHandleIdentity(destination->identity, drag.sourceMember))
-        {
-            SetStatus("Choose a different member. No jobs were changed.");
-            CancelStationAssignmentDrag();
-            return;
-        }
-        if (!destination->loaded || !destination->queueAvailable ||
-            destination->truncated)
-        {
-            SetStatus("The destination queue is unavailable. No jobs were changed.");
-            CancelStationAssignmentDrag();
-            return;
-        }
-        if (g_pendingAction.type != ACTION_NONE)
-        {
-            SetStatus("Another job change is pending. Try again after it finishes.");
-            CancelStationAssignmentDrag();
-            return;
-        }
-
-        g_pendingAction = PendingAction();
-        g_pendingAction.type = ACTION_TRANSFER_STATION_JOB;
-        g_pendingAction.member = drag.sourceMember;
-        g_pendingAction.destinationMember = destination->identity;
-        g_pendingAction.stationTarget = drag.stationTarget;
-        g_pendingAction.job = drag.job;
-        g_pendingAction.sequence = drag.sourceSequence;
-        CopyStationMemberQueue(
-            *destination, &g_pendingAction.destinationSequence);
-        SetStatus("Validating both queues before moving the job...");
-        CancelStationAssignmentDrag();
-    }
-
-    void OnStationWidgetFocus(MyGUI::Widget* widget, MyGUI::Widget*)
-    {
-        const int row = StationParseIndex(widget, "KJM_StationRow");
-        const int station = StationParseIndex(widget, "KJM_StationColumn");
-        if (g_stationView.hoveredRow == row &&
-            g_stationView.hoveredStation == station)
-        {
-            return;
-        }
-        g_stationView.hoveredRow = row;
-        g_stationView.hoveredStation = station;
-        ApplyStationOutlines();
-    }
-
-    void OnStationWidgetLostFocus(MyGUI::Widget*, MyGUI::Widget*)
-    {
-        if (g_stationView.hoveredRow < 0 && g_stationView.hoveredStation < 0)
-        {
-            return;
-        }
-        g_stationView.hoveredRow = -1;
-        g_stationView.hoveredStation = -1;
-        ApplyStationOutlines();
+        return true;
     }

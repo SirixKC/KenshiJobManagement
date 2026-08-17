@@ -60,6 +60,121 @@
         return result;
     }
 
+    bool CompleteStationScanImmediately()
+    {
+        if (!g_stationScan.started)
+        {
+            return false;
+        }
+        const size_t candidateCount =
+            StationScanCandidateCount(g_stationScan);
+        const size_t stationCountBefore = g_stationScan.stations.size();
+        const DWORD startTick = GetTickCount();
+        size_t steps = 0;
+        bool succeeded = true;
+        while (!g_stationScan.complete && steps <= candidateCount)
+        {
+            const size_t nextTargetBefore = g_stationScan.nextTarget;
+            if (!TryStepStationScanGuarded())
+            {
+                succeeded = false;
+                break;
+            }
+            ++steps;
+            if (!g_stationScan.complete &&
+                g_stationScan.nextTarget == nextTargetBefore)
+            {
+                succeeded = false;
+                break;
+            }
+        }
+        if (!g_stationScan.complete)
+        {
+            g_stationScan.complete = true;
+            g_stationScan.ownershipResolutionIncomplete = true;
+            AddStationScanError(
+                &g_stationScan,
+                "The player-station scan stopped before every candidate was read.");
+            succeeded = false;
+        }
+        if (!succeeded)
+        {
+            // A guarded candidate fault can leave fewer than one presentation
+            // batch of normalized snapshots pending. Do not expose complete
+            // state with unpublished values whose final join was skipped.
+            g_stationScan.pendingStations.clear();
+        }
+        else if (!g_stationScan.pendingStations.empty())
+        {
+            PublishPendingStationResults(&g_stationScan);
+        }
+        for (size_t stationIndex = stationCountBefore;
+             stationIndex < g_stationScan.stations.size(); ++stationIndex)
+        {
+            SyncJobStationArtworkFromSnapshot(
+                g_stationScan.stations[stationIndex]);
+        }
+        if (steps > 0)
+        {
+            std::ostringstream completed;
+            completed << "[KenshiJobManagement] Player-station scan "
+                      << (succeeded ? "completed" : "stopped")
+                      << " after " << steps << " candidate(s) in "
+                      << (GetTickCount() - startTick) << " ms.";
+            DebugLog(completed.str().c_str());
+        }
+        return succeeded && g_stationScan.complete;
+    }
+
+    __declspec(noinline) bool CallCompleteStationScanImmediatelySafely()
+    {
+        try
+        {
+            return CompleteStationScanImmediately();
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    void RecordSynchronousStationScanFailure()
+    {
+        g_stationScan.complete = true;
+        g_stationScan.ownershipResolutionIncomplete = true;
+        g_stationScan.pendingStations.clear();
+        try
+        {
+            AddStationScanError(
+                &g_stationScan,
+                "The synchronous player-station scan was interrupted safely.");
+        }
+        catch (...)
+        {
+        }
+        ErrorLog("[KenshiJobManagement] The synchronous player-station scan was interrupted safely.");
+    }
+
+    __declspec(noinline) bool TryCompleteStationScanImmediately()
+    {
+        bool result = false;
+        bool faulted = false;
+        __try
+        {
+            result = CallCompleteStationScanImmediatelySafely();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            faulted = true;
+        }
+        if (faulted || !result)
+        {
+            RecordSynchronousStationScanFailure();
+            return false;
+        }
+        return true;
+    }
+
     __declspec(noinline) bool TryRefreshStationAssignmentsGuarded()
     {
         bool result = false;
@@ -116,11 +231,13 @@
     }
 
     __declspec(noinline) bool CallTickStationViewSafely(
-        bool snapshotChanged)
+        bool snapshotChanged,
+        bool scanProgressChanged)
     {
         try
         {
-            TickStationView(&g_stationScan, snapshotChanged);
+            TickStationView(
+                &g_stationScan, snapshotChanged, scanProgressChanged);
             return true;
         }
         catch (...)
@@ -130,13 +247,15 @@
     }
 
     __declspec(noinline) bool TryTickStationViewGuarded(
-        bool snapshotChanged)
+        bool snapshotChanged,
+        bool scanProgressChanged)
     {
         bool result = false;
         bool faulted = false;
         __try
         {
-            result = CallTickStationViewSafely(snapshotChanged);
+            result = CallTickStationViewSafely(
+                snapshotChanged, scanProgressChanged);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -239,12 +358,27 @@
                           << StationScanCandidateCount(g_stationScan)
                           << " candidate(s).";
                 DebugLog(scanReady.str().c_str());
+                if (!TryCompleteStationScanImmediately())
+                {
+                    DebugLog("[KenshiJobManagement] Stations opened with an incomplete player-station scan.");
+                }
             }
             else
             {
                 DebugLog("[KenshiJobManagement] Stations player-station view failed safely during startup.");
             }
             g_stationAssignmentsDirty = false;
+        }
+        else if (stations && g_stationAssignmentsDirty)
+        {
+            // Squad-tab edits do not cause a hidden scan pause. Refresh the
+            // copied roster/candidates and finish the board only when the
+            // player explicitly opens Stations again.
+            if (TryRefreshStationAssignmentsGuarded())
+            {
+                g_stationAssignmentsDirty = false;
+                TryCompleteStationScanImmediately();
+            }
         }
         if (!TrySwitchStationViewGuarded(stations))
         {
@@ -346,8 +480,6 @@
         g_drag = DragState();
         g_modal = ModalState();
         g_pendingAction = PendingAction();
-        g_optionStatButtons.clear();
-        g_optionCategoryButtons.clear();
         g_stationOptionButtons.clear();
         g_stationScan = StationScanState();
         ClearJobStationCategoryCache();
@@ -360,7 +492,6 @@
         g_closeRequested = false;
         g_closeForResume = false;
         g_modalCloseRequested = false;
-        g_skillRefreshRequested = false;
         g_stationFilterRefreshRequested = false;
         g_stationAssignmentsDirty = false;
         g_stationProjectionRefreshRequested = false;
@@ -387,7 +518,6 @@
             return;
         }
 
-        LoadSkillSettings();
         LoadStationCategorySettings();
         if (!TryCaptureAndPauseGame())
         {
@@ -467,7 +597,7 @@
                 MyGUI::IntCoord(PAD, PAD + TOP_HEIGHT, g_memberWidth, HEADER_HEIGHT),
                 MyGUI::Align::Left | MyGUI::Align::Top,
                 "KJM_MemberHeader");
-            memberHeader->setCaption("SQUAD MEMBER  |  TOP ENABLED STATS");
+            memberHeader->setCaption("SQUAD MEMBER  |  TOP STATS");
             memberHeader->setTextAlign(MyGUI::Align::Center);
             memberHeader->setNeedMouseFocus(false);
 
@@ -707,6 +837,11 @@
             {
                 CancelStationHeaderDrag();
             }
+            else if (IsStationDetailOpen())
+            {
+                CloseStationDetail();
+                RefreshStationView();
+            }
             else if (g_drag.armed)
             {
                 CancelDrag();
@@ -723,7 +858,8 @@
         g_escapeWasDown = escapeDown;
 
         const bool tabDown = (GetAsyncKeyState(VK_TAB) & 0x8000) != 0;
-        if (tabDown && !g_tabWasDown && g_modal.kind == MODAL_NONE)
+        if (tabDown && !g_tabWasDown && g_modal.kind == MODAL_NONE &&
+            !IsStationDetailOpen())
         {
             TryCycleCurrentSquad();
             RefreshSquadView(true);
@@ -734,26 +870,15 @@
         {
             CloseModalNow();
         }
-        if (g_skillRefreshRequested)
-        {
-            g_skillRefreshRequested = false;
-            RefreshSquadView(true);
-            g_stationAssignmentsDirty = g_stationScan.started;
-            g_stationFilterRefreshRequested = true;
-            if (g_settingsWriteFailed)
-            {
-                SetStatus(
-                    "Displayed-stat options were applied, but settings.ini could not be saved.");
-                g_settingsWriteFailed = false;
-            }
-            else
-            {
-                SetStatus(
-                    "Displayed-stat options were saved and applied to every member.");
-            }
-        }
         ProcessPendingAction();
-        TickJobStationCategoryCache();
+        // Squad-card artwork is hidden while Stations is active. Do not pair
+        // its separate live-building lookup with every scanner lookup; pending
+        // artwork resumes when Squad Jobs is shown or the station pass ends.
+        if (!g_stationTabActive || !g_stationScan.started ||
+            g_stationScan.complete)
+        {
+            TickJobStationCategoryCache();
+        }
 
         const DWORD now = GetTickCount();
         TickDragAutoScroll(now);
@@ -764,6 +889,7 @@
         }
 
         bool stationViewChanged = false;
+        bool stationProgressChanged = false;
         const bool stationInteractionDragging =
             IsStationInteractionDragArmed();
         if (!stationInteractionDragging &&
@@ -782,7 +908,8 @@
                 stationViewChanged = true;
             }
         }
-        if (!stationInteractionDragging && g_stationScan.started &&
+        if (!stationInteractionDragging && g_stationTabActive &&
+            g_stationScan.started &&
             g_stationAssignmentsDirty &&
             (g_lastStationAssignmentRefreshAttempt == 0 ||
              HasElapsed(
@@ -793,58 +920,19 @@
             if (TryRefreshStationAssignmentsGuarded())
             {
                 g_stationAssignmentsDirty = false;
+                if (!TryCompleteStationScanImmediately())
+                {
+                    stationProgressChanged = true;
+                }
                 stationViewChanged = true;
             }
-        }
-        if (!stationInteractionDragging && g_stationTabActive && g_stationScan.started &&
-            !g_stationScan.complete)
-        {
-            const bool firstStationTarget = g_stationScan.nextTarget == 0;
-            const size_t stationCountBefore = g_stationScan.stations.size();
-            const size_t failureCountBefore = g_stationScan.targetsFailed;
-            const bool completeBefore = g_stationScan.complete;
-            HandleIdentity processedStationTarget;
-            if (g_stationScan.nextTarget <
-                StationScanCandidateCount(g_stationScan))
+            else
             {
-                TryGetStationScanCandidateIdentity(
-                    g_stationScan, g_stationScan.nextTarget,
-                    &processedStationTarget);
+                // The guarded refresh records its incomplete/error state.
+                // Update only the banner while the dirty request remains
+                // queued for a later throttled retry.
+                stationProgressChanged = true;
             }
-            if (firstStationTarget)
-            {
-                DebugLog("[KenshiJobManagement] Resolving first player station target.");
-            }
-            TryStepStationScanGuarded();
-            // StepStationScan sorts the complete column list after appending.
-            // Re-find the processed handle instead of assuming the new
-            // station stayed at the end of the vector.
-            for (size_t stationIndex = 0;
-                 processedStationTarget.valid &&
-                 stationIndex < g_stationScan.stations.size(); ++stationIndex)
-            {
-                if (SameHandleIdentity(
-                        processedStationTarget,
-                        g_stationScan.stations[stationIndex].identity))
-                {
-                    SyncJobStationArtworkFromSnapshot(
-                        g_stationScan.stations[stationIndex]);
-                    break;
-                }
-            }
-            if (firstStationTarget)
-            {
-                DebugLog("[KenshiJobManagement] First player station target resolved.");
-            }
-            // A full virtual-matrix rebuild also rebinds visible portraits.
-            // Refresh when a result or failure appears, when target loading ends,
-            // and periodically for progress instead of rebuilding every
-            // paused-game frame for an unloaded or irrelevant handle.
-            stationViewChanged = stationViewChanged ||
-                g_stationScan.stations.size() != stationCountBefore ||
-                g_stationScan.targetsFailed != failureCountBefore ||
-                g_stationScan.complete != completeBefore ||
-                (g_stationScan.targetsCompleted % 16) == 0;
         }
         if (!stationInteractionDragging && g_stationFilterRefreshRequested)
         {
@@ -857,7 +945,8 @@
                 g_settingsWriteFailed = false;
             }
         }
-        if (!TryTickStationViewGuarded(stationViewChanged))
+        if (!TryTickStationViewGuarded(
+                stationViewChanged, stationProgressChanged))
         {
             g_closeRequested = true;
         }
