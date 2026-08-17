@@ -17,8 +17,7 @@ if (-not (Test-Path $source -PathType Container)) {
 $requiredFiles = @(
     'KenshiJobManagement.dll',
     'KenshiJobManagement.mod',
-    'RE_Kenshi.json',
-    'README.txt'
+    'RE_Kenshi.json'
 )
 foreach ($file in $requiredFiles) {
     $path = Join-Path $source $file
@@ -33,4 +32,8 @@ if (Test-Path $destination) {
 }
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 Copy-Item -Path (Join-Path $source '*') -Destination $destination -Recurse -Force
+$obsoleteInstalledReadme = Join-Path $destination 'README.txt'
+if (Test-Path $obsoleteInstalledReadme -PathType Leaf) {
+    Remove-Item $obsoleteInstalledReadme -Force
+}
 Write-Host "Installed to: $destination"

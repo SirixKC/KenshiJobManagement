@@ -22,7 +22,6 @@ REQUIRED_FILES = (
     "docs/TESTING.md",
     "docs/WORKSHOP.md",
     "mod/KenshiJobManagement.mod",
-    "mod/README.txt",
     "mod/RE_Kenshi.json",
     "mod/gui/station-copper-ore.png",
     "mod/gui/station-iron-ore.png",
@@ -440,7 +439,6 @@ def validate_project(errors: list[str]) -> None:
     for package_file in (
         "RE_Kenshi.json",
         "KenshiJobManagement.mod",
-        "README.txt",
         "src\\SquadSelector.inl",
         "mod\\gui\\job-engineering.png",
         "mod\\gui\\job-medic.png",
@@ -723,36 +721,6 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
     ):
         if token not in testing:
             fail(errors, f"Testing checklist is missing coverage for: {token}")
-
-    mod_readme = read_text("mod/README.txt", errors)
-    for token in (
-        "station-category filters only",
-        "except Training stations",
-        "SQUAD JOBS SELECTOR",
-        "exact raw active/nonempty",
-        "fresh validated `setCurrentPlatoon`",
-        "independent horizontal overflow",
-        "plain wheel over the strip",
-        "Shift+wheel scrolls only the strip",
-        "Builder/Engineering, Medic, Robotics, Rescue",
-        "targets internally for mutation verification",
-        "text, arrow, unavailable tint, and station-target artwork",
-        "incidental target",
-        "80x80",
-        "y=11",
-        "y=8/33/49",
-        "48-pixel skills block",
-        "120-pixel row",
-        "JOB_BUILDER",
-        "JOB_REPAIR_ROBOT",
-        "FIND_BED_AND_PUT_IN",
-        "FIND_AND_RESCUE_IF_THERES_BEDS",
-        "RE_Kenshi 0.3.4 or newer",
-        "job-engineering.png",
-        "job-medic.png",
-    ):
-        if token not in mod_readme:
-            fail(errors, f"Packaged README must document: {token}")
 
     workshop = read_text("docs/WORKSHOP.md", errors)
     for token in (

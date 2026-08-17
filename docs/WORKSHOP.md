@@ -89,7 +89,7 @@ GPL-3.0-only. Kenshi and its assets belong to Lo-Fi Games.
 6. Find the private item under
    `steamapps/workshop/content/233860/<Workshop ID>`.
 7. Confirm the downloaded item contains `KenshiJobManagement.dll`,
-   `RE_Kenshi.json`, `KenshiJobManagement.mod`, `README.txt`, and all GUI PNGs.
+   `RE_Kenshi.json`, `KenshiJobManagement.mod`, and all GUI PNGs.
    Hash the downloaded DLL and compare it with the release DLL.
 8. Test from the downloaded Workshop folder with current RE_Kenshi. Verify the
    launcher entry, startup log, Ctrl+J, HUD button, both tabs, one safe reorder,

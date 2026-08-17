@@ -219,7 +219,6 @@ dist\KenshiJobManagement\
   KenshiJobManagement.dll
   KenshiJobManagement.mod
   RE_Kenshi.json
-  README.txt
   gui\
     station-crafting.png
     ... eight more broad station-category icons

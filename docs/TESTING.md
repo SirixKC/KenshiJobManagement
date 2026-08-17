@@ -29,7 +29,7 @@ The test terms below are intentional:
 
 - Build `Release|x64` with the VC100 x64 toolset.
 - Confirm the package contains the DLL, canonical blank FCS `.mod` marker,
-  `RE_Kenshi.json`, and `README.txt`.
+  and `RE_Kenshi.json`.
 - Install to `mods\KenshiJobManagement\` and enable the mod.
 - Keep other RE_Kenshi UI plugins enabled only when needed for compatibility
   testing.

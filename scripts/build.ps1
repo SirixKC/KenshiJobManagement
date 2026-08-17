@@ -54,11 +54,15 @@ if ($LASTEXITCODE -ne 0) {
     throw "MSBuild failed with exit code $LASTEXITCODE. Confirm the Visual C++ v100 x64 toolset is installed."
 }
 
+$obsoletePackageReadme = Join-Path $packageDirectory 'README.txt'
+if (Test-Path $obsoletePackageReadme -PathType Leaf) {
+    Remove-Item $obsoletePackageReadme -Force
+}
+
 $requiredPackageFiles = @(
     'KenshiJobManagement.dll',
     'KenshiJobManagement.mod',
-    'RE_Kenshi.json',
-    'README.txt'
+    'RE_Kenshi.json'
 )
 
 foreach ($file in $requiredPackageFiles) {

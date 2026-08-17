@@ -51,9 +51,6 @@
     <None Include="mod\KenshiJobManagement.mod">
       <Filter>Mod Package</Filter>
     </None>
-    <None Include="mod\README.txt">
-      <Filter>Mod Package</Filter>
-    </None>
     <None Include="mod\gui\station-crafting.png"><Filter>Mod Package</Filter></None>
     <None Include="mod\gui\station-copper-alloy-plates.png"><Filter>Mod Package</Filter></None>
     <None Include="mod\gui\station-copper-ore.png"><Filter>Mod Package</Filter></None>

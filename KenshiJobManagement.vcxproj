@@ -60,7 +60,7 @@
       <Command>if not exist "$(OutDir)" mkdir "$(OutDir)"
 copy /Y "$(ProjectDir)mod\RE_Kenshi.json" "$(OutDir)RE_Kenshi.json"
 copy /Y "$(ProjectDir)mod\KenshiJobManagement.mod" "$(OutDir)KenshiJobManagement.mod"
-copy /Y "$(ProjectDir)mod\README.txt" "$(OutDir)README.txt"
+if exist "$(OutDir)README.txt" del /Q "$(OutDir)README.txt"
 if not exist "$(OutDir)gui" mkdir "$(OutDir)gui"
 xcopy /Y /I "$(ProjectDir)mod\gui\*.png" "$(OutDir)gui\"</Command>
     </PostBuildEvent>
@@ -82,7 +82,6 @@ xcopy /Y /I "$(ProjectDir)mod\gui\*.png" "$(OutDir)gui\"</Command>
     <None Include="src\SquadSelector.inl" />
     <None Include="mod\RE_Kenshi.json" />
     <None Include="mod\KenshiJobManagement.mod" />
-    <None Include="mod\README.txt" />
     <None Include="mod\gui\station-crafting.png" />
     <None Include="mod\gui\station-copper-alloy-plates.png" />
     <None Include="mod\gui\station-copper-ore.png" />
