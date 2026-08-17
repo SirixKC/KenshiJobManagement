@@ -125,7 +125,8 @@ While the manager is open, its opaque backdrop keeps
 the world from reducing text contrast and mouse-wheel input is reserved for the
 manager rather than changing the game camera. On Squad Jobs, the wheel scrolls
 vertically over every control and Shift+wheel scrolls the job columns
-horizontally.
+horizontally. Ctrl-click multi-selection keeps the pointer live even when Ctrl
+is also bound to Kenshi's native mouse-rotate control.
 
 The station pass starts when the tab is first opened. It brackets a borrowed
 player ownership record copy into plugin-owned scalar data, then resolves the

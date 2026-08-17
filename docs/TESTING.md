@@ -87,6 +87,12 @@ The test terms below are intentional:
    move only the member/job rows vertically. Shift+wheel must move only job
    cards and priority headers horizontally. Confirm both directions clamp at
    their ends, no control activates, and the game camera never zooms.
+   Hold Ctrl and move the pointer across several job cards. The rendered
+   pointer must follow continuously. Ctrl-click several cards and confirm each
+   click toggles only the intended card while earlier selections remain.
+   Repeat the pointer movement with Mouse3 held because it can share Kenshi's
+   native mouse-rotate command. The camera must remain still and the pointer
+   must not freeze, jump, or wait for a click before it updates.
 6. Confirm the manager invokes Kenshi's native pause on open. Record the new
    pause state and speed.
 7. Confirm the heading resolves to `<squad name>  |  <N> member(s)` (or starts

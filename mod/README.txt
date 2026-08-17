@@ -128,7 +128,8 @@ has no drag-to-transfer interaction.
 The main manager backdrop is fully opaque. While the manager is open, the
 mouse wheel scrolls Squad Jobs vertically over every control. Hold Shift while
 using the wheel to scroll its job columns horizontally. Manager wheel input
-does not also change the game camera.
+does not also change the game camera. Ctrl-click multi-selection keeps the
+pointer live even when Ctrl is bound to Kenshi's native mouse-rotate control.
 
 The station pass merges verified live player-owned station-relevant buildings
 from Kenshi's borrowed ownership records with exact targets from readable

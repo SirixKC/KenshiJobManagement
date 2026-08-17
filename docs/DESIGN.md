@@ -460,8 +460,11 @@ alphabetical ordering. External queue changes, failed verification, and load
 transitions use the normal fail-closed refresh path.
 
 While the manager exists, the update hook clears Kenshi's camera-wheel input
-before vanilla UI processing. MyGUI continues to receive wheel input for the
-manager's own scroll views.
+and native mouse-rotate command before vanilla UI processing. Kenshi binds
+Left Ctrl to mouse rotation by default; suppressing only that native command
+keeps the rendered pointer moving while MyGUI retains Ctrl for job-card
+multi-selection. MyGUI continues to receive wheel input for the manager's own
+scroll views.
 
 Blocking states are red only when they prevent work. Direct-owned stations can
 appear without an assignment and show a thin yellow outline plus a large red

@@ -3,15 +3,19 @@
     {
         if (g_enabled && g_window != NULL)
         {
-            // MyGUI and Kenshi receive the wheel independently. The modal
-            // consumes clicks, but Kenshi's camera still reads this separate
-            // accumulator. Clear it before vanilla updateUT can zoom while
-            // preserving MyGUI's own list scrolling.
+            // MyGUI and Kenshi receive wheel/modifier input independently.
+            // The modal consumes clicks, but Kenshi's camera still reads its
+            // wheel accumulator and mouse-rotate command. Left Control is a
+            // default mouse_rotate binding, so leaving rotate armed pins the
+            // rendered cursor while MyGUI continues to move it logically.
+            // Suppress only the native camera inputs before vanilla updateUT;
+            // MyGUI keeps its own Ctrl state for multi-selection.
             __try
             {
                 if (key != NULL)
                 {
                     key->mWheel = 0;
+                    key->rotate = false;
                 }
             }
             __except (EXCEPTION_EXECUTE_HANDLER)

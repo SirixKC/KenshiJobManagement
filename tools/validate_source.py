@@ -103,6 +103,7 @@ SOURCE_TOKENS = (
     "client->setInheritsAlpha(false)",
     "background->setAlpha(1.0f)",
     "key->mWheel = 0",
+    "key->rotate = false",
     "RebuildJobHighlightCache",
     "ApplyCachedJobHighlightGroups",
     "SameJobHighlightKey",

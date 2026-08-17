@@ -48,6 +48,7 @@ Tested on Kenshi Steam 1.0.65 x64 with RE_Kenshi 0.3.4.
 [list]
 [*]Open: Ctrl+J or the Job Manager button beside the vanilla JOBS control.
 [*]Squad Jobs: mouse wheel scrolls vertically; Shift+wheel scrolls jobs horizontally.
+[*]Ctrl-click selects multiple job cards without activating Kenshi's mouse-rotate mode.
 [*]Stations: click a station card for worker details.
 [*]TAB remains Kenshi's normal squad-cycle control.
 [/list]
