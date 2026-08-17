@@ -1,7 +1,7 @@
 Kenshi Job Management 0.1.0-alpha
 =================================
 
-This is a field-test build for RE_Kenshi/KenshiLib.
+This is an alpha field-test build for RE_Kenshi 0.3.4+ / KenshiLib.
 
 Open the Stage 1 squad audit/editor:
   Ctrl+J
@@ -173,10 +173,12 @@ Camera centering, roles, and world highlights are outside this view.
 
 SAFETY
 ------
-This build has been compiled successfully with the VC100 x64 toolchain, but it
-has not yet completed in-game testing. Use a disposable save. Keep a backup
-before installation. Test single-member Remove and Clear Queue before
-multi-member batch removal or Squad Jobs same-row drag reorder. Remove Selected and drop-to-remove
+This build has completed repeated in-game tests on Kenshi Steam 1.0.65 with
+RE_Kenshi 0.3.4, including Squad Jobs, Stations, assignment changes, squad
+switching, and UI reset/reopen flows. It remains alpha software. Use a
+disposable save for the first test and keep a backup before installation. Test
+single-member Remove and Clear Queue before multi-member batch removal or Squad
+Jobs same-row drag reorder. Remove Selected and drop-to-remove
 are immediate and irreversible. Inspect RE_Kenshi_log.txt after the first run
 and after every failed mutation.
 
@@ -185,7 +187,9 @@ INSTALL
 Place this entire folder at:
   <Kenshi>\mods\KenshiJobManagement\
 
-Enable KenshiJobManagement in the launcher and ensure RE_Kenshi is installed.
+Enable KenshiJobManagement in the launcher and ensure RE_Kenshi 0.3.4 or newer
+is installed:
+  https://github.com/BFrizzleFoShizzle/RE_Kenshi/releases
 
 The detailed disposable-save checklist, including the Stations field test, is
 in docs\TESTING.md.

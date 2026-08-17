@@ -20,6 +20,7 @@ REQUIRED_FILES = (
     "README.md",
     "docs/DESIGN.md",
     "docs/TESTING.md",
+    "docs/WORKSHOP.md",
     "mod/KenshiJobManagement.mod",
     "mod/README.txt",
     "mod/RE_Kenshi.json",
@@ -439,6 +440,9 @@ def validate_project(errors: list[str]) -> None:
         "RE_Kenshi.json",
         "KenshiJobManagement.mod",
         "README.txt",
+        "src\\SquadSelector.inl",
+        "mod\\gui\\job-engineering.png",
+        "mod\\gui\\job-medic.png",
     ):
         if package_file not in project_text:
             fail(errors, f"Post-build package does not mention {package_file}")
@@ -625,6 +629,7 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "job-medic.png",
         "FIND_BED_AND_PUT_IN",
         "FIND_AND_RESCUE_IF_THERES_BEDS",
+        "RE_Kenshi 0.3.4 or newer",
     ):
         if token not in readme:
             fail(errors, f"README must disclose or document: {token}")
@@ -741,11 +746,25 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "JOB_REPAIR_ROBOT",
         "FIND_BED_AND_PUT_IN",
         "FIND_AND_RESCUE_IF_THERES_BEDS",
+        "RE_Kenshi 0.3.4 or newer",
         "job-engineering.png",
         "job-medic.png",
     ):
         if token not in mod_readme:
             fail(errors, f"Packaged README must document: {token}")
+
+    workshop = read_text("docs/WORKSHOP.md", errors)
+    for token in (
+        "Kenshi Job Management [RE_Kenshi]",
+        "Gameplay`, `GUI`, and `RE_Kenshi`",
+        "RE_Kenshi 0.3.4 or newer",
+        "Private first upload",
+        "KenshiJobManagement.dll",
+        "steamapps/workshop/content/233860",
+        "Do not make the item public",
+    ):
+        if token not in workshop:
+            fail(errors, f"Workshop release sheet is missing: {token}")
 
     evidence = read_text(
         "diagnostics/evidence/2026-08-15-station-handle-resolution-success.md",

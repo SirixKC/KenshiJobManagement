@@ -72,6 +72,9 @@
     <None Include="mod\gui\station-steel-bars.png"><Filter>Mod Package</Filter></None>
     <None Include="mod\gui\station-storage.png"><Filter>Mod Package</Filter></None>
     <None Include="mod\gui\station-training.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\job-engineering.png"><Filter>Mod Package</Filter></None>
+    <None Include="mod\gui\job-medic.png"><Filter>Mod Package</Filter></None>
     <None Include="mod\gui\kjm-hud-icon.png"><Filter>Mod Package</Filter></None>
+    <None Include="src\SquadSelector.inl"><Filter>Source Files</Filter></None>
   </ItemGroup>
 </Project>

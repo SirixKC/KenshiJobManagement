@@ -180,14 +180,20 @@ The architecture and deferred work are documented in
 
 ## Validation status
 
-This is a **field-test build**. It has been compiled successfully as an x64 DLL with the VC100 toolchain against KenshiLib 0.4.0, but it has not yet completed in-game testing. The included validator checks the source tree, manifest, project XML, MyGUI dependency, and critical job calls, but it cannot prove runtime hook behavior or the reconstructed `movePermajob` and `removePermajob` index semantics. Keep a backup and test on a disposable save first.
+This is an **alpha field-test build**. It has completed repeated in-game tests on
+Kenshi Steam 1.0.65 with RE_Kenshi 0.3.4, including squad queue editing,
+player-station discovery and assignment, squad switching, portraits, job art,
+and UI reset/reopen flows. The included validator checks the source tree,
+manifest, project XML, MyGUI dependency, and critical job calls, but it cannot
+prove every save or mod combination safe. Keep a backup and test on a
+disposable save first.
 
 ## Build requirements
 
 - Windows build environment;
 - Visual Studio 2019 or newer as the IDE;
 - the Visual C++ 2010 **x64** toolset (`v100`);
-- RE_Kenshi 0.3.1 or newer;
+- RE_Kenshi 0.3.4 or newer;
 - KenshiLib headers and libraries, including the real Git LFS copies of
   `KenshiLib.lib`, `MyGUIEngine_x64.lib`, and `OgreMain_x64.lib`;
 - Boost 1.60 headers (the Boost thread library is not linked).
@@ -217,6 +223,8 @@ dist\KenshiJobManagement\
     station-crafting.png
     ... eight more broad station-category icons
     ... nine station visual subtype icons
+    job-engineering.png
+    job-medic.png
     kjm-hud-icon.png
 
 dist\KenshiJobManagement-0.1.0-alpha.zip
