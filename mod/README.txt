@@ -18,22 +18,33 @@ runtime.
 The native full-screen window replaces the old one-character popup. Its primary
 backdrop is fully opaque so cards, controls, and text remain easy to read. It shows
 the current squad's live or per-member cached permanent-job queues. Each member
-has a Jobs toggle and a Clear Queue control. Each narrow, high-contrast card
-centers Kenshi's live job text above a `V` and the exact target name, with no
-synthetic `Job:` or `Target:` prefix and no duplicate priority number:
+has a Jobs toggle and a Clear Queue control. Each station-display card centers
+Kenshi's live job text above a `V` and the exact target name, with no synthetic
+`Job:` or `Target:` prefix and no duplicate priority number:
   <live work type>
   V
   <live target name>
-Long work or renamed-target text fits without clipping. If a live target cannot be resolved, the
-target line is `Target unavailable` and the whole card is highlighted red.
-Building-target cards reuse the square station-category artwork without
-stretching it. The icon ImageBox itself is 33% opaque (67% transparent) behind
-the card text; the dark overlay is separate. `Operating Machine` and
-`Operating Automatic Machine` display as
-`Operating...`; their complete Kenshi text remains in the tooltip.
-Hover a card to outline every displayed card with the same job type and exact
-target. Matching groups are cached when captured job identities change.
-Member portraits use Kenshi's generated portrait and native overlay order.
+Long work or renamed-target text fits without clipping. If a station-display
+target cannot be resolved, the target line is `Target unavailable` and the whole
+card is highlighted red. Building-target cards reuse the square station-category
+artwork without stretching it. The icon ImageBox itself is 33% opaque (67%
+transparent) behind the card text; the dark overlay is separate. Global
+Builder/Engineering, Medic, Robotics, and Rescue rows retain their exact stored
+targets internally for mutation verification, but their Squad cards omit target
+text, arrow, unavailable tint, and station-target artwork. Role art is selected by
+TaskType: `JOB_BUILDER` uses optional `job-engineering.png` with a
+`station-other.png` fallback; `JOB_REPAIR_ROBOT` uses the existing skeleton-limb
+icon; and `JOB_MEDIC`, `FIND_AND_RESCUE`, `FIND_BED_AND_PUT_IN`, and the live
+permanent Rescue wrapper `FIND_AND_RESCUE_IF_THERES_BEDS` use optional
+`job-medic.png`. Role icons use the same direct 33% card-art alpha. `Operating Machine` and
+`Operating Automatic Machine` display as `Operating...`; their complete Kenshi
+text remains in the tooltip.
+Hover a station-display card to outline every displayed card with the same job
+type and exact target. Global behavior cards group by task type without the
+incidental target. Matching groups are cached when captured job identities
+change. Member portraits use Kenshi's generated portrait and native overlay
+order; the portrait remains `80x80` at `y=11`, with the name/condition/skills
+block at `y=8/33/49` and a 48-pixel skills block in a 120-pixel row.
 An empty live queue shows `[No permanent jobs]`; an unavailable queue shows
 `Queue unavailable (read-only)`.
 
@@ -54,6 +65,21 @@ modals block TAB through the native
 member. Other live member cards remain editable, and a live queue stays
 editable if only its target is unavailable.
 
+SQUAD JOBS SELECTOR
+-------------------
+The `Squad Jobs` tab has a compact single-row selector along its bottom edge.
+It copies active, nonempty player squads in the exact raw active/nonempty
+vanilla `TAB` order. Empty squads and Kenshi's internal `__DEAD__` squad are
+excluded. The current squad has the exact selected highlight.
+
+A click queues only the squad's value identity. The update path uses a fresh validated `setCurrentPlatoon` path.
+It rereads the result before refreshing the
+jobs view and retains no `Platoon` or `ActivePlatoon` engine pointer. The strip
+has independent horizontal overflow: plain wheel over the strip still scrolls
+the member rows, while Shift+wheel scrolls only the strip. Ordinary `TAB`
+cycling remains vanilla-owned and moves the selector highlight after Kenshi's
+native cycle.
+
 STATIONS TAB
 ------------
 The `Stations` tab is a category-grouped card grid, not a member-by-station
@@ -61,8 +87,11 @@ board. It shows verified player-owned workstations and exact station targets
 from readable player queues. The strict player-owned workstation allowlist
 excludes walls, lights, chairs, and any other object accepted only because it
 has a generic task. An assigned natural resource node is the one explicit
-non-owned exception. Engineer, Medic, Robotics, and Rescue remain on Squad
-Jobs and never create a station card.
+non-owned exception. Builder/Engineering, Medic, Robotics, Rescue, and Put-in-bed remain on
+Squad Jobs and never create a station card. Their exact stored targets remain
+available for mutation verification, but Squad card presentation omits target
+text, arrow, unavailable tint, and station-target artwork. Their incidental
+subjects never create a Stations projection.
 
 Category headers show persistent `+`/`-` collapse state, station count, and
 unassigned count. Within each category, unassigned cards appear first, then
@@ -97,7 +126,9 @@ verification is fail-closed. Squad Jobs retains same-row drag reorder; Stations
 has no drag-to-transfer interaction.
 
 The main manager backdrop is fully opaque. While the manager is open, the
-mouse wheel scrolls its views without also changing the game camera.
+mouse wheel scrolls Squad Jobs vertically over every control. Hold Shift while
+using the wheel to scroll its job columns horizontally. Manager wheel input
+does not also change the game camera.
 
 The station pass merges verified live player-owned station-relevant buildings
 from Kenshi's borrowed ownership records with exact targets from readable

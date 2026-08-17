@@ -106,13 +106,19 @@ namespace
     const int HEADER_HEIGHT = 38;
     const int ACTION_HEIGHT = 62;
     const int SCROLL_SIZE = 20;
+    const int SQUAD_SELECTOR_HEIGHT = 54;
+    const int SQUAD_SELECTOR_LABEL_WIDTH = 76;
+    const int SQUAD_SELECTOR_BUTTON_WIDTH = 150;
+    const int SQUAD_SELECTOR_BUTTON_HEIGHT = 34;
+    const int SQUAD_SELECTOR_BUTTON_GAP = 4;
+    const int SQUAD_SELECTOR_SCROLL_HEIGHT = 16;
     // Keep the member rows compact enough to show a full squad without
     // wasting vertical space.  Card dimensions are intentionally modest:
     // the original tick-button skin was being stretched over a very large
     // 220x112 surface and its checkbox texture read like a distorted icon.
     // Member rows need room for three readable, vertically stacked skills.
     // Job cards keep their compact 88px height and are centered in the row.
-    const int ROW_HEIGHT = 116;
+    const int ROW_HEIGHT = 120;
     const int ROW_GAP = 6;
     const int ROW_STRIDE = ROW_HEIGHT + ROW_GAP;
     const int CARD_HEIGHT = 88;
@@ -159,6 +165,18 @@ namespace
             containerSerial(0), index(0), serial(0)
         {
         }
+    };
+
+    // Value-only data for the squad selector. Never store Platoon or
+    // ActivePlatoon pointers in UI state because both are borrowed engine
+    // objects whose lifetime can change while the manager is open.
+    struct SquadSelectorEntry
+    {
+        HandleIdentity identity;
+        std::string name;
+        int memberCount;
+
+        SquadSelectorEntry() : memberCount(0) {}
     };
 
     struct SkillValue
@@ -422,6 +440,10 @@ namespace
 
     SquadSnapshot g_squad;
     std::vector<SquadCache> g_squadCaches;
+    std::vector<SquadSelectorEntry> g_squadSelectorEntries;
+    bool g_squadSelectorIncomplete = false;
+    bool g_squadSelectorSelectionPending = false;
+    HandleIdentity g_pendingSquadSelectionIdentity;
     std::vector<MemberWidgets> g_memberWidgets;
     std::vector<MyGUI::TextBox*> g_priorityLabels;
     std::vector<JobHighlightKey> g_jobHighlightKeys;
@@ -442,7 +464,7 @@ namespace
     DWORD g_lastDragTick = 0;
     bool g_hotkeyWasDown = false;
     bool g_escapeWasDown = false;
-    bool g_tabWasDown = false;
+    bool g_squadCycleObserved = false;
     bool g_closeRequested = false;
     bool g_modalCloseRequested = false;
     bool g_settingsWriteFailed = false;
@@ -470,6 +492,7 @@ namespace
     void OnCardToolTip(MyGUI::Widget*, const MyGUI::ToolTipInfo&);
     void OnEmptyPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
     void OnMouseWheel(MyGUI::Widget*, int);
+    void BindSquadMouseWheelTree(MyGUI::Widget*);
     void OnJobsToggleClicked(MyGUI::Widget*);
     void OnClearClicked(MyGUI::Widget*);
     void OnRemoveClicked(MyGUI::Widget*);
@@ -508,6 +531,7 @@ namespace
 
 #include "JobView.inl"
 #include "JobActions.inl"
+#include "SquadSelector.inl"
 #include "StationView.inl"
 #include "JobWindow.inl"
 #include "HudButton.inl"

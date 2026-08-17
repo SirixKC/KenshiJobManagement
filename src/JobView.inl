@@ -299,6 +299,8 @@
                     {
                         const bool targetUnavailable =
                             member.jobs[slot].hasTarget &&
+                            IsStationDisplayJob(
+                                member.jobs[slot].taskType) &&
                             !member.jobs[slot].targetAvailable;
                         widgets.cards[slot].unavailableMarker->setVisible(
                             targetUnavailable);
@@ -313,8 +315,16 @@
     {
         JobHighlightKey key;
         key.taskType = job.taskType;
-        key.hasTarget = job.hasTarget;
-        key.target = job.target;
+        // Builder, Medic, Robotics, and Rescue are global behaviors. Kenshi
+        // stores an incidental subject on some of these queue rows, but that
+        // subject does not scope the permanent job. Keep it for exact engine
+        // mutation checks while omitting it from presentation and hover
+        // grouping.
+        key.hasTarget = job.hasTarget && IsStationDisplayJob(job.taskType);
+        if (key.hasTarget)
+        {
+            key.target = job.target;
+        }
         return key;
     }
 
@@ -673,6 +683,7 @@
 
     std::vector<JobStationCategoryCacheEntry> g_jobStationCategoryCache;
     std::vector<HandleIdentity> g_jobStationCategoryPending;
+    const size_t MAX_JOB_STATION_CATEGORY_TARGETS = 512;
 
     bool TrySetJobStationCategoryIcon(
         MyGUI::ImageBox* icon,
@@ -734,30 +745,40 @@
         return false;
     }
 
-    void QueueJobStationCategory(const HandleIdentity& target)
+    bool QueueJobStationCategory(const HandleIdentity& target)
     {
         if (!target.valid || target.type != BUILDING)
         {
-            return;
+            return false;
         }
         StationCategory ignored = STATION_OTHER;
         StationVisualSubtype ignoredSubtype = STATION_VISUAL_DEFAULT;
         if (TryGetCachedJobStationCategory(
                 target, &ignored, &ignoredSubtype))
         {
-            return;
+            return true;
         }
         for (size_t index = 0; index < g_jobStationCategoryPending.size(); ++index)
         {
             if (SameHandleIdentity(g_jobStationCategoryPending[index], target))
             {
-                return;
+                return true;
             }
         }
-        if (g_jobStationCategoryPending.size() < 512)
+        if (g_jobStationCategoryPending.size() <
+            MAX_JOB_STATION_CATEGORY_TARGETS)
         {
             g_jobStationCategoryPending.push_back(target);
+            return true;
         }
+
+        // An extraordinary current squad can exceed the finite live-resolution
+        // cap. Give every overflow target immediate neutral artwork instead of
+        // leaving its cards blank or extending the synchronous engine pass.
+        JobStationCategoryCacheEntry fallback;
+        fallback.target = target;
+        g_jobStationCategoryCache.push_back(fallback);
+        return false;
     }
 
     bool TryResolveJobStationCategory(
@@ -815,7 +836,8 @@
                 widgets.cards.size(), member.jobs.size());
             for (size_t slot = 0; slot < cardCount; ++slot)
             {
-                if (!SameHandleIdentity(member.jobs[slot].target, target))
+                if (!IsStationDisplayJob(member.jobs[slot].taskType) ||
+                    !SameHandleIdentity(member.jobs[slot].target, target))
                 {
                     continue;
                 }
@@ -865,6 +887,64 @@
         entry.visualSubtype = visualSubtype;
         g_jobStationCategoryCache.push_back(entry);
         ApplyJobStationCategoryArtwork(target, category, visualSubtype);
+    }
+
+    bool DrainPendingJobStationCategoriesImmediately()
+    {
+        // Card creation already deduplicates exact BUILDING identities and
+        // caps the guarded live-resolution pass at 512. Resolve that finite
+        // snapshot before the current Squad view can render instead of
+        // revealing one icon per later update tick. Do not enumerate
+        // ownership or the world here.
+        const size_t initialCount = g_jobStationCategoryPending.size();
+        const size_t maximumPasses = std::min(
+            initialCount, MAX_JOB_STATION_CATEGORY_TARGETS);
+        for (size_t pass = 0;
+             pass < maximumPasses &&
+             !g_jobStationCategoryPending.empty();
+             ++pass)
+        {
+            const size_t countBefore = g_jobStationCategoryPending.size();
+            TickJobStationCategoryCache();
+            if (g_jobStationCategoryPending.size() >= countBefore)
+            {
+                return false;
+            }
+        }
+        return g_jobStationCategoryPending.empty();
+    }
+
+    __declspec(noinline) bool CallDrainPendingJobStationCategoriesSafely()
+    {
+        try
+        {
+            return DrainPendingJobStationCategoriesImmediately();
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    __declspec(noinline) bool TryDrainPendingJobStationCategoriesGuarded()
+    {
+        bool result = false;
+        bool faulted = false;
+        __try
+        {
+            result = CallDrainPendingJobStationCategoriesSafely();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            faulted = true;
+        }
+        if (faulted)
+        {
+            ErrorLog(
+                "[KenshiJobManagement] Squad job artwork preparation failed safely.");
+            return false;
+        }
+        return result;
     }
 
     void SyncJobStationArtworkFromSnapshot(
@@ -1047,6 +1127,13 @@
         for (size_t slot = 0; slot < member.jobs.size(); ++slot)
         {
             const JobRowSnapshot& row = member.jobs[slot];
+            const bool showTarget =
+                row.hasTarget && IsStationDisplayJob(row.taskType);
+            const char* roleIconResource =
+                GetGlobalJobIconResource(row.taskType);
+            const bool hasStationArtworkTarget =
+                showTarget && row.target.valid &&
+                row.target.type == BUILDING;
             CardWidgets card;
             card.memberIndex = static_cast<int>(memberIndex);
             card.slot = static_cast<int>(slot);
@@ -1075,7 +1162,6 @@
             card.card->eventMouseButtonReleased += MyGUI::newDelegate(OnCardReleased);
             card.card->eventMouseSetFocus += MyGUI::newDelegate(OnCardMouseSetFocus);
             card.card->eventMouseLostFocus += MyGUI::newDelegate(OnCardMouseLostFocus);
-            card.card->eventMouseWheel += MyGUI::newDelegate(OnMouseWheel);
             card.card->setNeedToolTip(true);
             card.card->eventToolTip += MyGUI::newDelegate(OnCardToolTip);
             card.highlightGroup = FindJobHighlightGroup(row);
@@ -1083,7 +1169,7 @@
             std::ostringstream tooltip;
             tooltip << member.name << " | Priority " << (slot + 1)
                     << "\n" << StripLeadingPriorityPrefix(row.jobLabel);
-            if (row.hasTarget)
+            if (showTarget)
             {
                 tooltip << "\nTarget: " << row.targetLabel;
             }
@@ -1096,8 +1182,8 @@
             // the full queue cell. A matching dark tint gives it the same
             // blended treatment as station headers while the text remains
             // readable above it.
-            if (g_stationIconLocationRegistered && row.hasTarget &&
-                row.target.valid && row.target.type == BUILDING)
+            if (g_stationIconLocationRegistered &&
+                (roleIconResource != NULL || hasStationArtworkTarget))
             {
                 const int iconSize = CARD_HEIGHT;
                 const int iconLeft = (CARD_WIDTH - iconSize) / 2;
@@ -1132,27 +1218,44 @@
                 card.categoryOverlay->setNeedMouseFocus(false);
                 card.categoryOverlay->setVisible(false);
 
-                StationCategory stationCategory = STATION_OTHER;
-                StationVisualSubtype stationVisualSubtype =
-                    STATION_VISUAL_DEFAULT;
-                if (TryGetCachedJobStationCategory(
-                        row.target, &stationCategory,
-                        &stationVisualSubtype))
+                if (roleIconResource != NULL)
                 {
-                    SetJobStationCategoryArtwork(
-                        card.categoryIcon,
-                        card.categoryOverlay,
-                        stationCategory,
-                        stationVisualSubtype);
+                    const bool applied = TrySetJobStationCategoryIcon(
+                        card.categoryIcon, roleIconResource);
+                    card.categoryIcon->setVisible(applied);
+                    card.categoryOverlay->setVisible(applied);
                 }
                 else
                 {
-                    QueueJobStationCategory(row.target);
+                    StationCategory stationCategory = STATION_OTHER;
+                    StationVisualSubtype stationVisualSubtype =
+                        STATION_VISUAL_DEFAULT;
+                    if (TryGetCachedJobStationCategory(
+                            row.target, &stationCategory,
+                            &stationVisualSubtype))
+                    {
+                        SetJobStationCategoryArtwork(
+                            card.categoryIcon,
+                            card.categoryOverlay,
+                            stationCategory,
+                            stationVisualSubtype);
+                    }
+                    else
+                    {
+                        if (!QueueJobStationCategory(row.target))
+                        {
+                            SetJobStationCategoryArtwork(
+                                card.categoryIcon,
+                                card.categoryOverlay,
+                                STATION_OTHER,
+                                STATION_VISUAL_DEFAULT);
+                        }
+                    }
                 }
             }
 
             const bool targetUnavailable =
-                row.hasTarget && !row.targetAvailable;
+                showTarget && !row.targetAvailable;
 
             // Keep an unavailable target visible at a glance.  The warning
             // layer is inset only slightly, leaving the button edge intact;
@@ -1249,7 +1352,7 @@
             {
                 card.arrow->setFontHeight(card.arrow->getFontHeight() + 1);
             }
-            card.arrow->setCaption(row.hasTarget ? "V" : "");
+            card.arrow->setCaption(showTarget ? "V" : "");
             card.arrow->setTextAlign(MyGUI::Align::Center);
             card.arrow->setTextColour(MyGUI::Colour(1.0f, 0.91f, 0.62f));
             card.arrow->setColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
@@ -1266,7 +1369,7 @@
             {
                 card.target->setFontHeight(card.target->getFontHeight() + 1);
             }
-            if (row.hasTarget)
+            if (showTarget)
             {
                 SetFittedCardTargetCaption(card.target, row.targetLabel);
                 if (!row.targetAvailable)
@@ -1289,6 +1392,7 @@
             card.target->setNeedMouseFocus(false);
             widgets.cards.push_back(card);
         }
+        BindSquadMouseWheelTree(widgets.jobsRoot);
     }
 
     void ApplyMemberWidgets(size_t memberIndex, bool forcePortrait)
@@ -1350,11 +1454,10 @@
             MyGUI::IntCoord(0, y, g_memberWidth, ROW_HEIGHT),
             MyGUI::Align::Left | MyGUI::Align::Top,
             "KJM_MemberRow");
-        widgets.memberRoot->eventMouseWheel += MyGUI::newDelegate(OnMouseWheel);
 
         widgets.portraitBorder = widgets.memberRoot->createWidget<MyGUI::Button>(
             "Kenshi_PortraitFrameSkin",
-            MyGUI::IntCoord(7, 6, MEMBER_PORTRAIT_SIZE, MEMBER_PORTRAIT_SIZE),
+            MyGUI::IntCoord(7, 11, MEMBER_PORTRAIT_SIZE, MEMBER_PORTRAIT_SIZE),
             MyGUI::Align::Left | MyGUI::Align::Top,
             "KJM_PortraitFrame");
         widgets.portraitBorder->setNeedMouseFocus(false);
@@ -1403,7 +1506,7 @@
         widgets.name = widgets.memberRoot->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText",
             MyGUI::IntCoord(
-                MEMBER_TEXT_LEFT, 2, g_memberWidth - MEMBER_TEXT_LEFT - 7, 25),
+                MEMBER_TEXT_LEFT, 8, g_memberWidth - MEMBER_TEXT_LEFT - 7, 25),
             MyGUI::Align::Top | MyGUI::Align::HStretch,
             "KJM_MemberName");
         widgets.name->setFontHeight(21);
@@ -1411,7 +1514,7 @@
         widgets.condition = widgets.memberRoot->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText_Small",
             MyGUI::IntCoord(
-                MEMBER_TEXT_LEFT, 27, g_memberWidth - MEMBER_TEXT_LEFT - 7, 16),
+                MEMBER_TEXT_LEFT, 33, g_memberWidth - MEMBER_TEXT_LEFT - 7, 16),
             MyGUI::Align::Top | MyGUI::Align::HStretch,
             "KJM_MemberCondition");
         widgets.condition->setFontHeight(15);
@@ -1419,7 +1522,7 @@
         widgets.skills = widgets.memberRoot->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText_Small",
             MyGUI::IntCoord(
-                MEMBER_TEXT_LEFT, 43, g_memberWidth - MEMBER_TEXT_LEFT - 7, 48),
+                MEMBER_TEXT_LEFT, 49, g_memberWidth - MEMBER_TEXT_LEFT - 7, 48),
             MyGUI::Align::Stretch,
             "KJM_MemberSkills");
         widgets.skills->setFontHeight(16);
@@ -1459,10 +1562,11 @@
             MyGUI::Align::Left | MyGUI::Align::Top,
             "KJM_JobRow");
         widgets.jobsRoot->eventMouseButtonPressed += MyGUI::newDelegate(OnEmptyPressed);
-        widgets.jobsRoot->eventMouseWheel += MyGUI::newDelegate(OnMouseWheel);
 
         g_memberWidgets.push_back(widgets);
         ApplyMemberWidgets(memberIndex, true);
+        BindSquadMouseWheelTree(widgets.memberRoot);
+        BindSquadMouseWheelTree(widgets.jobsRoot);
     }
 
     size_t GetMaximumJobCount()
@@ -1838,6 +1942,17 @@
         if (highlightCacheChanged)
         {
             ApplyCachedJobHighlightGroups();
+        }
+
+        // Textures are registered before the first Squad refresh. Resolve all
+        // exact targets that card creation just queued now, while the manager
+        // still owns the current update, so the first rendered frame already
+        // contains the final category/subtype artwork. A running Stations scan
+        // remains the sole resolver until its copied candidate pass completes.
+        if (!g_stationTabActive || !g_stationScan.started ||
+            g_stationScan.complete)
+        {
+            TryDrainPendingJobStationCategoriesGuarded();
         }
 
         if (force || headingChanged)

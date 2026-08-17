@@ -32,6 +32,8 @@ REQUIRED_FILES = (
     "mod/gui/station-electronics.png",
     "mod/gui/station-crossbow.png",
     "mod/gui/station-skeleton-limbs.png",
+    "mod/gui/job-engineering.png",
+    "mod/gui/job-medic.png",
     "mod/gui/kjm-hud-icon.png",
     "scripts/build.ps1",
     "scripts/install.ps1",
@@ -46,6 +48,7 @@ REQUIRED_FILES = (
     "src/StationAssets.inl",
     "src/HudButton.inl",
     "src/StationView.inl",
+    "src/SquadSelector.inl",
     "diagnostics/evidence/2026-08-15-station-handle-resolution-success.md",
 )
 
@@ -81,9 +84,14 @@ SOURCE_TOKENS = (
     "GetAsyncKeyState",
     "REFRESH_INTERVAL_MS = 1000",
     "MAX_SAFE_JOB_ROWS = 64",
-    "ROW_HEIGHT = 116",
+    "ROW_HEIGHT = 120",
     "CARD_HEIGHT = 88",
     "MEMBER_PORTRAIT_SIZE = 80",
+    "MyGUI::IntCoord(7, 11, MEMBER_PORTRAIT_SIZE, MEMBER_PORTRAIT_SIZE)",
+    "MEMBER_TEXT_LEFT, 8,",
+    "MEMBER_TEXT_LEFT, 33,",
+    "MEMBER_TEXT_LEFT, 49,",
+    "MEMBER_TEXT_LEFT, 49, g_memberWidth - MEMBER_TEXT_LEFT - 7, 48)",
     "CARD_WIDTH = 168",
     '"KJM_CardArrow"',
     '"KJM_CardSelectionTint"',
@@ -97,6 +105,10 @@ SOURCE_TOKENS = (
     "RebuildJobHighlightCache",
     "ApplyCachedJobHighlightGroups",
     "SameJobHighlightKey",
+    "row.hasTarget && IsStationDisplayJob(row.taskType)",
+    "key.hasTarget = job.hasTarget && IsStationDisplayJob(job.taskType);",
+    "showTarget && !row.targetAvailable",
+    "SameHandleIdentity(left.target, right.target)",
     "eventMouseSetFocus",
     '"KJM_CardHighlightTop"',
     '"KJM_JobCategoryBackground"',
@@ -118,6 +130,37 @@ SOURCE_TOKENS = (
     "STATION_VISUAL_ICON_FILES",
     "TrySkipDeadCurrentSquad",
     "TryCallOriginalCycleSquad",
+    "PublishUnavailableSquadSelection",
+    "unavailable.unavailable = true",
+    # Bottom Squad Jobs selector: raw vanilla order, value-only records, and
+    # fresh identity validation before the native squad mutation.
+    "SquadSelectorEntry",
+    "TryBuildSquadSelectorSnapshotGuarded",
+    "getActivePlatoons",
+    "activePlatoons->valid()",
+    "memberCount <= 0",
+    'activeName == "__DEAD__"',
+    'platoon->stringID == "__DEAD__"',
+    "SQUAD_SELECTOR_BUTTON_WIDTH = 150",
+    "SQUAD_SELECTOR_BUTTON_HEIGHT = 34",
+    "SQUAD_SELECTOR_BUTTON_GAP = 4",
+    '"KJM_SquadSelectorRoot"',
+    '"KJM_SquadSelectorViewport"',
+    '"KJM_SquadSelectorCanvas"',
+    '"KJM_SquadSelectorScroll"',
+    '"KJM_SquadSelectorIndex"',
+    "setStateSelected(selected)",
+    "g_pendingSquadSelectionIdentity",
+    "TrySelectSquadByIdentity",
+    "TrySetCurrentPlatoonGuardedLeaf",
+    "setCurrentPlatoon(platoon)",
+    "BindSquadSelectorMouseWheelTree",
+    '"KJM_SquadSelectorWheelRoot"',
+    "if (!shift)",
+    "if (g_squadSelectorMaximumOffset == 0)",
+    "OnMouseWheel(widget, relative)",
+    "g_squadSelectorOffset - relative * 80",
+    "g_squadSelectorCanvas->setPosition(-g_squadSelectorOffset, 0)",
     "TryRefreshMemberByIdentity",
     "SameQueue",
     "ACTION_REMOVE_SELECTED",
@@ -133,6 +176,14 @@ SOURCE_TOKENS = (
     "taskType != JOB_MEDIC",
     "taskType != JOB_REPAIR_ROBOT",
     "taskType != FIND_AND_RESCUE",
+    "taskType != FIND_BED_AND_PUT_IN",
+    "taskType != FIND_AND_RESCUE_IF_THERES_BEDS",
+    "JOB_ENGINEERING_ICON_FILE",
+    "JOB_MEDIC_ICON_FILE",
+    "g_jobEngineeringIconAvailable",
+    "g_jobMedicIconAvailable",
+    "GetGlobalJobIconResource",
+    "roleIconResource",
     "assignedTargetHandles",
     "BeginStationScan",
     "StepStationScan",
@@ -298,6 +349,23 @@ def validate_required_files(errors: list[str]) -> None:
         if not (ROOT / relative).is_file():
             fail(errors, f"Missing required file: {relative}")
 
+    # Role icons are intentionally small, opaque, project-style bitmaps. Keep
+    # the package contract explicit without requiring Pillow in the validator.
+    png_signature = b"\x89PNG\r\n\x1a\n"
+    for relative in ("mod/gui/job-engineering.png", "mod/gui/job-medic.png"):
+        path = ROOT / relative
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if len(data) < 24 or data[:8] != png_signature:
+            fail(errors, f"Role icon is not a valid PNG: {relative}")
+            continue
+        width = int.from_bytes(data[16:20], "big")
+        height = int.from_bytes(data[20:24], "big")
+        if (width, height) != (96, 96):
+            fail(errors, f"Role icon must be 96x96: {relative} is {width}x{height}")
+
 
 def validate_manifest(errors: list[str]) -> None:
     path = ROOT / "mod/RE_Kenshi.json"
@@ -389,6 +457,7 @@ def validate_source(errors: list[str]) -> None:
         "src/StationScanner.inl",
         "src/StationSettings.inl",
         "src/StationView.inl",
+        "src/SquadSelector.inl",
     )
     source = "\n".join(read_text(path, errors) for path in source_paths)
     for token in SOURCE_TOKENS:
@@ -533,6 +602,29 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "persistent split-JOBS HUD entry",
         "deferred until after vanilla `updateUT`",
         "kjm-hud-icon.png",
+        "compact single-row bottom squad selector",
+        "exact raw active/nonempty vanilla `TAB` order",
+        "fresh validated `setCurrentPlatoon`",
+        "independent horizontal overflow",
+        "Plain wheel over the strip",
+        "Shift+wheel scrolls the strip",
+        "exact selected highlight",
+        "80x80",
+        "sits at `y=11`",
+        "portrait remains",
+        "y=11",
+        "name, condition, and skills block",
+        "48-pixel skills block",
+        "120-pixel row",
+        "Builder/Engineering, Medic",
+        "stored targets for mutation verification",
+        "unavailable tint, and station-target artwork",
+        "task type",
+        "TaskType-driven",
+        "job-engineering.png",
+        "job-medic.png",
+        "FIND_BED_AND_PUT_IN",
+        "FIND_AND_RESCUE_IF_THERES_BEDS",
     ):
         if token not in readme:
             fail(errors, f"README must disclose or document: {token}")
@@ -555,6 +647,28 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "Native HUD JOBS entry",
         "KJM_HudJobManagerButton",
         "same live root/control still has the plugin's split rectangle",
+        "Bottom Squad Jobs selector",
+        "exact raw active/nonempty vanilla `TAB` order",
+        "fresh validated `setCurrentPlatoon`",
+        "independent horizontal overflow",
+        "exact selected highlight",
+        "value-only",
+        "portrait remains `80x80`",
+        "frame at `y=11`",
+        "skills block starts at `y=8/33/49`",
+        "48 pixels high",
+        "120-pixel row",
+        "!IsStationDisplayJob",
+        "exact stored targets remain in the snapshot for mutation verification",
+        "target text, arrow, unavailable tint, and",
+        "without the incidental target",
+        "JOB_BUILDER",
+        "JOB_REPAIR_ROBOT",
+        "FIND_BED_AND_PUT_IN",
+        "FIND_AND_RESCUE_IF_THERES_BEDS",
+        "job-engineering.png",
+        "job-medic.png",
+        "do not enter the station-target cache",
     ):
         if token not in design:
             fail(errors, f"Design roadmap is missing component: {token}")
@@ -579,6 +693,27 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "Open Job Manager",
         "original JOBS",
         "JM",
+        "Bottom Squad Jobs selector",
+        "exact raw active/nonempty vanilla `TAB` order",
+        "fresh validated `setCurrentPlatoon`",
+        "independent horizontal overflow",
+        "Plain wheel over the selector strip",
+        "Hold Shift and",
+        "exact selected highlight",
+        "editable controls, cards, or jobs",
+        "read-only unavailable snapshot",
+        "The current squad is unavailable",
+        "Global behavior cards and exact target verification",
+        "Builder/Engineering, Medic",
+        "!IsStationDisplayJob",
+        "unavailable tint, and station-target artwork",
+        "exact stored target retained",
+        "without the incidental target",
+        "FIND_BED_AND_PUT_IN",
+        "FIND_AND_RESCUE_IF_THERES_BEDS",
+        "job-engineering.png",
+        "job-medic.png",
+        "station-target artwork cache",
     ):
         if token not in testing:
             fail(errors, f"Testing checklist is missing coverage for: {token}")
@@ -587,6 +722,27 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
     for token in (
         "station-category filters only",
         "except Training stations",
+        "SQUAD JOBS SELECTOR",
+        "exact raw active/nonempty",
+        "fresh validated `setCurrentPlatoon`",
+        "independent horizontal overflow",
+        "plain wheel over the strip",
+        "Shift+wheel scrolls only the strip",
+        "Builder/Engineering, Medic, Robotics, Rescue",
+        "targets internally for mutation verification",
+        "text, arrow, unavailable tint, and station-target artwork",
+        "incidental target",
+        "80x80",
+        "y=11",
+        "y=8/33/49",
+        "48-pixel skills block",
+        "120-pixel row",
+        "JOB_BUILDER",
+        "JOB_REPAIR_ROBOT",
+        "FIND_BED_AND_PUT_IN",
+        "FIND_AND_RESCUE_IF_THERES_BEDS",
+        "job-engineering.png",
+        "job-medic.png",
     ):
         if token not in mod_readme:
             fail(errors, f"Packaged README must document: {token}")

@@ -9,6 +9,8 @@
     const char* const STATION_ICON_RESOURCE_GROUP =
         "KenshiJobManagementStationIcons";
     const char* const STATION_HUD_ICON_FILE = "kjm-hud-icon.png";
+    const char* const JOB_ENGINEERING_ICON_FILE = "job-engineering.png";
+    const char* const JOB_MEDIC_ICON_FILE = "job-medic.png";
 
     const char* const STATION_ICON_FILES[] =
     {
@@ -39,6 +41,8 @@
 
     bool g_stationVisualIconAvailable[STATION_VISUAL_COUNT] = { false };
     bool g_hudManagerIconAvailable = false;
+    bool g_jobEngineeringIconAvailable = false;
+    bool g_jobMedicIconAvailable = false;
 
     const char* GetStationCategoryIconResource(StationCategory category)
     {
@@ -72,6 +76,33 @@
             return STATION_VISUAL_ICON_FILES[static_cast<int>(subtype)];
         }
         return GetStationCategoryIconResource(category);
+    }
+
+    const char* GetGlobalJobIconResource(TaskType taskType)
+    {
+        if (!g_stationIconLocationRegistered)
+        {
+            return NULL;
+        }
+        switch (taskType)
+        {
+        case JOB_BUILDER:
+            return g_jobEngineeringIconAvailable ?
+                JOB_ENGINEERING_ICON_FILE :
+                GetStationCategoryIconResource(STATION_OTHER);
+        case JOB_REPAIR_ROBOT:
+            return g_stationVisualIconAvailable[
+                static_cast<int>(STATION_VISUAL_SKELETON_LIMBS)] ?
+                STATION_VISUAL_ICON_FILES[
+                    static_cast<int>(STATION_VISUAL_SKELETON_LIMBS)] : NULL;
+        case JOB_MEDIC:
+        case FIND_AND_RESCUE:
+        case FIND_BED_AND_PUT_IN:
+        case FIND_AND_RESCUE_IF_THERES_BEDS:
+            return g_jobMedicIconAvailable ? JOB_MEDIC_ICON_FILE : NULL;
+        default:
+            return NULL;
+        }
     }
 
     bool EnsureStationIconResources()
@@ -175,6 +206,32 @@
                 {
                     g_stationVisualIconAvailable[subtype] = false;
                 }
+            }
+
+            // Global-job role art is optional and independent from station
+            // target classification. Missing files keep those cards
+            // text-only without disabling the established station icons.
+            try
+            {
+                Ogre::TexturePtr texture = textures->load(
+                    JOB_ENGINEERING_ICON_FILE,
+                    STATION_ICON_RESOURCE_GROUP);
+                g_jobEngineeringIconAvailable = !texture.isNull();
+            }
+            catch (...)
+            {
+                g_jobEngineeringIconAvailable = false;
+            }
+            try
+            {
+                Ogre::TexturePtr texture = textures->load(
+                    JOB_MEDIC_ICON_FILE,
+                    STATION_ICON_RESOURCE_GROUP);
+                g_jobMedicIconAvailable = !texture.isNull();
+            }
+            catch (...)
+            {
+                g_jobMedicIconAvailable = false;
             }
 
             // The manager entry icon is optional.  A package without this

@@ -63,16 +63,21 @@
     void PlayerInterfaceCycleSquadHook(PlayerInterface* player)
     {
         if (g_enabled && g_window != NULL &&
-            (GetAsyncKeyState(VK_TAB) & 0x8000) != 0)
+            (g_modal.kind != MODAL_NONE || IsStationDetailOpen()))
         {
-            // The manager edge-detects TAB and calls the original function
-            // directly. Suppress Kenshi's copy of the same key event so one
-            // press cannot advance twice. Modals intentionally do not run
-            // the manager's edge-detected path, so TAB remains blocked there.
+            // These manager-owned modal surfaces block native squad changes.
+            // The ordinary manager does not intercept TAB; Kenshi remains the
+            // sole owner of its normal cycle timing and key-repeat behavior.
             return;
         }
         if (g_playerInterfaceCycleSquadOriginal != NULL)
         {
             g_playerInterfaceCycleSquadOriginal(player);
+            if (g_enabled && g_window != NULL)
+            {
+                // Defer all MyGUI and snapshot work until the original
+                // PlayerInterface update has returned to our update hook.
+                g_squadCycleObserved = true;
+            }
         }
     }

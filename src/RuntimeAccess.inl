@@ -187,6 +187,279 @@
         }
     }
 
+    bool ContainsSquadSelectorIdentity(
+        const std::vector<SquadSelectorEntry>& entries,
+        const HandleIdentity& identity)
+    {
+        for (size_t index = 0; index < entries.size(); ++index)
+        {
+            if (SameHandleIdentity(entries[index].identity, identity))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Copy the raw active-platoon list into value-only UI records in its
+    // native lektor order. All borrowed engine pointers stay inside this
+    // guarded read and are discarded before it returns.
+    __declspec(noinline) bool TryBuildSquadSelectorSnapshotGuarded(
+        PlayerInterface* player,
+        std::vector<SquadSelectorEntry>* entriesOut,
+        bool* incompleteOut)
+    {
+        if (player == NULL || entriesOut == NULL || incompleteOut == NULL)
+        {
+            return false;
+        }
+
+        size_t committedCount = 0;
+        __try
+        {
+            Faction* faction = player->getFaction();
+            if (faction == NULL || !faction->isThePlayer())
+            {
+                return false;
+            }
+
+            const lektor<Platoon*>* activePlatoons =
+                faction->getActivePlatoons();
+            if (activePlatoons == NULL)
+            {
+                return false;
+            }
+
+            const unsigned int rawCount = activePlatoons->size();
+            if (rawCount != 0 && !activePlatoons->valid())
+            {
+                return false;
+            }
+            const unsigned int scanCount = rawCount > 256 ? 256 : rawCount;
+            *incompleteOut = rawCount > scanCount;
+
+            HandleIdentity deadIdentity;
+            CaptureHandleIdentity(player->getDeadSquadHandle(), &deadIdentity);
+
+            entriesOut->reserve(static_cast<size_t>(scanCount));
+            for (unsigned int index = 0; index < scanCount; ++index)
+            {
+                Platoon* platoon = (*activePlatoons)[index];
+                if (platoon == NULL || platoon->getFaction() != faction)
+                {
+                    continue;
+                }
+
+                ActivePlatoon* active = platoon->getActivePlatoon();
+                if (active == NULL)
+                {
+                    continue;
+                }
+                const int memberCount = active->getNumThings();
+                if (memberCount <= 0)
+                {
+                    continue;
+                }
+
+                HandleIdentity identity;
+                CaptureHandleIdentity(platoon->getHandle(), &identity);
+                if (!identity.valid ||
+                    (deadIdentity.valid &&
+                     SameHandleIdentity(identity, deadIdentity)) ||
+                    ContainsSquadSelectorIdentity(*entriesOut, identity))
+                {
+                    continue;
+                }
+
+                const std::string& activeName = active->getName();
+                if (activeName == "__DEAD__" ||
+                    platoon->stringID == "__DEAD__")
+                {
+                    continue;
+                }
+
+                entriesOut->resize(entriesOut->size() + 1);
+                SquadSelectorEntry& entry = entriesOut->back();
+                entry.identity = identity;
+                entry.memberCount = memberCount;
+                if (!activeName.empty())
+                {
+                    entry.name = activeName;
+                }
+                else
+                {
+                    entry.name = platoon->stringID;
+                }
+                committedCount = entriesOut->size();
+            }
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            entriesOut->resize(committedCount);
+            *incompleteOut = true;
+            ErrorLog("[KenshiJobManagement] Exception while enumerating player squads.");
+            return false;
+        }
+    }
+
+    bool BuildSquadSelectorSnapshot(
+        std::vector<SquadSelectorEntry>* entriesOut,
+        bool* incompleteOut)
+    {
+        if (entriesOut == NULL || incompleteOut == NULL)
+        {
+            return false;
+        }
+        entriesOut->clear();
+        *incompleteOut = false;
+        try
+        {
+            if (!TryBuildSquadSelectorSnapshotGuarded(
+                    g_playerInterface, entriesOut, incompleteOut))
+            {
+                entriesOut->clear();
+                *incompleteOut = true;
+                return false;
+            }
+            return true;
+        }
+        catch (...)
+        {
+            // Keep C++ allocation failures outside the SEH leaf. The UI can
+            // retain its previous published snapshot when this fresh build
+            // reports failure.
+            entriesOut->clear();
+            *incompleteOut = true;
+            return false;
+        }
+    }
+
+    // Keep the engine mutation in a small guarded leaf. The caller validates
+    // the fresh active-list candidate immediately before entering this leaf.
+    __declspec(noinline) bool TrySetCurrentPlatoonGuardedLeaf(
+        PlayerInterface* player,
+        Platoon* platoon)
+    {
+        if (player == NULL || platoon == NULL)
+        {
+            return false;
+        }
+        __try
+        {
+            return player->setCurrentPlatoon(platoon);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            ErrorLog("[KenshiJobManagement] Exception while selecting a squad.");
+            return false;
+        }
+    }
+
+    __declspec(noinline) bool TrySelectSquadByIdentityGuarded(
+        PlayerInterface* player,
+        const HandleIdentity& target)
+    {
+        if (player == NULL || !target.valid)
+        {
+            return false;
+        }
+
+        __try
+        {
+            Faction* faction = player->getFaction();
+            if (faction == NULL || !faction->isThePlayer())
+            {
+                return false;
+            }
+            const lektor<Platoon*>* activePlatoons =
+                faction->getActivePlatoons();
+            if (activePlatoons == NULL)
+            {
+                return false;
+            }
+
+            const unsigned int rawCount = activePlatoons->size();
+            if (rawCount != 0 && !activePlatoons->valid())
+            {
+                return false;
+            }
+            const unsigned int scanCount = rawCount > 256 ? 256 : rawCount;
+
+            HandleIdentity deadIdentity;
+            CaptureHandleIdentity(player->getDeadSquadHandle(), &deadIdentity);
+            for (unsigned int index = 0; index < scanCount; ++index)
+            {
+                Platoon* platoon = (*activePlatoons)[index];
+                if (platoon == NULL || platoon->getFaction() != faction)
+                {
+                    continue;
+                }
+
+                HandleIdentity candidate;
+                CaptureHandleIdentity(platoon->getHandle(), &candidate);
+                if (!SameHandleIdentity(candidate, target) ||
+                    (deadIdentity.valid &&
+                     SameHandleIdentity(candidate, deadIdentity)))
+                {
+                    continue;
+                }
+
+                ActivePlatoon* active = platoon->getActivePlatoon();
+                if (active == NULL || active->getNumThings() <= 0)
+                {
+                    return false;
+                }
+                const std::string& activeName = active->getName();
+                if (activeName == "__DEAD__" ||
+                    platoon->stringID == "__DEAD__")
+                {
+                    return false;
+                }
+
+                Platoon* current = player->getCurrentPlatoon();
+                if (current != NULL)
+                {
+                    HandleIdentity currentIdentity;
+                    CaptureHandleIdentity(
+                        current->getHandle(), &currentIdentity);
+                    if (SameHandleIdentity(currentIdentity, target))
+                    {
+                        return true;
+                    }
+                }
+
+                // Do not trust the engine return value alone. A late fault or
+                // false result can still leave currentPlatoon changed.
+                TrySetCurrentPlatoonGuardedLeaf(player, platoon);
+                current = player->getCurrentPlatoon();
+                if (current == NULL)
+                {
+                    return false;
+                }
+                HandleIdentity selectedIdentity;
+                CaptureHandleIdentity(current->getHandle(), &selectedIdentity);
+                if (!SameHandleIdentity(selectedIdentity, target))
+                {
+                    return false;
+                }
+                return true;
+            }
+            return false;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            ErrorLog("[KenshiJobManagement] Exception while validating a squad selection.");
+            return false;
+        }
+    }
+
+    bool TrySelectSquadByIdentity(const HandleIdentity& target)
+    {
+        return TrySelectSquadByIdentityGuarded(
+            g_playerInterface, target);
+    }
+
     bool TryGetOrderedMemberHandles(
         RootObjectContainer* active,
         std::vector<hand>* handlesOut)
@@ -1494,9 +1767,9 @@
         }
         __try
         {
-            // Bypass the hook. While the manager is open, its hook suppresses
-            // Kenshi's TAB event so the edge-detected manager path is the one
-            // and only owner of squad cycling.
+            // Bypass the observer hook only while continuing past Kenshi's
+            // internal __DEAD__ holding squad. Ordinary TAB cycling enters
+            // through the hook and remains owned by Kenshi.
             g_playerInterfaceCycleSquadOriginal(g_playerInterface);
             return true;
         }
@@ -1558,15 +1831,6 @@
             }
         }
         return false;
-    }
-
-    bool TryCycleCurrentSquad()
-    {
-        if (!TryCallOriginalCycleSquad())
-        {
-            return false;
-        }
-        return TrySkipDeadCurrentSquad();
     }
 
     bool EnsureSettingsPath()

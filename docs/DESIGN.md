@@ -75,7 +75,10 @@ source labels the major controls and states as follows:
 - Each member header shows the live member name, the live `Jobs: ON` or
   `Jobs: OFF` state, that member's `Jobs` toggle, and that member's `Clear
   Queue` control. Its portrait uses Kenshi's generated character image and
-  the same background/overlay depth order as the vanilla portrait layout.
+  the same background/overlay depth order as the vanilla portrait layout. The
+  portrait remains `80x80` with its frame at `y=11`; the name, condition, and
+  skills block starts at `y=8/33/49` and is 48 pixels high in a 120-pixel row,
+  so all three skill lines clear the member-row border and bottom controls.
 - Each member independently shows up to three of its own supported base stats
   whose values are above 1. The three stats are selected per member; they are
   not the top three stats across the squad and are not an aggregate squad
@@ -101,8 +104,20 @@ source labels the major controls and states as follows:
   Kenshi cannot resolve that target, it shows `Target unavailable`, highlights
   the whole card red, and keeps the otherwise-live row editable. A member with
   no jobs shows `[No permanent jobs]`. An unavailable queue shows `Queue
-  unavailable (read-only)` and is read-only.
-- A building-target card centers the same station-category artwork in an
+  unavailable (read-only)` and is read-only. This target-bearing presentation
+  applies only when `IsStationDisplayJob` is true. Global Builder/Engineering,
+  Medic, Robotics, and Rescue rows are identified by `!IsStationDisplayJob`:
+  their exact stored targets remain in the snapshot for mutation verification,
+  but Squad card presentation omits target text, arrow, unavailable tint, and
+  station-target artwork. Role artwork is selected by exact TaskType: Engineer
+  (`JOB_BUILDER`) uses optional `job-engineering.png` with the `station-other.png`
+  fallback; Robotics (`JOB_REPAIR_ROBOT`) uses the existing skeleton-limb icon;
+  Medic (`JOB_MEDIC`), Rescue (`FIND_AND_RESCUE`), Put in bed
+  (`FIND_BED_AND_PUT_IN`), and the live permanent Rescue wrapper
+  (`FIND_AND_RESCUE_IF_THERES_BEDS`) use optional `job-medic.png`. These role icons use
+  the same direct 33% card-art alpha and do not enter the station-target cache.
+  Their incidental subjects never create a Stations projection.
+- A station-display building-target card centers the same station-category artwork in an
   `88 x 88` square behind its text and applies the same dark overlay as the
   Stations header. The icon `ImageBox` itself is set to `33%` opacity, which
   makes it `67%` transparent; the overlay has its own independent tint and
@@ -114,15 +129,18 @@ source labels the major controls and states as follows:
   copper alloy plates, electronics, crossbows, and skeleton limbs. The live
   display name is never used for subtype classification, so rename mods do not
   change the artwork. An unmatched subtype falls back to its broad category
-  icon. Exact target categories are cached and resolved at no more than one
-  uncached queue target per UI tick; card creation does not enumerate the
-  world or perform an unbounded target pass. `Operating Machine` and
+  icon. Exact target categories are cached. Card creation resolves up to 512
+  deduplicated current-squad targets synchronously before the first frame
+  renders; extraordinary overflow uses the neutral Other artwork immediately.
+  It does not enumerate ownership or the world. `Operating Machine` and
   `Operating Automatic Machine` display as `Operating...`, while the raw live
   text remains unchanged for tooltips, identity, and mutation validation.
-- Hovering a job card draws a gold outline around every displayed card with
-  the same `TaskType` and stable target identity. The group index is rebuilt
-  from the captured squad snapshot only when the window opens or a roster or
-  job identity changes. Mouse movement never reads Kenshi's live queues.
+- Hovering a job card draws a gold outline around every displayed
+  station-display card with the same `TaskType` and stable target identity.
+  For global rows identified by `!IsStationDisplayJob`, hover grouping compares
+  task type without the incidental target. The group index is rebuilt from the
+  captured squad snapshot only when the window opens or a roster or job identity
+  changes. Mouse movement never reads Kenshi's live queues.
 - A member with no qualifying displayed stats shows `No stats above 1`;
   a cached or unloaded member shows `Stats unavailable`.
 - The footer has no persistent instruction or current-squad message. It remains
@@ -132,6 +150,34 @@ source labels the major controls and states as follows:
 
 The top queue slot is the highest Kenshi priority. Empty queues show
 `[No permanent jobs]`, and unavailable controls are visibly disabled.
+
+### Bottom Squad Jobs selector
+
+The `Squad Jobs` tab has a compact single-row selector along the bottom of the
+member view. It copies the player's raw active-platoon list without sorting it,
+then keeps only valid, active, nonempty squads. The selector preserves the exact raw active/nonempty vanilla `TAB` order. Empty entries, duplicate identities, and Kenshi's internal
+`__DEAD__` holding squad are excluded. The selector is not a second squad
+ordering or scheduler. Its button caption is the copied squad name, with the
+stable string ID as the guarded fallback.
+
+The published selector record is value-only: `HandleIdentity`, copied name, and
+member count. It never retains a `Platoon*` or `ActivePlatoon*` pointer. A click
+queues the selected identity and returns from the MyGUI callback. The update
+path then performs a fresh active-list validation, checks faction, identity,
+nonempty state, and `__DEAD__` state, calls guarded `setCurrentPlatoon`, and
+rereads the current identity before refreshing the member view. If any check
+fails, the current squad remains unchanged and the selector reports that the
+target is no longer available.
+
+The selector owns its own horizontal canvas, viewport, and scrollbar. This
+independent horizontal overflow does not change the member-row scroll position.
+Plain wheel over the strip still routes to the member rows; Shift+wheel scrolls
+only the selector strip. Scroll positions clamp at both ends and wheel input
+never activates a selector button. Ordinary `TAB` remains vanilla-owned: the
+native cycle runs once, the manager observes the completed change after the
+native update, and then applies the exact selected highlight. Manager modals
+block native cycling; the ordinary manager does not replace Kenshi's `TAB`
+behavior.
 
 ### Edits and selection
 
@@ -185,11 +231,13 @@ the user unpauses or changes speed while the manager is open, the manager
 records that as an explicit requested resume and closes while preserving the
 user's requested pause/speed instead of restoring the old state.
 
-One `TAB` press performs exactly one manager-owned current-squad cycle. If the
-next squad is Kenshi's internal `__DEAD__` holding squad, continue through the
-native order until the next manageable squad. Never render `__DEAD__`. An
+Kenshi remains the sole owner of ordinary `TAB` squad cycling. The hook calls
+the original native cycle once, records only that a change occurred, and the
+manager refreshes after the native update returns. If the next squad is
+Kenshi's internal `__DEAD__` holding squad, continue through the native order
+until the next manageable squad. Never render `__DEAD__`. An
 `Options` modal or `Clear Queue` Yes/No/Esc modal owns keyboard input and
-blocks TAB from cycling the current squad until the modal closes.
+blocks native squad cycling until the modal closes.
 
 While the window is open, perform an incremental live-state check once per
 second. Compare squad membership, loaded state, Jobs state, each member's
@@ -247,13 +295,18 @@ outpost discovery is added:
     current-session display change.
 15. Invoke native pause on open, restore the prior pause/speed on ordinary
     close, and preserve an explicit user-requested resumed speed.
-16. Give each `TAB` edge exactly one manager-owned cycle on the main manager,
-    skip the internal `__DEAD__` squad, and let Options and Clear Queue modals
-    block it. Run incremental checks at one-second cadence without a manual
-    Refresh button.
-17. Ask the character to reconsider its current AI action and flag the vanilla
+16. Let Kenshi own each ordinary `TAB` cycle, observe the completed native
+    change, refresh the manager afterward, skip the internal `__DEAD__` squad,
+    and let Options and Clear Queue modals block cycling. Run incremental
+    checks at one-second cadence without a manual Refresh button.
+17. Build the bottom selector from the raw active-platoon order as value-only
+    records, omit empty and `__DEAD__` squads, and apply the exact current
+    identity highlight. Queue selector clicks, then fresh-validate and call
+    `setCurrentPlatoon` only after the click callback returns. Keep selector
+    overflow and Shift+wheel independent from the member-row scroll.
+18. Ask the character to reconsider its current AI action and flag the vanilla
     selection UI for refresh after a successful mutation.
-18. Keep MyGUI calls on the UI thread during
+19. Keep MyGUI calls on the UI thread during
     `PlayerInterface::clearAndReset` cleanup.
 
 Every engine read or write that dereferences reconstructed runtime objects
@@ -336,11 +389,17 @@ excluded even when a player queue references them, except for assigned natural
 resource nodes.
 
 The projection excludes the exact generic permanent task types `JOB_BUILDER`
-(Engineer), `JOB_MEDIC` (Medic), `JOB_REPAIR_ROBOT` (Robotics), and
-`FIND_AND_RESCUE` (Rescue). Their stored subjects do not limit those jobs'
+(Engineer), `JOB_MEDIC` (Medic), `JOB_REPAIR_ROBOT` (Robotics),
+`FIND_AND_RESCUE` (Rescue), `FIND_BED_AND_PUT_IN` (Put in bed), and
+`FIND_AND_RESCUE_IF_THERES_BEDS` (the live permanent Rescue wrapper). Their
+stored subjects do not limit those jobs'
 scope. They remain visible and editable in Squad Jobs and count toward the
-worker's total jobs, but never create a station card or assignment. Filter the
-task types, not localized labels.
+worker's total jobs, but never create a station card or assignment. Squad Jobs
+keeps each exact stored target internally for row identity and mutation
+verification even though the card hides target text, arrow, unavailable tint,
+and station-target artwork. Filter the task types, not localized labels; the
+TaskType-driven role icons remain presentation-only and never enter the
+station-target cache or Stations projection.
 
 ### Station detail modal and assignment actions
 
@@ -615,6 +674,10 @@ continuously fight Kenshi's own decisions.
   change and report the station-category save failure.
 - Invoke and restore native pause/speed according to the open/close rules, and
   preserve a user's explicit resumed speed.
+- Keep the Squad Jobs selector value-only. Do not retain `Platoon` or
+  `ActivePlatoon` pointers. Preserve raw active/nonempty vanilla `TAB` order,
+  exclude empty and `__DEAD__` squads, fresh-validate `setCurrentPlatoon`, and
+  keep selector horizontal overflow separate from member-row scrolling.
 - Test on disposable saves until save/load/import behavior is proven.
 
 ## Roadmap
@@ -630,6 +693,10 @@ continuously fight Kenshi's own decisions.
 - each member's top three supported base stats above 1;
 - immediate global station-category Options preferences;
 - native pause/speed open/close behavior and Kenshi `TAB` cycling;
+- compact bottom Squad Jobs selector with exact raw active/nonempty vanilla
+  `TAB` order, exact selected highlight, fresh validated `setCurrentPlatoon`,
+  empty/`__DEAD__` exclusion, value-only records, independent horizontal
+  overflow, and plain-wheel/Shift+wheel routing;
 - unloaded/cached read-only fallback, but editable live queues with unavailable
   target labels;
 - one-second incremental refresh and transition cleanup;

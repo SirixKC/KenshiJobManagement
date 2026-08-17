@@ -605,7 +605,40 @@
 
     void OnMouseWheel(MyGUI::Widget*, int relative)
     {
+        if (relative == 0 || g_window == NULL || g_stationTabActive ||
+            g_modal.kind != MODAL_NONE || IsStationDetailOpen())
+        {
+            return;
+        }
+
         ClearJobHoverHighlight();
+
+        MyGUI::InputManager* input = MyGUI::InputManager::getInstancePtr();
+        const bool shift =
+            (input != NULL && input->isShiftPressed()) ||
+            (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (shift)
+        {
+            g_horizontalOffset = ClampInt(
+                g_horizontalOffset - relative * 40,
+                0,
+                g_maxHorizontalOffset);
+            g_changingScroll = true;
+            if (g_horizontalScroll != NULL)
+            {
+                g_horizontalScroll->setScrollPosition(
+                    static_cast<size_t>(g_horizontalOffset));
+            }
+            g_changingScroll = false;
+            ApplyScrollOffsets();
+            StoreCurrentSquadScrollOffsets();
+            if (g_drag.active && input != NULL)
+            {
+                UpdateDragInsertion(input->getMousePosition());
+            }
+            return;
+        }
+
         g_verticalOffset = ClampInt(
             g_verticalOffset - relative * 40,
             0,
@@ -619,6 +652,53 @@
         g_changingScroll = false;
         ApplyScrollOffsets();
         StoreCurrentSquadScrollOffsets();
+    }
+
+    void BindSquadMouseWheelTree(MyGUI::Widget* widget)
+    {
+        if (widget == NULL)
+        {
+            return;
+        }
+
+        // The bottom squad strip keeps plain wheel input routed to the member
+        // rows, but owns Shift+wheel for its independent horizontal overflow.
+        // Its dedicated binder handles that subtree exactly once.
+        if (widget->isUserString("KJM_SquadSelectorWheelRoot"))
+        {
+            return;
+        }
+
+        // ScrollBar skins contain their own button/track widgets. Those
+        // children forward wheel input to the native scrollbar, which would
+        // otherwise move its native axis in addition to our single routed
+        // Squad Jobs update. Disable the native wheel step, then bind both
+        // the scrollbar and its picked skin children to our routed handler.
+        if (widget->isType<MyGUI::ScrollBar>())
+        {
+            MyGUI::ScrollBar* scrollbar =
+                widget->castType<MyGUI::ScrollBar>(false);
+            if (scrollbar != NULL)
+            {
+                scrollbar->setScrollWheelPage(0);
+            }
+        }
+
+        // MyGUI 3.2 sends wheel input only to the picked widget. It does not
+        // bubble the event to a parent. Bind every current Squad Jobs child
+        // once so buttons, card contents, blank panels, and scrollbars all
+        // use the same vertical/Shift-horizontal routing.
+        if (!widget->isUserString("KJM_SquadWheelBound"))
+        {
+            widget->eventMouseWheel += MyGUI::newDelegate(OnMouseWheel);
+            widget->setUserString("KJM_SquadWheelBound", "1");
+        }
+
+        const size_t childCount = widget->getChildCount();
+        for (size_t index = 0; index < childCount; ++index)
+        {
+            BindSquadMouseWheelTree(widget->getChildAt(index));
+        }
     }
 
     void OnOptionsMouseWheel(MyGUI::Widget*, int relative)

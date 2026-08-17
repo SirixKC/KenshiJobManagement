@@ -25,14 +25,25 @@ The Stage 1 window provides:
   state and Kenshi's native generated portrait;
 - per-member `Jobs: ON`/`Jobs: OFF` and `Clear Queue` controls;
 - narrow, high-contrast job cards that center Kenshi's live work text above `V`
-  and the exact target name, omit duplicate priority numbers, and fit long
-  work or renamed-target text without clipping; a card with an unavailable
-  target is highlighted red; building-target cards reuse the square station
-  category artwork without stretching it; the icon `ImageBox` is directly
-  33% opaque (67% transparent) behind the queue text, and common machinery
-  work is shown compactly as `Operating...`;
+  and the exact target name for station-display jobs, omit duplicate priority
+  numbers, and fit long work or renamed-target text without clipping; a
+  station-display card with an unavailable target is highlighted red and
+  reuses the square station category artwork without stretching it; the icon
+  `ImageBox` is directly 33% opaque (67% transparent) behind the queue text,
+  and common machinery work is shown compactly as `Operating...`. Global
+  Builder/Engineering, Medic, Robotics, and Rescue rows retain their exact
+  stored targets for mutation verification but omit target text, arrow,
+  unavailable tint, and station-target artwork from the Squad card. Role art
+  is TaskType-driven: `JOB_BUILDER` uses optional `job-engineering.png`
+  (falling back to `station-other.png`), `JOB_REPAIR_ROBOT` uses the existing
+  skeleton-limb icon, and `JOB_MEDIC`, `FIND_AND_RESCUE`,
+  `FIND_BED_AND_PUT_IN`, and the live permanent Rescue wrapper
+  `FIND_AND_RESCUE_IF_THERES_BEDS` use optional `job-medic.png`. Role art uses the same
+  direct 33% card-art alpha as station icons;
 - cached gold hover outlines on every card with the same job type and exact
-  target, without polling Kenshi's queues on mouse movement;
+  target for station-display jobs. Global behavior cards compare task type
+  only, without the incidental target, and mouse movement never polls
+  Kenshi's queues;
 - same-row drag reorder, backed by Kenshi's `movePermajob` method;
 - multi-select across members and immediate `Remove Selected` or drop-to-remove,
   with no prompt or undo, stop-on-first-failure, and a partial-result report;
@@ -44,8 +55,17 @@ The Stage 1 window provides:
 - native pause on open, prior pause/speed restoration on ordinary close, and
   preservation of a user's resumed speed if they unpause or change speed while
   the manager is open;
-- one squad change per `TAB` press in the main manager, while Kenshi's internal
-  `__DEAD__` holding squad is skipped;
+- a compact single-row bottom squad selector on `Squad Jobs`. It shows only
+  active, nonempty player squads. Its order is the exact raw active/nonempty vanilla `TAB` order;
+  it excludes `__DEAD__` and applies the exact selected highlight to the
+  current squad;
+- selector clicks queue a squad `HandleIdentity` only. The update path performs
+  a fresh validated `setCurrentPlatoon` call and rereads the selected identity;
+  no `Platoon` or `ActivePlatoon` pointer is retained in UI state;
+- the selector has independent horizontal overflow. Plain wheel over the strip
+  still scrolls the member rows, while Shift+wheel scrolls the strip; ordinary
+  `TAB` remains vanilla-owned and moves the selector highlight after the native
+  cycle;
 - one-second incremental live-state checks, with no manual Refresh button;
 - per-member unloaded or cached queues shown read-only, while other live member
   cards remain editable and a live queue remains editable when one target label
@@ -96,10 +116,16 @@ feedback. Stale queues, load transitions, and failed verification remain
 fail-closed. Squad Jobs keeps its separate same-row drag reorder; Stations has
 no drag-to-transfer interaction.
 
-The Squad Jobs roster uses enlarged portraits and stacks each member's three
-displayed skills vertically in a larger font. While the manager is open, its
-opaque backdrop keeps the world from reducing text contrast and mouse-wheel
-input is reserved for the manager rather than changing the game camera.
+The Squad Jobs roster uses enlarged `80x80` portraits and stacks each member's
+three displayed skills vertically in a larger font. The portrait remains
+`80x80` and sits at `y=11`; the name, condition, and skills block starts at
+`y=8/33/49`, with a 48-pixel skills block in a 120-pixel row, so all three
+skill lines clear the member-row border and bottom controls.
+While the manager is open, its opaque backdrop keeps
+the world from reducing text contrast and mouse-wheel input is reserved for the
+manager rather than changing the game camera. On Squad Jobs, the wheel scrolls
+vertically over every control and Shift+wheel scrolls the job columns
+horizontally.
 
 The station pass starts when the tab is first opened. It brackets a borrowed
 player ownership record copy into plugin-owned scalar data, then resolves the
@@ -123,10 +149,15 @@ does not enumerate zones, towns, or unrelated world buildings. Player-owned
 workstations with no readable queue assignment remain visible with a thin
 yellow outline and a large red `X`. The borrowed source copy has a separate
 8,192-record safety cap.
-Kenshi's global Engineer, Medic, Robotics, and Rescue jobs remain in the Squad
-Jobs queue and total job count, but they never create station cards because
-their stored targets do not define their work scope. The shared Options page
-controls only station-category visibility. Its default
+Kenshi's global Builder/Engineering, Medic, Robotics, Rescue, and Put-in-bed
+jobs remain in the Squad Jobs queue and total job count, but they never create
+station cards because their stored targets do not define their work scope. Their
+exact stored targets remain in the queue snapshot for mutation verification;
+Squad card presentation omits target text, arrow, unavailable tint, and
+station-target artwork, and hover grouping compares task type without the
+incidental target. TaskType-driven role icons are presentation-only and do not
+enter the station-target cache or Stations projection.
+The shared Options page controls only station-category visibility. Its default
 station categories are Crafting, Refining, Farming, Mining, Research, and
 Other / Unclassified; Training, Storage / Hauling, and Defense start disabled.
 

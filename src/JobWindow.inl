@@ -422,6 +422,7 @@
         g_insertionLine = NULL;
         g_tooltip = NULL;
         g_tooltipText = NULL;
+        ResetSquadSelectorView();
     }
 
     void DestroyJobWindow(bool duringReset = false)
@@ -476,6 +477,9 @@
         g_hoveredJobHighlightGroup = -1;
         g_selectedJobs.clear();
         g_squadCaches.clear();
+        g_squadSelectorEntries.clear();
+        g_squadSelectorIncomplete = false;
+        CancelPendingSquadSelectorSelection();
         g_squad = SquadSnapshot();
         g_drag = DragState();
         g_modal = ModalState();
@@ -501,7 +505,7 @@
         g_stationTabActive = false;
         g_settingsWriteFailed = false;
         g_escapeWasDown = false;
-        g_tabWasDown = false;
+        g_squadCycleObserved = false;
         g_lastDragTick = 0;
     }
 
@@ -576,7 +580,8 @@
                 size.width - jobLeft - SCROLL_SIZE - PAD);
             g_bodyHeight = std::max(
                 ROW_HEIGHT,
-                size.height - bodyTop - ACTION_HEIGHT - SCROLL_SIZE - 3 * PAD);
+                size.height - bodyTop - ACTION_HEIGHT - SCROLL_SIZE -
+                    SQUAD_SELECTOR_HEIGHT - 4 * PAD);
 
             g_squadText = g_squadTabRoot->createWidget<MyGUI::TextBox>(
                 // Standard is 20pt; Large is 24pt, which gives the squad
@@ -623,7 +628,6 @@
                 MyGUI::IntCoord(0, 0, g_memberWidth, g_bodyHeight),
                 MyGUI::Align::Left | MyGUI::Align::Top,
                 "KJM_MemberCanvas");
-            g_memberViewport->eventMouseWheel += MyGUI::newDelegate(OnMouseWheel);
             g_memberCanvas->eventMouseButtonPressed += MyGUI::newDelegate(OnEmptyPressed);
 
             g_jobViewport = g_squadTabRoot->createWidget<MyGUI::Widget>(
@@ -631,14 +635,12 @@
                 MyGUI::IntCoord(jobLeft, bodyTop, g_jobWidth, g_bodyHeight),
                 MyGUI::Align::Stretch,
                 "KJM_JobViewport");
-            g_jobViewport->eventMouseWheel += MyGUI::newDelegate(OnMouseWheel);
             g_jobCanvas = g_jobViewport->createWidget<MyGUI::Widget>(
                 "PanelEmpty",
                 MyGUI::IntCoord(0, 0, g_jobWidth, g_bodyHeight),
                 MyGUI::Align::Left | MyGUI::Align::Top,
                 "KJM_JobCanvas");
             g_jobCanvas->eventMouseButtonPressed += MyGUI::newDelegate(OnEmptyPressed);
-            g_jobCanvas->eventMouseWheel += MyGUI::newDelegate(OnMouseWheel);
 
             g_emptyText = g_squadTabRoot->createWidget<MyGUI::TextBox>(
                 "Kenshi_TextboxStandardText",
@@ -673,7 +675,18 @@
             g_horizontalScroll->eventScrollChangePosition +=
                 MyGUI::newDelegate(OnHorizontalScroll);
 
-            const int actionTop = bodyTop + g_bodyHeight + SCROLL_SIZE + PAD;
+            const int squadSelectorTop =
+                bodyTop + g_bodyHeight + SCROLL_SIZE + PAD;
+            CreateSquadSelectorView(
+                g_squadTabRoot,
+                MyGUI::IntCoord(
+                    PAD,
+                    squadSelectorTop,
+                    size.width - 2 * PAD,
+                    SQUAD_SELECTOR_HEIGHT));
+
+            const int actionTop =
+                squadSelectorTop + SQUAD_SELECTOR_HEIGHT + PAD;
             g_removeButton = g_squadTabRoot->createWidget<MyGUI::Button>(
                 "Kenshi_Button1",
                 MyGUI::IntCoord(PAD, actionTop, 220, 40),
@@ -756,7 +769,7 @@
             MyGUI::InputManager::getInstance().setKeyFocusWidget(g_window);
 
             g_lastRefreshTick = GetTickCount();
-            g_tabWasDown = (GetAsyncKeyState(VK_TAB) & 0x8000) != 0;
+            g_squadCycleObserved = false;
             g_escapeWasDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
             // Squad cards now reuse the station-category artwork. Load the
             // same small packaged icon set before the first card build; the
@@ -764,6 +777,12 @@
             // cannot load it.
             TryEnsureStationIconResourcesGuarded();
             RefreshSquadView(true);
+            RefreshSquadSelectorRoster(true);
+            BindSquadMouseWheelTree(g_squadTabRoot);
+            BindSquadMouseWheelTree(g_squadTabButton);
+            BindSquadMouseWheelTree(g_stationTabButton);
+            BindSquadMouseWheelTree(g_optionsButton);
+            BindSquadMouseWheelTree(g_closeButton);
             SetManagerTab(false);
         }
         catch (...)
@@ -857,19 +876,31 @@
         }
         g_escapeWasDown = escapeDown;
 
-        const bool tabDown = (GetAsyncKeyState(VK_TAB) & 0x8000) != 0;
-        if (tabDown && !g_tabWasDown && g_modal.kind == MODAL_NONE &&
-            !IsStationDetailOpen())
+        if (g_squadCycleObserved)
         {
-            TryCycleCurrentSquad();
-            RefreshSquadView(true);
+            // Vanilla owns TAB and has already changed the active squad.
+            // Refresh after its update returns; RefreshSquadView also skips
+            // Kenshi's internal __DEAD__ holding squad through the original
+            // native cycle path when necessary.
+            g_squadCycleObserved = false;
+            // A native TAB transition wins if it arrives in the same update
+            // as a queued button click. Never perform two squad changes from
+            // one manager tick.
+            CancelPendingSquadSelectorSelection();
+            if (!RefreshSquadView(true))
+            {
+                HandleIdentity unknownCurrentSquad;
+                PublishUnavailableSquadSelection(unknownCurrentSquad);
+            }
+            UpdateSquadSelectorSelection();
+            RevealCurrentSquadSelectorButton();
         }
-        g_tabWasDown = tabDown;
 
         if (g_modalCloseRequested)
         {
             CloseModalNow();
         }
+        ProcessPendingSquadSelectorSelection();
         ProcessPendingAction();
         // Squad-card artwork is hidden while Stations is active. Do not pair
         // its separate live-building lookup with every scanner lookup; pending
@@ -886,6 +917,7 @@
         {
             g_lastRefreshTick = now;
             RefreshSquadView(false);
+            RefreshSquadSelectorRoster(false);
         }
 
         bool stationViewChanged = false;

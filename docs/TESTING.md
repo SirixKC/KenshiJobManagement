@@ -81,8 +81,12 @@ The test terms below are intentional:
    once. It must not open a one-character popup.
    Confirm the primary backdrop is fully opaque and member rows, job cards,
    controls, portraits, and text stay fully opaque.
-   Move the mouse wheel over the manager and confirm the game camera does not
-   zoom. Confirm manager scroll views still respond to the wheel.
+   With enough members and jobs to require both scrollbars, use the wheel over
+   portraits, member text, job cards, Jobs ON/OFF, Clear Queue, blank panels,
+   headers, action buttons, and both scrollbar regions. Plain wheel input must
+   move only the member/job rows vertically. Shift+wheel must move only job
+   cards and priority headers horizontally. Confirm both directions clamp at
+   their ends, no control activates, and the game camera never zooms.
 6. Confirm the manager invokes Kenshi's native pause on open. Record the new
    pause state and speed.
 7. Confirm the heading resolves to `<squad name>  |  <N> member(s)` (or starts
@@ -103,7 +107,8 @@ The test terms below are intentional:
    same-row drag behavior, no repeated `DRAG` label, and no priority number
    inside the card. Confirm `Jobs: ON` and `Clear Queue` captions stay inside
    their buttons at the smaller control font.
-   Priority must appear once in the column header. A target-bearing card must
+   Priority must appear once in the column header. A station-display
+   target-bearing card must
    center:
 
    ```text
@@ -115,21 +120,24 @@ The test terms below are intentional:
    Compare the labels with the vanilla job panel and the actual target in the
    world. The card may remove only a duplicate leading `<priority>:` from the
    work text. The job and target lines must have no synthetic prefixes. An
-   unresolved target must show `Target unavailable`, tint the whole card red,
-   and remain editable; no target means no arrow or target line. Confirm long
-   work or renamed-target text wraps or scales down and does not clip or leave
-   the card bounds.
-   Confirm building-target cards fill in with the same category artwork used
+   unresolved station-display target must show `Target unavailable`, tint the
+   whole card red, and remain editable; no station-display target means no
+   arrow or target line. Confirm long work or renamed-target text wraps or
+   scales down and does not clip or leave the card bounds.
+   Confirm station-display building-target cards fill in with the same category artwork used
    on Stations. The simple 2-to-4-color artwork must remain square and centered,
    with no horizontal stretching. Inspect the icon itself: its `ImageBox` must
    be `33%` opaque (`67%` transparent), independent of the dark overlay and
-   parent/card alpha. Confirm categories fill progressively without a long UI
-   stall.
+   parent/card alpha. Open directly on Squad Jobs and cycle to another squad
+   with many distinct targets. Every icon must be present in the first rendered
+   view; icons must not fill in across later update frames or cause a long UI
+   stall. A synthetic squad with more than 512 unique building targets may use
+   the neutral Other icon for overflow cards, but those cards must not be blank.
    `Operating Machine` and `Operating Automatic Machine` must both display as
    `Operating...`; hover them and confirm the tooltip retains the full label.
-   Select an unavailable-target card and confirm both its red warning and its
-   selected state remain clear.
-   Hover a job that appears on multiple members with the same exact target.
+   Select an unavailable station-display target card and confirm both its red
+   warning and its selected state remain clear. Hover a station-display job
+   that appears on multiple members with the same exact target.
    Confirm all matching cards, including the hovered card, receive a gold
    outline. A card with the same work type but a different target must not be
    outlined. Move away and confirm all outlines clear. Repeat with a selected
@@ -153,6 +161,89 @@ The test terms below are intentional:
     old window and row identities must be discarded; the next view must contain
     only the new save's current squad.
 16. Return to the main menu with the manager open and confirm no crash.
+
+## Global behavior cards and exact target verification
+
+Use a disposable save with loaded members who have Builder/Engineering, Medic,
+Robotics, Rescue, and Find-and-put-in-bed permanent jobs. Include the live
+`FIND_AND_RESCUE_IF_THERES_BEDS` Rescue wrapper when Kenshi creates it. Give
+the global rows different stored subjects, including one subject that is
+unavailable if the save permits it. The TaskType-to-icon mappings are:
+
+- `JOB_BUILDER` -> optional `job-engineering.png`, with `station-other.png` as
+  the fallback;
+- `JOB_REPAIR_ROBOT` -> the existing skeleton-limb station icon;
+- `JOB_MEDIC`, `FIND_AND_RESCUE`, `FIND_BED_AND_PUT_IN`, and
+  `FIND_AND_RESCUE_IF_THERES_BEDS` -> optional `job-medic.png`.
+
+Also add two station-display rows with the same task type but different exact
+targets.
+
+1. Confirm the global rows remain visible in Squad Jobs and count toward
+   each worker's total jobs. Because these rows are identified by
+   `!IsStationDisplayJob`, each card must omit target text, the `V` arrow,
+   unavailable tint, and station-target artwork. Each card must show the
+   correct TaskType-driven role icon, at the direct 33% card-art alpha, when
+   its optional asset is available. The card and its tooltip must not expose
+   the incidental subject, even when the stored subject is unavailable.
+   None of the global rows may enter the station-target artwork cache or
+   the Stations projection, including when their stored subject is a building.
+2. Hover two global rows with the same task type but different incidental
+   targets. Confirm both cards highlight because grouping compares task type
+   without the incidental target. Hover the station-display rows with the same
+   task type and different exact targets; only cards with the same exact target
+   may highlight.
+3. Select or start a same-row mutation for a global row, then change or replace
+   its stored subject before the native call. The exact stored target retained
+   in the snapshot must make revalidation fail closed: no wrong row is changed,
+   and the queue remains unchanged. Restore the original subject and repeat the
+   mutation successfully. Confirm the card still omits target text, arrow,
+   unavailable tint, and station-target artwork after both refreshes. Repeat
+   once for the `FIND_BED_AND_PUT_IN` row to prove that its exact stored target
+   remains available for edit validation even though its card only shows the
+   medic cross. Repeat for `FIND_AND_RESCUE_IF_THERES_BEDS` and confirm the
+   live Rescue wrapper also shows the cross and never exposes its subject.
+
+## Bottom Squad Jobs selector
+
+Use a disposable save with several player squads in a deliberate vanilla order;
+include one empty squad, one internal `__DEAD__` holding squad, and enough
+nonempty squads to exceed the visible strip when possible.
+
+1. On `Squad Jobs`, confirm the compact selector is one bottom row. Compare its
+   buttons with the raw vanilla active-platoon list. It must preserve the exact raw active/nonempty vanilla `TAB` order and show only nonempty player squads,
+   and omit empty entries and `__DEAD__`. It must not alphabetize or add a
+   synthetic squad.
+2. Confirm exactly the current squad has the exact selected highlight.
+   Click another button and verify that the click first queues its value
+   identity; after the
+   update, a fresh validated `setCurrentPlatoon` selects that squad and the
+   member rows and highlight agree. No queue mutation or intermediate pointer
+   state may be visible.
+3. Remove or empty the clicked squad before its queued update, or cause a load
+   transition. The fresh validation must reject it, leave the current squad
+   unchanged, and show a safe unavailable status. Reopen/reset the manager and
+   confirm no stale `Platoon` or `ActivePlatoon` pointer is used.
+4. Force a direct selector click or observed native `TAB` change to complete,
+   then make the following job snapshot read fail. Confirm the manager clears
+   the prior member/job widgets before publishing the new identity: no old
+   editable controls, cards, or jobs may remain. The new view must be a
+   read-only unavailable snapshot and show `The current squad is unavailable
+   and has no session snapshot.`; test both the click and native-`TAB` paths.
+5. Add enough squads to overflow the strip. Use its scrollbar and confirm only
+   the selector moves horizontally; this independent horizontal overflow must
+   leave member-row vertical and job-column horizontal offsets unchanged.
+   Confirm both ends clamp without blank or
+   duplicated buttons.
+6. Move the pointer over the selector strip. Plain wheel over the selector strip
+   must still scroll the member rows and must not move the strip. Hold Shift and
+   wheel: confirm only the strip scrolls, the member rows do not move, no squad
+   button activates, and both directions clamp at their ends.
+7. Press `TAB` on the ordinary manager. Confirm Kenshi's native cycle runs once
+   and the selector highlight follows after the native update. A held key must
+   not double-cycle. Put `__DEAD__` between two live squads and confirm it is
+   skipped and never appears in the selector. Options and Clear Queue/detail
+   modals must block native `TAB` cycling.
 
 ## Options and station categories
 
@@ -336,8 +427,10 @@ can be checked with a second save or rename mod.
    the manager is open, close with the latest explicit user-requested state and
    verify that state remains.
 7. On the main manager, tap `TAB` repeatedly. Confirm each press advances
-   exactly once, a held key does not repeat, and `TAB` does not traverse widget
-   focus or trigger a queue mutation. Put an internal `__DEAD__` squad between
+   exactly once immediately and does not advance again during the next two
+   seconds. Confirm rapid separate taps each advance once, a held key does not
+   repeat, and `TAB` does not traverse widget focus or trigger a queue mutation.
+   Put an internal `__DEAD__` squad between
    two live squads and confirm it is skipped and never rendered. Also test a
    dead-only/current-dead edge case; the manager must not present `__DEAD__` as
    an editable squad.

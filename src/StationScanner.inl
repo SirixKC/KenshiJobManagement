@@ -339,7 +339,9 @@
         return taskType != JOB_BUILDER &&
             taskType != JOB_MEDIC &&
             taskType != JOB_REPAIR_ROBOT &&
-            taskType != FIND_AND_RESCUE;
+            taskType != FIND_AND_RESCUE &&
+            taskType != FIND_BED_AND_PUT_IN &&
+            taskType != FIND_AND_RESCUE_IF_THERES_BEDS;
     }
 
     void AddStationScanError(StationScanState* state, const std::string& text)
