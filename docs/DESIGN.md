@@ -3,16 +3,16 @@
 ## Product goal
 
 Turn outpost labor management into a safe audit of the jobs that Kenshi already
-owns. Stage 1 is a full-screen, current-squad job audit/editor. The current
+owns. Stage 1 is a full-screen, multi-squad job audit/editor. The current
 Stations milestone adds a category-grouped station card grid and a guarded
 detail-modal assignment view without changing the queue architecture. It
-replaces the old one-character popup with one view of every member in the
-current squad, while preserving Kenshi's permanent-job queues and GOAP
+replaces the old one-character popup with grouped views of every member in all
+active, nonempty player squads, while preserving Kenshi's permanent-job queues and GOAP
 execution.
 
 Stage 1 answers two questions:
 
-1. Which members are in the current squad, and are their Jobs states enabled?
+1. Which members are in each active player squad, and are their Jobs states enabled?
 2. What exact job and target does each member have in each queue slot, and in
    what priority order?
 
@@ -34,7 +34,8 @@ the plugin does not assume a raw `Tasker` subject-field offset or retain a raw
 
 ## Stage 1 full-screen squad audit/editor
 
-`Ctrl+J` opens a native full-screen management window for the current squad.
+`Ctrl+J` opens a native full-screen management window for all active, nonempty
+player squads.
 The window must not open a separate one-character popup for the selected
 character. A squad member remains in the view when another member is selected;
 the editor is a squad snapshot that refreshes from live game state.
@@ -151,6 +152,25 @@ source labels the major controls and states as follows:
 The top queue slot is the highest Kenshi priority. Empty queues show
 `[No permanent jobs]`, and unavailable controls are visibly disabled.
 
+### Grouped multi-squad board
+
+The Squad Jobs board copies the raw active-platoon order and publishes a
+value-only `AllSquadsSnapshot`. Empty squads and `__DEAD__` are omitted. Each
+squad has a synchronized header in both panes with a `+`/`-` collapse control;
+collapsed groups create no member or queue rows. Collapse state is keyed only
+by `HandleIdentity`, lasts for the manager session, and is pruned when a squad
+leaves the active roster. Header callbacks defer the rebuild until the callback
+returns, because the rebuild destroys the clicked widget tree.
+
+Every member widget has a parallel value-only squad/member identity binding.
+Callbacks resolve that identity against the latest `g_allSquads` snapshot;
+they never treat a visible row number as a durable engine identity. The current
+squad remains `g_squad`, follows vanilla `TAB` or the bottom selector, and has
+the selected group highlight. Selecting a squad does not hide the other groups.
+`RefreshAllActiveSquadsSnapshot` runs on the one-second refresh. A failed roster
+read retains the cached board but marks every cached row read-only before the UI
+is rebuilt, so a stale editable row is never published.
+
 ### Bottom Squad Jobs selector
 
 The `Squad Jobs` tab has a compact single-row selector along the bottom of the
@@ -213,11 +233,40 @@ first failed removal. It must report which removals succeeded, which item
 failed, and which items remain selected; it must not claim that later items
 were removed.
 
-Reordering uses same-row drag only. A job may be dragged to another position
-in that same member's queue and is translated to Kenshi's native
-`movePermajob` operation. Dragging between member rows is not an assignment
-operation and must be rejected. The editor revalidates the source and target
-positions before moving. After a fully verified successful move, the affected
+Reordering within one row translates the exact insertion gap to Kenshi's native
+`movePermajob` operation. A single selected job can also be dragged to another
+loaded member, including a member in another active squad. The MyGUI drop
+callback captures only copied squad/member identities, presentation sequences,
+the exact source slot, and the exact destination gap. On the next update tick,
+the deferred path fresh-validates both active-roster identities and captures
+both complete structural queues. It rejects a semantic duplicate, appends
+through Kenshi's job API, verifies the exact native one-row or companion-row
+suffix, positions that suffix, revalidates both queues, and only then removes
+the source row.
+Multiple selected jobs remain remove-only and cannot start a transfer.
+Dragging either card in an adjacent native primary/secondary pair moves the
+pair. A separated or ambiguous companion fails before mutation; the manager
+does not guess how to repair a non-contiguous native bundle.
+
+The cross-member path passed its disposable-save probe, so the Release project
+defines `KJM_GENERAL_JOB_TRANSFER_VERIFIED`. `KJM_GENERAL_JOB_TRANSFER_PROBE`
+remains the diagnostic switch for repeating the full regression matrix. If a
+future transfer change fails that matrix, remove the verified Release define
+until the path is proven again. There is no compensating rollback. An
+unexpected append, insertion failure, or later verification failure stops the
+transaction, retains any verified destination copy, and tells the player to
+review both queues. The source remains unchanged unless an exact source removal
+was already verified. No raw `Tasker*`, borrowed queue pointer, or unverified
+source removal crosses the transaction boundary.
+
+The `Prioritize Core Jobs` button targets only `g_squad`, the vanilla current
+squad. It stably moves existing Rescue, Put in Bed, Medic, Robotics, and
+Engineering rows to the top in that order; it never creates missing roles.
+Before each member and after every `movePermajob`, it rereads the current squad,
+validates the exact member order, and verifies the complete structural queue.
+The batch stops on the first unverified move and reports the partial result.
+
+After a fully verified successful move, the affected
 worker cache and any matching station detail assignment list are refreshed
 without changing unrelated card positions. A normal full refresh remains the
 fail-closed fallback when verification is partial, a member disappears, or the
@@ -239,11 +288,12 @@ until the next manageable squad. Never render `__DEAD__`. An
 `Options` modal or `Clear Queue` Yes/No/Esc modal owns keyboard input and
 blocks native squad cycling until the modal closes.
 
-While the window is open, perform an incremental live-state check once per
-second. Compare squad membership, loaded state, Jobs state, each member's
-stats, queue size, queue row identity, labels, and order. Update only changed
-member cards or rows; do not rebuild or mutate unchanged cards every tick.
-There is no manual Refresh button.
+While the window is open, perform a live-state check once per second. Compare
+the complete value-only active-squad board, loaded state, Jobs state, each
+member's stats, queue size, queue row identity, labels, and order. Keep the
+existing widget tree when the board revision is unchanged. Cancel an armed drag
+and rebuild the grouped board when roster, collapse, current-squad highlight,
+or queue structure changes. There is no manual Refresh button.
 
 If one squad member is unloaded or only its cached queue can be shown, replace
 that member's live snapshot with its own last-safe cached snapshot and mark

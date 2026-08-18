@@ -6,7 +6,7 @@ do not use a valuable campaign save to investigate a failed mutation.
 
 The test terms below are intentional:
 
-- **member** means one current-squad character;
+- **member** means one character in any displayed active player squad;
 - **row** means one exact permanent-job queue entry for one member;
 - **live label** means Kenshi's exact current job or target text, with no
   synthetic `Job:` or `Target:` prefix; an unresolved live target is
@@ -34,8 +34,9 @@ The test terms below are intentional:
 - Keep other RE_Kenshi UI plugins enabled only when needed for compatibility
   testing.
 - Make a disposable-save backup.
-- Prepare a small squad with at least three members. Give two members
-  distinguishable permanent jobs, and give one member no permanent jobs.
+- Prepare at least two active, nonempty squads in a deliberate vanilla order,
+  with at least three members total. Give two members distinguishable permanent
+  jobs, and give one member no permanent jobs.
 - If possible, place the squad at a player outpost with at least one crafting,
   farming, mining, or refining station. Keep one assigned natural iron or
   copper node available for the exact-target exception test.
@@ -77,7 +78,7 @@ The test terms below are intentional:
 2. Load the disposable save.
 3. Inspect `RE_Kenshi_log.txt` for the `0.1.0-alpha loaded` line.
 4. Record the pause state and speed immediately before opening the manager.
-5. Press `Ctrl+J`. The native full-screen current-squad manager should appear
+5. Press `Ctrl+J`. The native full-screen grouped multi-squad manager should appear
    once. It must not open a one-character popup.
    Confirm the primary backdrop is fully opaque and member rows, job cards,
    controls, portraits, and text stay fully opaque.
@@ -97,9 +98,14 @@ The test terms below are intentional:
    pause state and speed.
 7. Confirm the heading resolves to `<squad name>  |  <N> member(s)` (or starts
    as `Current squad`) and appends `  |  read-only snapshot` only for a
-   squad-level cached snapshot. Confirm the member-column header is exactly
+   squad-level cached snapshot. With multiple squads it must also show the
+   displayed squad count. Confirm the member-column header is exactly
    `SQUAD MEMBER  |  TOP STATS`.
-8. Confirm every current-squad member has one card or row, including the
+8. Confirm each active, nonempty squad appears in exact raw vanilla `TAB` order
+   with aligned `+`/`-` headers across both panes. Confirm the current squad has
+   the selected highlight. Collapse one group and verify it creates no member
+   or job rows, then expand it and verify its rows return in vanilla member
+   order. Confirm every displayed member has one card or row, including the
    member with no jobs. Confirm the member name and `Jobs: ON` or `Jobs: OFF`
    state match Kenshi. Confirm each portrait shows that member's actual
    character image, not only the gray `Background/Normal` layer, and compare
@@ -153,8 +159,8 @@ The test terms below are intentional:
     disabled, while the member's independent `Jobs: ON`/`Jobs: OFF` toggle stays
     available. A queue that cannot be read displays `Queue unavailable
     (read-only)`.
-12. Confirm the bottom controls are exactly `Remove Selected (N)`, `Options`,
-    and `Close`; there is no persistent instruction/current-squad footer and no
+12. Confirm the bottom controls include `Remove Selected (N)`, `Prioritize Core
+    Jobs`, `Options`, and `Close`; there is no persistent instruction/current-squad footer and no
     manual Refresh button. Trigger one safe validation failure and confirm its
     actionable status still appears. Live changes must arrive from the
     incremental checks.
@@ -165,7 +171,7 @@ The test terms below are intentional:
     restores the exact pause state and speed recorded in step 4.
 15. Reopen it with `Ctrl+J`. Load another save while the manager is open. The
     old window and row identities must be discarded; the next view must contain
-    only the new save's current squad.
+    only the new save's active squads.
 16. Return to the main menu with the manager open and confirm no crash.
 
 ## Global behavior cards and exact target verification
@@ -226,6 +232,8 @@ nonempty squads to exceed the visible strip when possible.
    update, a fresh validated `setCurrentPlatoon` selects that squad and the
    member rows and highlight agree. No queue mutation or intermediate pointer
    state may be visible.
+   All other squad groups must remain displayed; selection changes only the
+   current highlight and the target of `Prioritize Core Jobs`.
 3. Remove or empty the clicked squad before its queued update, or cause a load
    transition. The fresh validation must reject it, leave the current squad
    unchanged, and show a safe unavailable status. Reopen/reset the manager and
@@ -234,8 +242,8 @@ nonempty squads to exceed the visible strip when possible.
    then make the following job snapshot read fail. Confirm the manager clears
    the prior member/job widgets before publishing the new identity: no old
    editable controls, cards, or jobs may remain. The new view must be a
-   read-only unavailable snapshot and show `The current squad is unavailable
-   and has no session snapshot.`; test both the click and native-`TAB` paths.
+   read-only unavailable snapshot. The active squads are unavailable until a
+   fresh safe roster read succeeds; test both the click and native-`TAB` paths.
 5. Add enough squads to overflow the strip. Use its scrollbar and confirm only
    the selector moves horizontally; this independent horizontal overflow must
    leave member-row vertical and job-column horizontal offsets unchanged.
@@ -492,8 +500,8 @@ before every action.
 3. Drag B back below A. Expected order: A, B, C.
 4. Move the first row down and the last row up. Confirm each result in the
    vanilla panel.
-5. Attempt to drag a row to another member. The operation must be rejected or
-   have no effect; it must not add the job to the other member.
+5. Drag only within the same member in this section. Cross-member transfer has
+   its separate probe-gated matrix below.
 6. Change the vanilla queue immediately before dropping a dragged row. The
    manager must refresh or reject the stale move rather than applying it to a
    different row.
@@ -506,6 +514,70 @@ before every action.
 ordering differs from the expected result, stop testing reorder and attach the
 before/after log plus exact queue contents to an issue. Do not infer alternate
 index semantics from one test.
+
+## Probe-gated cross-member and cross-squad transfer
+
+The Release project defines `KJM_GENERAL_JOB_TRANSFER_VERIFIED` after successful
+live probe promotion. Use a fresh disposable-save backup for every regression
+run. Define `KJM_GENERAL_JOB_TRANSFER_PROBE` only in a separate diagnostic
+build when detailed result logging is required; never define both switches.
+
+1. Put source and destination members in the same squad. Give the source three
+   distinct jobs and the destination two. Drag the source middle job to every
+   destination insertion gap. Confirm the exact green line matches the resulting
+   exact priority. The job must disappear from the source only after the full
+   destination queue is verified.
+2. Repeat between members in different displayed squads. Collapse and expand an
+   unrelated group during setup. Confirm the transfer uses member identities,
+   not visible row indexes, and both groups refresh correctly.
+3. Transfer ordinary fixed-target, global Medic/Robotics/Engineering/Rescue,
+   hauling, operating, and an automatic-machine job that makes Kenshi append a
+   companion row. Confirm each recreated row preserves TaskType, exact subject,
+   location, task metadata, and native companion order.
+4. Give the destination the same semantic global role or the same TaskType and
+   exact fixed target. The duplicate must be rejected and both structural
+   queues must remain byte-for-byte equivalent to their captured state.
+5. Change the source queue after press but before drop, then change it after the
+   drop capture but before the deferred update. Repeat for the destination.
+   Every stale fingerprint must stop before source removal.
+6. Fill the destination to the 64-row safety limit. Confirm the transfer fails
+   without calling the add path or changing either queue.
+7. Unload, move, remove, or change squad membership for either character after
+   the drop. Fresh `RefreshAllActiveSquadsSnapshot` validation must reject the
+   pending request and publish no stale editable row.
+8. Force an unexpected append or insertion failure in an instrumented build.
+   Confirm the transaction stops without a compensating rollback. Any verified
+   destination copy remains for manual review, and the source stays unchanged
+   unless an exact source removal had already succeeded. Attach the result code
+   and before/after structural captures.
+9. Ctrl-select two or more cards and drag. It must remain remove-only: another
+   member row must never become a transfer target. Drop on Remove Selected and
+   confirm the existing immediate batch-removal behavior.
+   Multiple selected jobs remain remove-only in every squad.
+10. Save and reload after every successful case. Confirm the source removal,
+    destination insertion, and any native companion row persist exactly.
+
+If any job family, failure, partial-copy, same-squad, or cross-squad case above
+fails, remove `KJM_GENERAL_JOB_TRANSFER_VERIFIED` from the Release project until
+the regression is fixed and proven again.
+
+## Current-squad core-job priority button
+
+1. In the current squad, give several members existing Find and Rescue, Find
+   and Put in Bed, Medic, Robotics, and Engineering rows in mixed order with
+   unrelated jobs between them. Leave at least one role missing on each member.
+2. Click `Prioritize Core Jobs`. Confirm each member's existing core rows move
+   to the top in exactly that order and all unrelated rows retain their relative
+   order. Missing roles must not be created. Duplicate rows inside one role
+   family must retain their original relative order.
+3. Confirm the action affects only the vanilla current squad. Switch current
+   squad with the bottom selector and with `TAB`, then repeat and confirm the
+   highlighted group is the only target.
+4. After every native move, compare the complete manager and vanilla queues.
+   Force a queue or member-order change during an instrumented run and confirm
+   post-move verification stops the remaining batch and reports the partial
+   result. There is no undo.
+5. Save and reload. Confirm the verified order persists.
 
 ## Cross-member multi-select and drop-to-remove
 

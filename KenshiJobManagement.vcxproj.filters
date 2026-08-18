@@ -8,6 +8,9 @@
     <Filter Include="Mod Package">
       <UniqueIdentifier>{47AA7A18-1700-44AA-B591-586A51FC681F}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Diagnostics">
+      <UniqueIdentifier>{96BE0779-62D1-49F9-A397-D959C297B720}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\KenshiJobManagement.cpp">
@@ -73,5 +76,10 @@
     <None Include="mod\gui\job-medic.png"><Filter>Mod Package</Filter></None>
     <None Include="mod\gui\kjm-hud-icon.png"><Filter>Mod Package</Filter></None>
     <None Include="src\SquadSelector.inl"><Filter>Source Files</Filter></None>
+    <None Include="src\SquadGroups.inl"><Filter>Source Files</Filter></None>
+    <None Include="src\SquadPriority.inl"><Filter>Source Files</Filter></None>
+    <None Include="src\GeneralJobTransfer.inl"><Filter>Source Files</Filter></None>
+    <None Include="diagnostics\GeneralJobTransferProbe.md"><Filter>Diagnostics</Filter></None>
+    <None Include="diagnostics\evidence\2026-08-17-general-job-transfer-promotion.md"><Filter>Diagnostics</Filter></None>
   </ItemGroup>
 </Project>

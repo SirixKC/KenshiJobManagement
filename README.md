@@ -4,8 +4,8 @@ A native in-game job-management interface for Kenshi, built as a KenshiLib plugi
 
 ## Current milestone: 0.1.0-alpha Stage 1 squad audit/editor + Stations board
 
-Press **Ctrl+J** in game to open a native full-screen editor for the current
-squad. This replaces the one-character popup. It audits and edits Kenshi's
+Press **Ctrl+J** in game to open a native full-screen editor for every active,
+nonempty player squad. This replaces the one-character popup. It audits and edits Kenshi's
 existing permanent-job queues; it does not introduce a parallel scheduler.
 
 The native HUD also has a persistent split-JOBS HUD entry: the live vanilla
@@ -21,7 +21,10 @@ rectangle. The packaged `gui/kjm-hud-icon.png` is loaded independently; the
 The Stage 1 window provides:
 
 - a fully opaque full-screen backdrop for maximum text contrast;
-- one member card for each current-squad member, with per-member live or cached
+- squad groups in Kenshi's exact raw active/nonempty vanilla `TAB` order. Each
+  group has a `+`/`-` header, preserves session-only collapse state, and creates
+  no member rows while collapsed. The current squad has the selected highlight;
+- one member card for each active-squad member, with per-member live or cached
   state and Kenshi's native generated portrait;
 - per-member `Jobs: ON`/`Jobs: OFF` and `Clear Queue` controls;
 - narrow, high-contrast job cards that center Kenshi's live work text above `V`
@@ -44,9 +47,17 @@ The Stage 1 window provides:
   target for station-display jobs. Global behavior cards compare task type
   only, without the incidental target, and mouse movement never polls
   Kenshi's queues;
-- same-row drag reorder, backed by Kenshi's `movePermajob` method;
+- same-row drag reorder, backed by Kenshi's `movePermajob` method, plus
+  identity-only cross-member and cross-squad drag intent with an exact green
+  insertion gap. The drop callback stores only copied identities and
+  presentation sequences. On the next update tick, the manager captures and
+  verifies both complete structural queues before it changes Kenshi; the
+  destination is verified before the source row is removed;
 - multi-select across members and immediate `Remove Selected` or drop-to-remove,
   with no prompt or undo, stop-on-first-failure, and a partial-result report;
+- `Prioritize Core Jobs`, which reorders existing current-squad rows to Find
+  and Rescue, Find and Put in Bed, Medic, Robotics, then Engineering. It never
+  creates a missing job and verifies the complete queue after every move;
 - each member's own top three supported base stats above 1;
 - an `Options` page with broad station-category filters. These filters apply
   only to Stations; Squad Jobs always shows every job and uses all supported
@@ -113,8 +124,16 @@ Successful assignment changes update only the affected card, detail list,
 category count, and worker cache. Card positions stay frozen until the detail
 modal closes, and the changed card/detail entry receives blue recent-change
 feedback. Stale queues, load transitions, and failed verification remain
-fail-closed. Squad Jobs keeps its separate same-row drag reorder; Stations has
-no drag-to-transfer interaction.
+fail-closed. Squad Jobs supports same-row reorder and the separately guarded
+cross-member transfer path; Stations has no drag-to-transfer interaction.
+
+Cross-member transfer passed its disposable-save probe and the Release project
+defines `KJM_GENERAL_JOB_TRANSFER_VERIFIED`. Diagnostic builds can instead use
+`KJM_GENERAL_JOB_TRANSFER_PROBE` for the regression matrix in
+`docs/TESTING.md`. The transaction verifies structural add, insertion, source
+removal, native companion rows, partial failures, and every post-mutation
+queue. There is no compensating rollback; an interrupted transfer leaves its
+verified destination copy for manual review.
 
 The Squad Jobs roster uses enlarged `80x80` portraits and stacks each member's
 three displayed skills vertically in a larger font. The portrait remains

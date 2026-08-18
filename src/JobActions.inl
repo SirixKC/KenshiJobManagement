@@ -9,13 +9,251 @@
         return true;
     }
 
+    struct PendingGeneralMemberDrop
+    {
+        bool pending;
+        HandleIdentity sourceSquad;
+        HandleIdentity sourceMember;
+        HandleIdentity destinationSquad;
+        HandleIdentity destinationMember;
+        std::vector<JobRowSnapshot> sourceSequence;
+        std::vector<JobRowSnapshot> destinationSequence;
+        int sourceSlot;
+        int destinationGap;
+
+        PendingGeneralMemberDrop() :
+            pending(false), sourceSlot(-1), destinationGap(-1)
+        {
+        }
+    };
+
+    PendingGeneralMemberDrop g_pendingGeneralMemberDrop;
+    bool g_pendingSquadPriority = false;
+    HandleIdentity g_pendingSquadPriorityIdentity;
+
+    void QueueGeneralMemberTransfer(
+        int sourceVisibleIndex,
+        int sourceSlot,
+        int destinationVisibleIndex,
+        int destinationGap)
+    {
+        if (g_pendingGeneralMemberDrop.pending || g_pendingSquadPriority ||
+            g_pendingAction.type != ACTION_NONE ||
+            sourceVisibleIndex < 0 || destinationVisibleIndex < 0 ||
+            sourceVisibleIndex == destinationVisibleIndex)
+        {
+            return;
+        }
+        const MemberSnapshot* source = GetVisibleMember(sourceVisibleIndex);
+        const MemberSnapshot* destination =
+            GetVisibleMember(destinationVisibleIndex);
+        if (source == NULL || destination == NULL ||
+            !source->loaded || !source->queueAvailable || source->truncated ||
+            !destination->loaded || !destination->queueAvailable ||
+            destination->truncated ||
+            sourceSlot < 0 ||
+            sourceSlot >= static_cast<int>(source->jobs.size()) ||
+            destinationGap < 0 ||
+            destinationGap > static_cast<int>(destination->jobs.size()))
+        {
+            SetStatus("The source or destination queue is read-only. No jobs were changed.");
+            return;
+        }
+
+        PendingGeneralMemberDrop drop;
+        drop.pending = true;
+        drop.sourceSquad =
+            g_visibleMemberBindings[sourceVisibleIndex].squad;
+        drop.sourceMember = source->identity;
+        drop.destinationSquad =
+            g_visibleMemberBindings[destinationVisibleIndex].squad;
+        drop.destinationMember = destination->identity;
+        drop.sourceSequence = source->jobs;
+        drop.destinationSequence = destination->jobs;
+        drop.sourceSlot = sourceSlot;
+        drop.destinationGap = destinationGap;
+        // MyGUI callbacks publish value-only intent. Live queue reads and all
+        // engine mutation happen later from TickMultiSquadActions.
+        g_pendingGeneralMemberDrop = drop;
+    }
+
+    bool GeneralQueueMatchesPresentation(
+        const std::vector<JobRowSnapshot>& presentation,
+        const GeneralJobQueueValue& structural)
+    {
+        if (presentation.size() != structural.rows.size())
+        {
+            return false;
+        }
+        for (size_t index = 0; index < presentation.size(); ++index)
+        {
+            if (presentation[index].taskType !=
+                    structural.rows[index].taskType ||
+                presentation[index].hasTarget !=
+                    structural.rows[index].subjectIdentity.valid ||
+                !SameHandleIdentity(
+                    presentation[index].target,
+                    structural.rows[index].subjectIdentity))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    const char* GeneralTransferStatus(GeneralJobTransferCode code)
+    {
+        switch (code)
+        {
+        case GENERAL_TRANSFER_SUCCESS:
+            return "Permanent job moved to the destination member.";
+        case GENERAL_TRANSFER_DISABLED:
+            return "General job transfer is disabled in this test build.";
+        case GENERAL_TRANSFER_DUPLICATE:
+            return "The destination already has the same job. No jobs were changed.";
+        case GENERAL_TRANSFER_DESTINATION_FULL:
+            return "The destination queue is at the safety limit. No jobs were changed.";
+        case GENERAL_TRANSFER_SOURCE_CHANGED:
+        case GENERAL_TRANSFER_DESTINATION_CHANGED:
+            return "A queue changed before the transfer. Review both members and try again.";
+        case GENERAL_TRANSFER_ADD_UNEXPECTED_REVIEW:
+        case GENERAL_TRANSFER_INSERT_FAILED_REVIEW:
+        case GENERAL_TRANSFER_SOURCE_CHANGED_DUPLICATE_REMAINS:
+        case GENERAL_TRANSFER_REMOVE_FAILED_DUPLICATE_REMAINS:
+        case GENERAL_TRANSFER_REMOVE_UNEXPECTED_REVIEW:
+            return "The transfer was interrupted. Review both queues before another change.";
+        default:
+            return "Kenshi rejected the job transfer. No further jobs were changed.";
+        }
+    }
+
+    void TickMultiSquadActions()
+    {
+        if (g_squadGroupRebuildRequested)
+        {
+            g_squadGroupRebuildRequested = false;
+            RebuildSquadWidgets();
+        }
+        if (g_pendingGeneralMemberDrop.pending)
+        {
+            const PendingGeneralMemberDrop drop =
+                g_pendingGeneralMemberDrop;
+            g_pendingGeneralMemberDrop = PendingGeneralMemberDrop();
+            int sourceSquadIndex = -1;
+            int sourceMemberIndex = -1;
+            int destinationSquadIndex = -1;
+            int destinationMemberIndex = -1;
+            if (!RefreshAllActiveSquadsSnapshot() ||
+                !TryFindAllSquadMemberIndices(
+                    drop.sourceSquad, drop.sourceMember,
+                    &sourceSquadIndex, &sourceMemberIndex) ||
+                !TryFindAllSquadMemberIndices(
+                    drop.destinationSquad, drop.destinationMember,
+                    &destinationSquadIndex, &destinationMemberIndex))
+            {
+                RefreshSquadView(true);
+                SetStatus(
+                    "The source or destination left the active player roster. No jobs were changed.");
+                return;
+            }
+
+            const MemberSnapshot* source =
+                FindDisplayedMember(drop.sourceMember);
+            const MemberSnapshot* destination =
+                FindDisplayedMember(drop.destinationMember);
+            if (source == NULL || destination == NULL ||
+                !source->loaded || !source->queueAvailable ||
+                source->truncated || !destination->loaded ||
+                !destination->queueAvailable || destination->truncated ||
+                !SameQueue(source->jobs, drop.sourceSequence) ||
+                !SameQueue(destination->jobs, drop.destinationSequence))
+            {
+                RefreshSquadView(true);
+                SetStatus(
+                    "A source or destination queue changed after the drop. No jobs were changed.");
+                return;
+            }
+
+            GeneralJobTransferRequest request;
+            request.sourceSlot = drop.sourceSlot;
+            request.destinationGap = drop.destinationGap;
+            if (!TryCaptureGeneralJobQueue(
+                    drop.sourceMember, &request.sourceBefore) ||
+                !TryCaptureGeneralJobQueue(
+                    drop.destinationMember, &request.destinationBefore) ||
+                !GeneralQueueMatchesPresentation(
+                    drop.sourceSequence, request.sourceBefore) ||
+                !GeneralQueueMatchesPresentation(
+                    drop.destinationSequence, request.destinationBefore))
+            {
+                RefreshSquadView(true);
+                SetStatus(
+                    "A live queue could not be verified for the transfer. No jobs were changed.");
+                return;
+            }
+            GeneralJobTransferOutcome outcome;
+            const GeneralJobTransferCode code =
+                TryTransferGeneralPermanentJob(request, &outcome);
+#ifdef KJM_GENERAL_JOB_TRANSFER_PROBE
+            {
+                std::ostringstream probeLog;
+                probeLog << "[KenshiJobManagement] General transfer probe: code="
+                         << static_cast<int>(code)
+                         << ", sourceRows=" << request.sourceBefore.rows.size()
+                         << ", destinationRows="
+                         << request.destinationBefore.rows.size()
+                         << ", transferredRows=" << outcome.transferredRows
+                         << ", destinationChanged="
+                         << (outcome.destinationChanged ? 1 : 0)
+                         << ", sourceChanged="
+                         << (outcome.sourceChanged ? 1 : 0) << ".";
+                DebugLog(probeLog.str().c_str());
+            }
+#endif
+            if (code == GENERAL_TRANSFER_SUCCESS)
+            {
+                TryNotifyVanillaSelectionUI();
+            }
+            RefreshSquadView(true);
+            SetStatus(GeneralTransferStatus(code));
+            return;
+        }
+
+        if (g_pendingSquadPriority)
+        {
+            const HandleIdentity squad = g_pendingSquadPriorityIdentity;
+            g_pendingSquadPriority = false;
+            ResetHandleIdentity(&g_pendingSquadPriorityIdentity);
+            SquadPriorityResult result;
+            TryApplySquadPriority(squad, &result);
+            if (result.changedMembers > 0)
+            {
+                TryNotifyVanillaSelectionUI();
+            }
+            RefreshSquadView(true);
+            SetStatus(result.message);
+        }
+    }
+
+    void ResetMultiSquadActions()
+    {
+        g_pendingGeneralMemberDrop = PendingGeneralMemberDrop();
+        g_pendingSquadPriority = false;
+        ResetHandleIdentity(&g_pendingSquadPriorityIdentity);
+    }
+
     bool GetCardBinding(MyGUI::Widget* widget, int* memberIndexOut, int* slotOut)
     {
-        return GetWidgetIndex(widget, "KJM_Member", memberIndexOut) &&
-            GetWidgetIndex(widget, "KJM_Slot", slotOut) &&
-            *memberIndexOut >= 0 && *slotOut >= 0 &&
-            *memberIndexOut < static_cast<int>(g_squad.members.size()) &&
-            *slotOut < static_cast<int>(g_squad.members[*memberIndexOut].jobs.size());
+        if (!GetWidgetIndex(widget, "KJM_Member", memberIndexOut) ||
+            !GetWidgetIndex(widget, "KJM_Slot", slotOut) ||
+            *memberIndexOut < 0 || *slotOut < 0 ||
+            *memberIndexOut >= static_cast<int>(g_visibleMemberBindings.size()))
+        {
+            return false;
+        }
+        const MemberSnapshot* member = GetVisibleMember(*memberIndexOut);
+        return member != NULL &&
+            *slotOut < static_cast<int>(member->jobs.size());
     }
 
     void ClearJobHoverHighlight()
@@ -78,12 +316,17 @@
     void AddSelectedJob(int memberIndex, int slot)
     {
         if (memberIndex < 0 || slot < 0 ||
-            memberIndex >= static_cast<int>(g_squad.members.size()) ||
-            slot >= static_cast<int>(g_squad.members[memberIndex].jobs.size()))
+            memberIndex >= static_cast<int>(g_visibleMemberBindings.size()))
         {
             return;
         }
-        const MemberSnapshot& member = g_squad.members[memberIndex];
+        const MemberSnapshot* memberPointer = GetVisibleMember(memberIndex);
+        if (memberPointer == NULL ||
+            slot >= static_cast<int>(memberPointer->jobs.size()))
+        {
+            return;
+        }
+        const MemberSnapshot& member = *memberPointer;
         const JobRowSnapshot& job = member.jobs[slot];
         if (FindSelectedJobIndex(member.identity, job, slot) >= 0)
         {
@@ -100,9 +343,11 @@
     {
         g_selectedJobs.clear();
         AddSelectedJob(memberIndex, slot);
-        if (memberIndex >= 0 && memberIndex < static_cast<int>(g_squad.members.size()))
+        const MemberSnapshot* member = memberIndex >= 0 ?
+            GetVisibleMember(memberIndex) : NULL;
+        if (member != NULL)
         {
-            g_selectionAnchorMember = g_squad.members[memberIndex].identity;
+            g_selectionAnchorMember = member->identity;
             g_selectionAnchorSlot = slot;
         }
         ApplyCardSelectionStates();
@@ -110,7 +355,13 @@
 
     void ApplyCardClickSelection(int memberIndex, int slot)
     {
-        const MemberSnapshot& member = g_squad.members[memberIndex];
+        const MemberSnapshot* memberPointer = GetVisibleMember(memberIndex);
+        if (memberPointer == NULL || slot < 0 ||
+            slot >= static_cast<int>(memberPointer->jobs.size()))
+        {
+            return;
+        }
+        const MemberSnapshot& member = *memberPointer;
         const JobRowSnapshot& job = member.jobs[slot];
         MyGUI::InputManager& input = MyGUI::InputManager::getInstance();
         const bool control = input.isControlPressed();
@@ -192,6 +443,7 @@
     void CancelDrag()
     {
         g_drag = DragState();
+        g_dragDestinationVisibleIndex = -1;
         g_lastDragTick = 0;
         ClearJobHoverHighlight();
         if (g_insertionLine != NULL)
@@ -212,17 +464,34 @@
         }
     }
 
-    bool MouseIsInSourceRow(const MyGUI::IntPoint& mouse)
+    int FindVisibleMemberRowAtMouse(const MyGUI::IntPoint& mouse)
     {
-        if (g_jobViewport == NULL || g_drag.memberIndex < 0)
+        if (g_jobViewport == NULL)
         {
-            return false;
+            return -1;
         }
         const MyGUI::IntCoord view = g_jobViewport->getAbsoluteCoord();
-        const int rowTop = view.top + g_drag.memberIndex * ROW_STRIDE - g_verticalOffset;
-        return mouse.left >= view.left && mouse.left < view.right() &&
-            mouse.top >= view.top && mouse.top < view.bottom() &&
-            mouse.top >= rowTop && mouse.top < rowTop + ROW_HEIGHT;
+        if (mouse.left < view.left || mouse.left >= view.right() ||
+            mouse.top < view.top || mouse.top >= view.bottom())
+        {
+            return -1;
+        }
+        for (size_t index = 0;
+             index < g_visibleMemberBindings.size(); ++index)
+        {
+            const int rowTop = view.top +
+                g_visibleMemberBindings[index].rowTop - g_verticalOffset;
+            if (mouse.top >= rowTop && mouse.top < rowTop + ROW_HEIGHT)
+            {
+                return static_cast<int>(index);
+            }
+        }
+        return -1;
+    }
+
+    bool MouseIsInSourceRow(const MyGUI::IntPoint& mouse)
+    {
+        return FindVisibleMemberRowAtMouse(mouse) == g_drag.memberIndex;
     }
 
     void UpdateDragInsertion(const MyGUI::IntPoint& mouse)
@@ -230,7 +499,7 @@
         if (!g_drag.active || g_drag.kind != DRAG_REORDER ||
             g_jobViewport == NULL || g_insertionLine == NULL ||
             g_drag.memberIndex < 0 ||
-            g_drag.memberIndex >= static_cast<int>(g_squad.members.size()))
+            g_drag.memberIndex >= static_cast<int>(g_visibleMemberBindings.size()))
         {
             if (g_insertionLine != NULL)
             {
@@ -239,9 +508,13 @@
             return;
         }
 
-        if (!MouseIsInSourceRow(mouse))
+        const int destinationIndex = FindVisibleMemberRowAtMouse(mouse);
+        const MemberSnapshot* destination = destinationIndex >= 0 ?
+            GetVisibleMember(destinationIndex) : NULL;
+        if (destination == NULL || !destination->queueAvailable)
         {
             g_drag.insertionGap = -1;
+            g_dragDestinationVisibleIndex = -1;
             g_insertionLine->setVisible(false);
             return;
         }
@@ -249,10 +522,11 @@
         const MyGUI::IntCoord view = g_jobViewport->getAbsoluteCoord();
         const int contentX = mouse.left - view.left + g_horizontalOffset;
         const int queueCount =
-            static_cast<int>(g_squad.members[g_drag.memberIndex].jobs.size());
+            static_cast<int>(destination->jobs.size());
         int gap = (contentX + CARD_STRIDE / 2) / CARD_STRIDE;
         gap = ClampInt(gap, 0, queueCount);
         g_drag.insertionGap = gap;
+        g_dragDestinationVisibleIndex = destinationIndex;
 
         MyGUI::Widget* client = g_window != NULL ? g_window->getClientWidget() : NULL;
         if (client == NULL)
@@ -263,7 +537,7 @@
         const int lineX = view.left - clientCoord.left + gap * CARD_STRIDE -
             g_horizontalOffset - 2;
         const int lineY = view.top - clientCoord.top +
-            g_drag.memberIndex * ROW_STRIDE - g_verticalOffset;
+            g_visibleMemberBindings[destinationIndex].rowTop - g_verticalOffset;
         g_insertionLine->setCoord(lineX, lineY, 4, ROW_HEIGHT);
         g_insertionLine->setVisible(true);
     }
@@ -293,13 +567,17 @@
 
         int memberIndex = -1;
         int slot = -1;
-        if (!GetCardBinding(widget, &memberIndex, &slot) ||
-            !g_squad.members[memberIndex].queueAvailable)
+        if (!GetCardBinding(widget, &memberIndex, &slot))
         {
             return;
         }
 
-        const MemberSnapshot& member = g_squad.members[memberIndex];
+        const MemberSnapshot* memberPointer = GetVisibleMember(memberIndex);
+        if (memberPointer == NULL || !memberPointer->queueAvailable)
+        {
+            return;
+        }
+        const MemberSnapshot& member = *memberPointer;
         const JobRowSnapshot& job = member.jobs[slot];
         MyGUI::InputManager& input = MyGUI::InputManager::getInstance();
         const bool plain = !input.isControlPressed() && !input.isShiftPressed();
@@ -333,12 +611,19 @@
             return;
         }
         if (g_drag.memberIndex < 0 ||
-            g_drag.memberIndex >= static_cast<int>(g_squad.members.size()) ||
+            g_drag.memberIndex >= static_cast<int>(g_visibleMemberBindings.size()))
+        {
+            CancelDrag();
+            return;
+        }
+        const MemberSnapshot* sourceMemberPointer =
+            GetVisibleMember(g_drag.memberIndex);
+        if (sourceMemberPointer == NULL ||
             g_drag.slot < 0 ||
             g_drag.slot >= static_cast<int>(
-                g_squad.members[g_drag.memberIndex].jobs.size()) ||
+                sourceMemberPointer->jobs.size()) ||
             !SameQueue(
-                g_squad.members[g_drag.memberIndex].jobs,
+                sourceMemberPointer->jobs,
                 g_drag.startSequence))
         {
             CancelDrag();
@@ -358,8 +643,7 @@
             g_drag.active = true;
             g_drag.deferredPlainClick = false;
             ClearJobHoverHighlight();
-            const MemberSnapshot& sourceMember =
-                g_squad.members[g_drag.memberIndex];
+            const MemberSnapshot& sourceMember = *sourceMemberPointer;
             if (!g_drag.sourceWasSelected ||
                 FindSelectedJobIndex(
                     sourceMember.identity,
@@ -398,12 +682,19 @@
         }
 
         if (g_drag.memberIndex < 0 ||
-            g_drag.memberIndex >= static_cast<int>(g_squad.members.size()) ||
+            g_drag.memberIndex >= static_cast<int>(g_visibleMemberBindings.size()))
+        {
+            CancelDrag();
+            return;
+        }
+        const MemberSnapshot* sourceMemberPointer =
+            GetVisibleMember(g_drag.memberIndex);
+        if (sourceMemberPointer == NULL ||
             g_drag.slot < 0 ||
             g_drag.slot >= static_cast<int>(
-                g_squad.members[g_drag.memberIndex].jobs.size()) ||
+                sourceMemberPointer->jobs.size()) ||
             !SameQueue(
-                g_squad.members[g_drag.memberIndex].jobs,
+                sourceMemberPointer->jobs,
                 g_drag.startSequence))
         {
             CancelDrag();
@@ -432,7 +723,7 @@
         }
 
         if (g_drag.kind == DRAG_REORDER && g_drag.insertionGap >= 0 &&
-            MouseIsInSourceRow(mouse))
+            g_dragDestinationVisibleIndex == g_drag.memberIndex)
         {
             int target = g_drag.insertionGap;
             if (g_drag.insertionGap > g_drag.slot)
@@ -446,12 +737,23 @@
                 g_pendingAction = PendingAction();
                 g_pendingAction.type = ACTION_REORDER;
                 g_pendingAction.member =
-                    g_squad.members[g_drag.memberIndex].identity;
+                    sourceMemberPointer->identity;
                 g_pendingAction.job =
-                    g_squad.members[g_drag.memberIndex].jobs[g_drag.slot];
+                    sourceMemberPointer->jobs[g_drag.slot];
                 g_pendingAction.sequence = g_drag.startSequence;
                 g_pendingAction.targetSlot = target;
             }
+        }
+        else if (g_drag.kind == DRAG_REORDER &&
+            g_drag.insertionGap >= 0 &&
+            g_dragDestinationVisibleIndex >= 0 &&
+            g_dragDestinationVisibleIndex != g_drag.memberIndex)
+        {
+            QueueGeneralMemberTransfer(
+                g_drag.memberIndex,
+                g_drag.slot,
+                g_dragDestinationVisibleIndex,
+                g_drag.insertionGap);
         }
         else if (g_drag.kind == DRAG_REMOVE_ONLY)
         {
@@ -816,11 +1118,13 @@
 
     void OpenClearModal(int memberIndex)
     {
-        if (memberIndex < 0 || memberIndex >= static_cast<int>(g_squad.members.size()))
+        const MemberSnapshot* memberPointer = memberIndex >= 0 ?
+            GetVisibleMember(memberIndex) : NULL;
+        if (memberPointer == NULL)
         {
             return;
         }
-        const MemberSnapshot& member = g_squad.members[memberIndex];
+        const MemberSnapshot& member = *memberPointer;
         if (!member.queueAvailable || member.jobs.empty() ||
             !BeginModal(MODAL_CLEAR, 520, 210, "Confirm Clear Queue"))
         {
@@ -1021,15 +1325,19 @@
     {
         int memberIndex = -1;
         if (!GetWidgetIndex(widget, "KJM_Member", &memberIndex) ||
-            memberIndex < 0 || memberIndex >= static_cast<int>(g_squad.members.size()) ||
-            !g_squad.members[memberIndex].queueAvailable ||
+            memberIndex < 0 ||
             g_pendingAction.type != ACTION_NONE)
+        {
+            return;
+        }
+        const MemberSnapshot* member = GetVisibleMember(memberIndex);
+        if (member == NULL || !member->queueAvailable)
         {
             return;
         }
         g_pendingAction = PendingAction();
         g_pendingAction.type = ACTION_TOGGLE_JOBS;
-        g_pendingAction.member = g_squad.members[memberIndex].identity;
+        g_pendingAction.member = member->identity;
     }
 
     void OnClearClicked(MyGUI::Widget* widget)
@@ -1044,6 +1352,38 @@
     void OnRemoveClicked(MyGUI::Widget*)
     {
         QueueRemoveSelectedAction();
+    }
+
+    void OnSquadGroupToggle(MyGUI::Widget* widget)
+    {
+        int squadIndex = -1;
+        if (!GetWidgetIndex(widget, "KJM_SquadGroup", &squadIndex) ||
+            squadIndex < 0 ||
+            squadIndex >= static_cast<int>(g_allSquads.squads.size()))
+        {
+            return;
+        }
+        CancelDrag();
+        const HandleIdentity identity =
+            g_allSquads.squads[squadIndex].identity;
+        SetSquadCollapsed(identity, !IsSquadCollapsed(identity));
+        // The clicked header belongs to the tree that rebuild destroys.
+        // Rebuild only after this MyGUI callback returns.
+        g_squadGroupRebuildRequested = true;
+    }
+
+    void OnPrioritizeCoreJobsClicked(MyGUI::Widget*)
+    {
+        if (!g_squad.identity.valid || g_squad.incomplete ||
+            g_pendingSquadPriority ||
+            g_pendingGeneralMemberDrop.pending ||
+            g_pendingAction.type != ACTION_NONE || g_drag.armed)
+        {
+            return;
+        }
+        g_pendingSquadPriority = true;
+        g_pendingSquadPriorityIdentity = g_squad.identity;
+        SetStatus("Applying core-job priorities to the current squad...");
     }
 
     void OnOptionsClicked(MyGUI::Widget*)
@@ -1072,10 +1412,11 @@
     std::string DescribeRemovalCandidate(const RemovalCandidate& candidate)
     {
         std::ostringstream text;
-        if (candidate.memberIndex >= 0 &&
-            candidate.memberIndex < static_cast<int>(g_squad.members.size()))
+        const MemberSnapshot* member = FindDisplayedMember(
+            candidate.selected.member);
+        if (member != NULL)
         {
-            text << g_squad.members[candidate.memberIndex].name;
+            text << member->name;
         }
         else
         {
@@ -1101,26 +1442,38 @@
         }
     }
 
+    bool TryBuildLiveMemberByIdentity(
+        const HandleIdentity& identity,
+        MemberSnapshot* memberOut);
+    bool TryBuildFreshRosterMemberByIdentity(
+        const HandleIdentity& identity,
+        MemberSnapshot* memberOut);
+
     void ProcessRemoveSelected()
     {
-        const HandleIdentity batchSquad = g_squad.identity;
         std::vector<RemovalCandidate> candidates;
         for (size_t index = 0; index < g_selectedJobs.size(); ++index)
         {
-            const int memberIndex = FindMemberIndex(g_selectedJobs[index].member);
+            const int memberIndex = FindDisplayedMemberOrder(
+                g_selectedJobs[index].member);
             int slot = -1;
             if (memberIndex >= 0)
             {
-                slot = FindJobSlot(
-                    g_squad.members[memberIndex],
-                    g_selectedJobs[index].job);
-                if (g_selectedJobs[index].job.taskToken == 0)
+                const MemberSnapshot* member = FindDisplayedMember(
+                    g_selectedJobs[index].member);
+                if (member != NULL)
                 {
-                    slot = g_selectedJobs[index].lastSlot;
-                }
-                else if (slot < 0)
-                {
-                    slot = g_selectedJobs[index].lastSlot;
+                    slot = FindJobSlot(
+                        *member,
+                        g_selectedJobs[index].job);
+                    if (g_selectedJobs[index].job.taskToken == 0)
+                    {
+                        slot = g_selectedJobs[index].lastSlot;
+                    }
+                    else if (slot < 0)
+                    {
+                        slot = g_selectedJobs[index].lastSlot;
+                    }
                 }
             }
             RemovalCandidate candidate;
@@ -1144,7 +1497,8 @@
                 break;
             }
             MemberSnapshot fresh;
-            if (!TryRefreshMemberByIdentity(candidate.selected.member, &fresh))
+            if (!TryBuildFreshRosterMemberByIdentity(
+                    candidate.selected.member, &fresh))
             {
                 interrupted = true;
                 failedDetail = DescribeRemovalCandidate(candidate);
@@ -1177,7 +1531,7 @@
             TryNotifyVanillaSelectionUI();
         }
         RefreshSquadView(true);
-        if (interrupted && SameHandleIdentity(batchSquad, g_squad.identity))
+        if (interrupted)
         {
             // Keep the failed and not-yet-attempted rows selected, including
             // logical selections that became temporarily unavailable.
@@ -1254,6 +1608,25 @@
         }
         *memberOut = fresh;
         return true;
+    }
+
+    bool TryBuildFreshRosterMemberByIdentity(
+        const HandleIdentity& identity,
+        MemberSnapshot* memberOut)
+    {
+        if (memberOut == NULL ||
+            !RefreshAllActiveSquadsSnapshot())
+        {
+            return false;
+        }
+        const MemberSnapshot* rosterMember =
+            FindDisplayedMember(identity);
+        if (rosterMember == NULL || !rosterMember->loaded ||
+            !rosterMember->queueAvailable || rosterMember->truncated)
+        {
+            return false;
+        }
+        return TryBuildLiveMemberByIdentity(identity, memberOut);
     }
 
     bool TryAddStationPermanentJob(
@@ -2124,7 +2497,7 @@
         }
 
         MemberSnapshot fresh;
-        if (!TryRefreshMemberByIdentity(action.member, &fresh))
+        if (!TryBuildFreshRosterMemberByIdentity(action.member, &fresh))
         {
             RefreshSquadView(true);
             SetStatus("The member queue is unavailable. No jobs were changed.");
@@ -2208,33 +2581,54 @@
         const MyGUI::IntPoint mouse =
             MyGUI::InputManager::getInstance().getMousePosition();
         const MyGUI::IntCoord view = g_jobViewport->getAbsoluteCoord();
-        int delta = 0;
+        int horizontalDelta = 0;
         if (mouse.left >= view.left && mouse.left < view.left + DRAG_EDGE)
         {
-            delta = -static_cast<int>(600.0f * elapsed / 1000.0f);
+            horizontalDelta = -static_cast<int>(600.0f * elapsed / 1000.0f);
         }
         else if (mouse.left < view.right() && mouse.left >= view.right() - DRAG_EDGE)
         {
-            delta = static_cast<int>(600.0f * elapsed / 1000.0f);
+            horizontalDelta = static_cast<int>(600.0f * elapsed / 1000.0f);
         }
-        if (delta == 0)
+        int verticalDelta = 0;
+        if (mouse.top >= view.top && mouse.top < view.top + DRAG_EDGE)
+        {
+            verticalDelta = -static_cast<int>(600.0f * elapsed / 1000.0f);
+        }
+        else if (mouse.top < view.bottom() &&
+                 mouse.top >= view.bottom() - DRAG_EDGE)
+        {
+            verticalDelta = static_cast<int>(600.0f * elapsed / 1000.0f);
+        }
+        if (horizontalDelta == 0 && verticalDelta == 0)
         {
             UpdateDragInsertion(mouse);
             return;
         }
 
-        const int next = ClampInt(
-            g_horizontalOffset + delta,
+        const int nextHorizontal = ClampInt(
+            g_horizontalOffset + horizontalDelta,
             0,
             g_maxHorizontalOffset);
-        if (next != g_horizontalOffset)
+        const int nextVertical = ClampInt(
+            g_verticalOffset + verticalDelta,
+            0,
+            g_maxVerticalOffset);
+        if (nextHorizontal != g_horizontalOffset ||
+            nextVertical != g_verticalOffset)
         {
-            g_horizontalOffset = next;
+            g_horizontalOffset = nextHorizontal;
+            g_verticalOffset = nextVertical;
             g_changingScroll = true;
             if (g_horizontalScroll != NULL)
             {
                 g_horizontalScroll->setScrollPosition(
                     static_cast<size_t>(g_horizontalOffset));
+            }
+            if (g_verticalScroll != NULL)
+            {
+                g_verticalScroll->setScrollPosition(
+                    static_cast<size_t>(g_verticalOffset));
             }
             g_changingScroll = false;
             ApplyScrollOffsets();

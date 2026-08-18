@@ -335,6 +335,198 @@
         }
     }
 
+    // Temporary value-only bridge between the borrowed active-platoon list
+    // and the durable all-squads board. The guarded enumerator below copies
+    // only scalar handle identities, names, and bounds information.
+    struct ActiveSquadValueSeed
+    {
+        HandleIdentity identity;
+        std::string name;
+        std::vector<HandleIdentity> members;
+        bool incomplete;
+
+        ActiveSquadValueSeed() : incomplete(false) {}
+    };
+
+    bool ContainsActiveSquadSeedIdentity(
+        const std::vector<ActiveSquadValueSeed>& seeds,
+        const HandleIdentity& identity)
+    {
+        for (size_t index = 0; index < seeds.size(); ++index)
+        {
+            if (SameHandleIdentity(seeds[index].identity, identity))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Copy every active player squad in the exact lektor order used by
+    // vanilla squad cycling. Borrowed Platoon, ActivePlatoon, Character, and
+    // RootObject pointers never leave this guarded call.
+    __declspec(noinline) bool TryBuildActiveSquadValueSeedsGuarded(
+        PlayerInterface* player,
+        std::vector<ActiveSquadValueSeed>* seedsOut,
+        bool* incompleteOut)
+    {
+        if (player == NULL || seedsOut == NULL || incompleteOut == NULL)
+        {
+            return false;
+        }
+
+        size_t committedSquadCount = 0;
+        __try
+        {
+            Faction* faction = player->getFaction();
+            if (faction == NULL || !faction->isThePlayer())
+            {
+                return false;
+            }
+
+            const lektor<Platoon*>* activePlatoons =
+                faction->getActivePlatoons();
+            if (activePlatoons == NULL)
+            {
+                return false;
+            }
+
+            const unsigned int rawSquadCount = activePlatoons->size();
+            if (rawSquadCount != 0 && !activePlatoons->valid())
+            {
+                return false;
+            }
+            const unsigned int squadScanCount =
+                rawSquadCount > 256 ? 256 : rawSquadCount;
+            *incompleteOut = rawSquadCount > squadScanCount;
+
+            HandleIdentity deadIdentity;
+            CaptureHandleIdentity(player->getDeadSquadHandle(), &deadIdentity);
+
+            seedsOut->reserve(static_cast<size_t>(squadScanCount));
+            for (unsigned int squadIndex = 0;
+                 squadIndex < squadScanCount;
+                 ++squadIndex)
+            {
+                Platoon* platoon = (*activePlatoons)[squadIndex];
+                if (platoon == NULL || platoon->getFaction() != faction)
+                {
+                    continue;
+                }
+
+                ActivePlatoon* active = platoon->getActivePlatoon();
+                if (active == NULL)
+                {
+                    continue;
+                }
+                const int rawMemberCount = active->getNumThings();
+                if (rawMemberCount <= 0)
+                {
+                    continue;
+                }
+
+                HandleIdentity squadIdentity;
+                CaptureHandleIdentity(platoon->getHandle(), &squadIdentity);
+                if (!squadIdentity.valid ||
+                    (deadIdentity.valid &&
+                     SameHandleIdentity(squadIdentity, deadIdentity)) ||
+                    ContainsActiveSquadSeedIdentity(
+                        *seedsOut, squadIdentity))
+                {
+                    continue;
+                }
+
+                const std::string& activeName = active->getName();
+                if (activeName == "__DEAD__" ||
+                    platoon->stringID == "__DEAD__")
+                {
+                    continue;
+                }
+
+                seedsOut->resize(seedsOut->size() + 1);
+                ActiveSquadValueSeed& seed = seedsOut->back();
+                seed.identity = squadIdentity;
+                seed.name = !activeName.empty() ?
+                    activeName : platoon->stringID;
+                const int memberScanCount =
+                    rawMemberCount > 256 ? 256 : rawMemberCount;
+                seed.incomplete = rawMemberCount > memberScanCount;
+                if (seed.incomplete)
+                {
+                    *incompleteOut = true;
+                }
+                seed.members.reserve(
+                    static_cast<size_t>(memberScanCount));
+
+                for (int memberIndex = 0;
+                     memberIndex < memberScanCount;
+                     ++memberIndex)
+                {
+                    RootObject* object = active->getThing(memberIndex);
+                    if (object == NULL ||
+                        object->getDataType() != CHARACTER)
+                    {
+                        continue;
+                    }
+                    Character* character =
+                        static_cast<Character*>(object);
+                    if (!character->isPlayerCharacter() ||
+                        character->getFaction() != faction)
+                    {
+                        continue;
+                    }
+
+                    HandleIdentity memberIdentity;
+                    CaptureHandleIdentity(
+                        character->getHandle(), &memberIdentity);
+                    if (memberIdentity.valid)
+                    {
+                        seed.members.push_back(memberIdentity);
+                    }
+                }
+                committedSquadCount = seedsOut->size();
+            }
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            seedsOut->resize(committedSquadCount);
+            *incompleteOut = true;
+            ErrorLog(
+                "[KenshiJobManagement] Exception while copying the all-squads roster.");
+            return false;
+        }
+    }
+
+    bool BuildActiveSquadValueSeeds(
+        std::vector<ActiveSquadValueSeed>* seedsOut,
+        bool* incompleteOut)
+    {
+        if (seedsOut == NULL || incompleteOut == NULL)
+        {
+            return false;
+        }
+        seedsOut->clear();
+        *incompleteOut = false;
+        try
+        {
+            if (!TryBuildActiveSquadValueSeedsGuarded(
+                    g_playerInterface, seedsOut, incompleteOut))
+            {
+                seedsOut->clear();
+                *incompleteOut = true;
+                return false;
+            }
+            return true;
+        }
+        catch (...)
+        {
+            seedsOut->clear();
+            *incompleteOut = true;
+            return false;
+        }
+    }
+
     // Keep the engine mutation in a small guarded leaf. The caller validates
     // the fresh active-list candidate immediately before entering this leaf.
     __declspec(noinline) bool TrySetCurrentPlatoonGuardedLeaf(
@@ -462,7 +654,8 @@
 
     bool TryGetOrderedMemberHandles(
         RootObjectContainer* active,
-        std::vector<hand>* handlesOut)
+        std::vector<hand>* handlesOut,
+        bool* incompleteOut = NULL)
     {
         if (active == NULL || handlesOut == NULL)
         {
@@ -470,16 +663,26 @@
         }
 
         handlesOut->clear();
+        if (incompleteOut != NULL)
+        {
+            *incompleteOut = false;
+        }
         __try
         {
             int count = active->getNumThings();
-            if (count < 0 || count > 256)
+            if (count < 0)
             {
                 return false;
             }
 
-            handlesOut->reserve(static_cast<size_t>(count));
-            for (int index = 0; index < count; ++index)
+            const int scanCount = count > 256 ? 256 : count;
+            if (incompleteOut != NULL)
+            {
+                *incompleteOut = count > scanCount;
+            }
+
+            handlesOut->reserve(static_cast<size_t>(scanCount));
+            for (int index = 0; index < scanCount; ++index)
             {
                 RootObject* object = active->getThing(index);
                 if (object != NULL && object->getDataType() == CHARACTER)
@@ -1159,6 +1362,135 @@
         return -1;
     }
 
+    int FindMemberSnapshotIndex(
+        const SquadSnapshot& squad,
+        const HandleIdentity& identity)
+    {
+        for (size_t index = 0; index < squad.members.size(); ++index)
+        {
+            if (SameHandleIdentity(squad.members[index].identity, identity))
+            {
+                return static_cast<int>(index);
+            }
+        }
+        return -1;
+    }
+
+    int FindSquadSnapshotIndex(
+        const std::vector<SquadSnapshot>& squads,
+        const HandleIdentity& identity)
+    {
+        for (size_t index = 0; index < squads.size(); ++index)
+        {
+            if (SameHandleIdentity(squads[index].identity, identity))
+            {
+                return static_cast<int>(index);
+            }
+        }
+        return -1;
+    }
+
+    int FindAllSquadSnapshotIndex(const HandleIdentity& identity)
+    {
+        return FindSquadSnapshotIndex(g_allSquads.squads, identity);
+    }
+
+    bool TryFindAllSquadMemberIndices(
+        const HandleIdentity& squadIdentity,
+        const HandleIdentity& memberIdentity,
+        int* squadIndexOut,
+        int* memberIndexOut)
+    {
+        if (squadIndexOut == NULL || memberIndexOut == NULL)
+        {
+            return false;
+        }
+        *squadIndexOut = -1;
+        *memberIndexOut = -1;
+
+        const int squadIndex =
+            FindAllSquadSnapshotIndex(squadIdentity);
+        if (squadIndex < 0)
+        {
+            return false;
+        }
+        const int memberIndex = FindMemberSnapshotIndex(
+            g_allSquads.squads[squadIndex], memberIdentity);
+        if (memberIndex < 0)
+        {
+            return false;
+        }
+
+        *squadIndexOut = squadIndex;
+        *memberIndexOut = memberIndex;
+        return true;
+    }
+
+    bool TryCopyAllSquadMemberSnapshot(
+        const HandleIdentity& squadIdentity,
+        const HandleIdentity& memberIdentity,
+        MemberSnapshot* memberOut)
+    {
+        if (memberOut == NULL)
+        {
+            return false;
+        }
+        int squadIndex = -1;
+        int memberIndex = -1;
+        if (!TryFindAllSquadMemberIndices(
+                squadIdentity, memberIdentity,
+                &squadIndex, &memberIndex))
+        {
+            return false;
+        }
+        *memberOut =
+            g_allSquads.squads[squadIndex].members[memberIndex];
+        return true;
+    }
+
+    int FindSquadCollapseStateIndex(const HandleIdentity& identity)
+    {
+        for (size_t index = 0;
+             index < g_squadCollapseStates.size();
+             ++index)
+        {
+            if (SameHandleIdentity(
+                    g_squadCollapseStates[index].identity, identity))
+            {
+                return static_cast<int>(index);
+            }
+        }
+        return -1;
+    }
+
+    bool IsSquadCollapsed(const HandleIdentity& identity)
+    {
+        const int index = FindSquadCollapseStateIndex(identity);
+        return index >= 0 && g_squadCollapseStates[index].collapsed;
+    }
+
+    void SetSquadCollapsed(
+        const HandleIdentity& identity,
+        bool collapsed)
+    {
+        if (!identity.valid)
+        {
+            return;
+        }
+        int index = FindSquadCollapseStateIndex(identity);
+        if (index < 0)
+        {
+            if (g_squadCollapseStates.size() >= 256)
+            {
+                return;
+            }
+            g_squadCollapseStates.push_back(SquadCollapseState());
+            index = static_cast<int>(g_squadCollapseStates.size() - 1);
+            g_squadCollapseStates[index].identity = identity;
+        }
+        g_squadCollapseStates[index].collapsed = collapsed;
+    }
+
     int FindJobSlot(const MemberSnapshot& member, const JobRowSnapshot& job)
     {
         for (size_t slot = 0; slot < member.jobs.size(); ++slot)
@@ -1244,6 +1576,10 @@
         int cacheIndex = FindSquadCache(g_squad.identity);
         if (cacheIndex < 0)
         {
+            if (g_squadCaches.size() >= 256)
+            {
+                return;
+            }
             g_squadCaches.push_back(SquadCache());
             cacheIndex = static_cast<int>(g_squadCaches.size() - 1);
         }
@@ -1275,6 +1611,53 @@
         cache.verticalOffset = g_verticalOffset;
     }
 
+    // Cache the last complete value-only member rows for a non-current squad.
+    // Scroll offsets are properties of the selected legacy view and are left
+    // unchanged here.
+    void StoreSquadSnapshotCache(const SquadSnapshot& squad)
+    {
+        if (!squad.identity.valid || !squad.live)
+        {
+            return;
+        }
+        int cacheIndex = FindSquadCache(squad.identity);
+        if (cacheIndex < 0)
+        {
+            if (g_squadCaches.size() >= 256)
+            {
+                return;
+            }
+            g_squadCaches.push_back(SquadCache());
+            cacheIndex = static_cast<int>(g_squadCaches.size() - 1);
+        }
+
+        SquadCache& cache = g_squadCaches[cacheIndex];
+        const std::vector<MemberSnapshot> previous = cache.members;
+        cache.identity = squad.identity;
+        cache.name = squad.name;
+        cache.members.clear();
+        cache.members.reserve(squad.members.size());
+        for (size_t index = 0; index < squad.members.size(); ++index)
+        {
+            const MemberSnapshot& current = squad.members[index];
+            if (current.loaded && current.queueAvailable)
+            {
+                cache.members.push_back(current);
+                continue;
+            }
+            const int previousIndex =
+                FindMemberInList(previous, current.identity);
+            if (previousIndex >= 0)
+            {
+                cache.members.push_back(previous[previousIndex]);
+            }
+            else
+            {
+                cache.members.push_back(current);
+            }
+        }
+    }
+
     void StoreCurrentSquadScrollOffsets()
     {
         const int cacheIndex = FindSquadCache(g_squad.identity);
@@ -1303,7 +1686,9 @@
         next.handle = squadHandle;
 
         std::vector<hand> handles;
-        if (active == NULL || !TryGetOrderedMemberHandles(active, &handles))
+        bool memberListIncomplete = false;
+        if (active == NULL || !TryGetOrderedMemberHandles(
+                active, &handles, &memberListIncomplete))
         {
             const int cacheIndex = FindSquadCache(next.identity);
             if (cacheIndex >= 0)
@@ -1324,6 +1709,7 @@
         }
 
         next.live = true;
+        next.incomplete = memberListIncomplete;
         next.members.reserve(handles.size());
         for (size_t index = 0; index < handles.size(); ++index)
         {
@@ -1373,6 +1759,237 @@
         }
 
         *snapshotOut = next;
+        return true;
+    }
+
+    bool SameSquadSnapshot(
+        const SquadSnapshot& left,
+        const SquadSnapshot& right)
+    {
+        if (!SameHandleIdentity(left.identity, right.identity) ||
+            left.name != right.name ||
+            left.live != right.live ||
+            left.unavailable != right.unavailable ||
+            left.incomplete != right.incomplete ||
+            left.members.size() != right.members.size())
+        {
+            return false;
+        }
+        for (size_t index = 0; index < left.members.size(); ++index)
+        {
+            if (!SameMemberSnapshot(
+                    left.members[index], right.members[index]))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool SameAllSquadsSnapshot(
+        const AllSquadsSnapshot& left,
+        const AllSquadsSnapshot& right)
+    {
+        if (left.incomplete != right.incomplete ||
+            left.squads.size() != right.squads.size())
+        {
+            return false;
+        }
+        for (size_t index = 0; index < left.squads.size(); ++index)
+        {
+            if (!SameSquadSnapshot(
+                    left.squads[index], right.squads[index]))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    const MemberSnapshot* FindPreviousAllSquadMember(
+        const HandleIdentity& squadIdentity,
+        const HandleIdentity& memberIdentity)
+    {
+        const int squadIndex = FindSquadSnapshotIndex(
+            g_allSquads.squads, squadIdentity);
+        if (squadIndex >= 0)
+        {
+            const int memberIndex = FindMemberSnapshotIndex(
+                g_allSquads.squads[squadIndex], memberIdentity);
+            if (memberIndex >= 0)
+            {
+                return &g_allSquads.squads[squadIndex].members[memberIndex];
+            }
+        }
+        if (SameHandleIdentity(g_squad.identity, squadIdentity))
+        {
+            const int memberIndex = FindMemberSnapshotIndex(
+                g_squad, memberIdentity);
+            if (memberIndex >= 0)
+            {
+                return &g_squad.members[memberIndex];
+            }
+        }
+        return NULL;
+    }
+
+    // Materialize the value-only active-squad seeds into complete member and
+    // permanent-job snapshots. Engine objects are reacquired only for each
+    // bounded member read and are never stored in the result.
+    bool BuildAllActiveSquadsSnapshot(AllSquadsSnapshot* snapshotOut)
+    {
+        if (snapshotOut == NULL)
+        {
+            return false;
+        }
+
+        std::vector<ActiveSquadValueSeed> seeds;
+        bool rosterIncomplete = false;
+        if (!BuildActiveSquadValueSeeds(&seeds, &rosterIncomplete))
+        {
+            return false;
+        }
+
+        AllSquadsSnapshot next;
+        next.incomplete = rosterIncomplete;
+        next.squads.reserve(seeds.size());
+        for (size_t squadIndex = 0;
+             squadIndex < seeds.size();
+             ++squadIndex)
+        {
+            const ActiveSquadValueSeed& seed = seeds[squadIndex];
+            SquadSnapshot squad;
+            squad.identity = seed.identity;
+            squad.handle = RestoreHandleIdentity(seed.identity);
+            squad.name = seed.name;
+            squad.live = true;
+            squad.unavailable = false;
+            squad.incomplete = seed.incomplete;
+            squad.members.reserve(seed.members.size());
+
+            size_t unavailableMemberCount = 0;
+            for (size_t memberIndex = 0;
+                 memberIndex < seed.members.size();
+                 ++memberIndex)
+            {
+                const HandleIdentity& memberIdentity =
+                    seed.members[memberIndex];
+                const hand memberHandle =
+                    RestoreHandleIdentity(memberIdentity);
+                MemberSnapshot member;
+                if (!BuildMemberSnapshot(memberHandle, &member))
+                {
+                    MemberSnapshot cached;
+                    if (TryGetCachedMember(
+                            squad.identity, memberIdentity, &cached))
+                    {
+                        member = cached;
+                        member.handle = memberHandle;
+                        member.identity = memberIdentity;
+                        member.loaded = false;
+                        member.queueAvailable = false;
+                        member.condition = "Cached / unavailable";
+                    }
+                    else
+                    {
+                        member.handle = memberHandle;
+                        member.identity = memberIdentity;
+                        member.loaded = false;
+                        member.queueAvailable = false;
+                        member.jobs.clear();
+                        member.condition = "Unavailable";
+                    }
+                    ++unavailableMemberCount;
+                }
+
+                const MemberSnapshot* previous =
+                    FindPreviousAllSquadMember(
+                        squad.identity, member.identity);
+                if (previous != NULL)
+                {
+                    member.revision = SameMemberSnapshot(
+                        *previous, member) ?
+                        previous->revision : previous->revision + 1;
+                }
+                squad.members.push_back(member);
+            }
+            squad.unavailable = !squad.members.empty() &&
+                unavailableMemberCount == squad.members.size();
+            next.squads.push_back(squad);
+        }
+
+        *snapshotOut = next;
+        return true;
+    }
+
+    void PruneSquadCollapseStates(
+        const std::vector<SquadSnapshot>& squads)
+    {
+        std::vector<SquadCollapseState> retained;
+        retained.reserve(g_squadCollapseStates.size());
+        for (size_t index = 0;
+             index < g_squadCollapseStates.size();
+             ++index)
+        {
+            if (FindSquadSnapshotIndex(
+                    squads,
+                    g_squadCollapseStates[index].identity) >= 0)
+            {
+                retained.push_back(g_squadCollapseStates[index]);
+            }
+        }
+        g_squadCollapseStates.swap(retained);
+    }
+
+    void MarkAllSquadsSnapshotUnavailable(
+        AllSquadsSnapshot* snapshot)
+    {
+        if (snapshot == NULL)
+        {
+            return;
+        }
+        snapshot->incomplete = true;
+        for (size_t squadIndex = 0;
+             squadIndex < snapshot->squads.size();
+             ++squadIndex)
+        {
+            SquadSnapshot& squad = snapshot->squads[squadIndex];
+            squad.live = false;
+            squad.unavailable = true;
+            for (size_t memberIndex = 0;
+                 memberIndex < squad.members.size();
+                 ++memberIndex)
+            {
+                MemberSnapshot& member = squad.members[memberIndex];
+                member.loaded = false;
+                member.queueAvailable = false;
+                member.condition = "Cached / unavailable";
+                ++member.revision;
+            }
+        }
+    }
+
+    // Publish one coherent board. On a failed engine read, retain the last
+    // value-only board but mark every cached row read-only until a later
+    // refresh succeeds.
+    bool RefreshAllActiveSquadsSnapshot()
+    {
+        AllSquadsSnapshot next;
+        if (!BuildAllActiveSquadsSnapshot(&next))
+        {
+            MarkAllSquadsSnapshotUnavailable(&g_allSquads);
+            ++g_allSquads.revision;
+            return false;
+        }
+
+        next.revision = SameAllSquadsSnapshot(g_allSquads, next) ?
+            g_allSquads.revision : g_allSquads.revision + 1;
+        for (size_t index = 0; index < next.squads.size(); ++index)
+        {
+            StoreSquadSnapshotCache(next.squads[index]);
+        }
+        PruneSquadCollapseStates(next.squads);
+        g_allSquads = next;
         return true;
     }
 

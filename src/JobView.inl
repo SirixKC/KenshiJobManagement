@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "SquadGroups.inl"
+
     bool TryBindPortrait(const hand& member, MyGUI::ImageBox* image, bool force)
     {
         if (image == NULL)
@@ -199,12 +201,13 @@
         repaired.reserve(g_selectedJobs.size());
         for (size_t index = 0; index < g_selectedJobs.size(); ++index)
         {
-            const int memberIndex = FindMemberIndex(g_selectedJobs[index].member);
-            if (memberIndex < 0)
+            const MemberSnapshot* member = FindDisplayedMember(
+                g_selectedJobs[index].member);
+            if (member == NULL)
             {
                 continue;
             }
-            if (!g_squad.members[memberIndex].queueAvailable)
+            if (!member->queueAvailable)
             {
                 continue;
             }
@@ -212,9 +215,9 @@
             if (g_selectedJobs[index].job.taskToken == 0 &&
                 g_selectedJobs[index].lastSlot >= 0 &&
                 g_selectedJobs[index].lastSlot <
-                    static_cast<int>(g_squad.members[memberIndex].jobs.size()) &&
+                    static_cast<int>(member->jobs.size()) &&
                 SameJob(
-                    g_squad.members[memberIndex].jobs[g_selectedJobs[index].lastSlot],
+                    member->jobs[g_selectedJobs[index].lastSlot],
                     g_selectedJobs[index].job))
             {
                 slot = g_selectedJobs[index].lastSlot;
@@ -222,7 +225,7 @@
             else
             {
                 slot = FindJobSlot(
-                    g_squad.members[memberIndex],
+                    *member,
                     g_selectedJobs[index].job);
             }
             if (slot < 0)
@@ -230,7 +233,7 @@
                 continue;
             }
             SelectedJob selected = g_selectedJobs[index];
-            selected.job = g_squad.members[memberIndex].jobs[slot];
+            selected.job = member->jobs[slot];
             selected.lastSlot = slot;
             repaired.push_back(selected);
         }
@@ -252,7 +255,7 @@
         }
         g_selectedJobs.swap(repaired);
 
-        if (FindMemberIndex(g_selectionAnchorMember) < 0)
+        if (FindDisplayedMember(g_selectionAnchorMember) == NULL)
         {
             ResetHandleIdentity(&g_selectionAnchorMember);
             g_selectionAnchorSlot = -1;
@@ -277,18 +280,18 @@
         for (size_t memberIndex = 0; memberIndex < g_memberWidgets.size(); ++memberIndex)
         {
             MemberWidgets& widgets = g_memberWidgets[memberIndex];
-            if (memberIndex >= g_squad.members.size())
+            const MemberSnapshot* member = GetVisibleMember(memberIndex);
+            if (member == NULL)
             {
                 continue;
             }
-            const MemberSnapshot& member = g_squad.members[memberIndex];
             for (size_t slot = 0; slot < widgets.cards.size(); ++slot)
             {
-                if (slot < member.jobs.size() && widgets.cards[slot].card != NULL)
+                if (slot < member->jobs.size() && widgets.cards[slot].card != NULL)
                 {
                     const bool selected = IsSelectedJob(
-                        member.identity,
-                        member.jobs[slot],
+                        member->identity,
+                        member->jobs[slot],
                         static_cast<int>(slot));
                     widgets.cards[slot].card->setStateSelected(selected);
                     if (widgets.cards[slot].selectionMarker != NULL)
@@ -298,10 +301,10 @@
                     if (widgets.cards[slot].unavailableMarker != NULL)
                     {
                         const bool targetUnavailable =
-                            member.jobs[slot].hasTarget &&
+                            member->jobs[slot].hasTarget &&
                             IsStationDisplayJob(
-                                member.jobs[slot].taskType) &&
-                            !member.jobs[slot].targetAvailable;
+                                member->jobs[slot].taskType) &&
+                            !member->jobs[slot].targetAvailable;
                         widgets.cards[slot].unavailableMarker->setVisible(
                             targetUnavailable);
                     }
@@ -376,28 +379,35 @@
 
     void RebuildJobHighlightCache()
     {
-        // This index is built from the already captured SquadSnapshot.  Hover
+        // This index is built from the already captured all-squads snapshot. Hover
         // callbacks only compare cached group IDs and never inspect Kenshi's
         // live job queues.
         g_jobHighlightKeys.clear();
-        for (size_t memberIndex = 0; memberIndex < g_squad.members.size(); ++memberIndex)
+        for (size_t squadIndex = 0;
+             squadIndex < g_allSquads.squads.size(); ++squadIndex)
         {
-            const MemberSnapshot& member = g_squad.members[memberIndex];
-            for (size_t slot = 0; slot < member.jobs.size(); ++slot)
+            const SquadSnapshot& squad = g_allSquads.squads[squadIndex];
+            for (size_t memberIndex = 0;
+                 memberIndex < squad.members.size(); ++memberIndex)
             {
-                const JobHighlightKey key = MakeJobHighlightKey(member.jobs[slot]);
-                bool found = false;
-                for (size_t keyIndex = 0; keyIndex < g_jobHighlightKeys.size(); ++keyIndex)
+                const MemberSnapshot& member = squad.members[memberIndex];
+                for (size_t slot = 0; slot < member.jobs.size(); ++slot)
                 {
-                    if (SameJobHighlightKey(g_jobHighlightKeys[keyIndex], key))
+                    const JobHighlightKey key = MakeJobHighlightKey(member.jobs[slot]);
+                    bool found = false;
+                    for (size_t keyIndex = 0;
+                         keyIndex < g_jobHighlightKeys.size(); ++keyIndex)
                     {
-                        found = true;
-                        break;
+                        if (SameJobHighlightKey(g_jobHighlightKeys[keyIndex], key))
+                        {
+                            found = true;
+                            break;
+                        }
                     }
-                }
-                if (!found)
-                {
-                    g_jobHighlightKeys.push_back(key);
+                    if (!found)
+                    {
+                        g_jobHighlightKeys.push_back(key);
+                    }
                 }
             }
         }
@@ -447,17 +457,21 @@
         // one member changed. Refresh surviving cards so unchanged member
         // widgets never retain stale group IDs.
         const size_t memberCount = std::min(
-            g_memberWidgets.size(), g_squad.members.size());
+            g_memberWidgets.size(), g_visibleMemberBindings.size());
         for (size_t memberIndex = 0; memberIndex < memberCount; ++memberIndex)
         {
             MemberWidgets& widgets = g_memberWidgets[memberIndex];
-            const MemberSnapshot& member = g_squad.members[memberIndex];
+            const MemberSnapshot* member = GetVisibleMember(memberIndex);
+            if (member == NULL)
+            {
+                continue;
+            }
             const size_t cardCount = std::min(
-                widgets.cards.size(), member.jobs.size());
+                widgets.cards.size(), member->jobs.size());
             for (size_t slot = 0; slot < cardCount; ++slot)
             {
                 widgets.cards[slot].highlightGroup =
-                    FindJobHighlightGroup(member.jobs[slot]);
+                    FindJobHighlightGroup(member->jobs[slot]);
             }
         }
     }
@@ -827,17 +841,21 @@
     {
         bool targetUsedBySquadJob = false;
         const size_t memberCount = std::min(
-            g_memberWidgets.size(), g_squad.members.size());
+            g_memberWidgets.size(), g_visibleMemberBindings.size());
         for (size_t memberIndex = 0; memberIndex < memberCount; ++memberIndex)
         {
             MemberWidgets& widgets = g_memberWidgets[memberIndex];
-            const MemberSnapshot& member = g_squad.members[memberIndex];
+            const MemberSnapshot* member = GetVisibleMember(memberIndex);
+            if (member == NULL)
+            {
+                continue;
+            }
             const size_t cardCount = std::min(
-                widgets.cards.size(), member.jobs.size());
+                widgets.cards.size(), member->jobs.size());
             for (size_t slot = 0; slot < cardCount; ++slot)
             {
-                if (!IsStationDisplayJob(member.jobs[slot].taskType) ||
-                    !SameHandleIdentity(member.jobs[slot].target, target))
+                if (!IsStationDisplayJob(member->jobs[slot].taskType) ||
+                    !SameHandleIdentity(member->jobs[slot].target, target))
                 {
                     continue;
                 }
@@ -1101,11 +1119,12 @@
 
     void CreateCardWidgets(size_t memberIndex, MemberWidgets& widgets)
     {
-        if (memberIndex >= g_squad.members.size() || widgets.jobsRoot == NULL)
+        const MemberSnapshot* memberPointer = GetVisibleMember(memberIndex);
+        if (memberPointer == NULL || widgets.jobsRoot == NULL)
         {
             return;
         }
-        const MemberSnapshot& member = g_squad.members[memberIndex];
+        const MemberSnapshot& member = *memberPointer;
 
         if (member.jobs.empty())
         {
@@ -1396,12 +1415,16 @@
 
     void ApplyMemberWidgets(size_t memberIndex, bool forcePortrait)
     {
-        if (memberIndex >= g_squad.members.size() ||
-            memberIndex >= g_memberWidgets.size())
+        if (memberIndex >= g_memberWidgets.size())
         {
             return;
         }
-        MemberSnapshot& member = g_squad.members[memberIndex];
+        const MemberSnapshot* memberPointer = GetVisibleMember(memberIndex);
+        if (memberPointer == NULL)
+        {
+            return;
+        }
+        const MemberSnapshot& member = *memberPointer;
         MemberWidgets& widgets = g_memberWidgets[memberIndex];
 
         widgets.name->setCaption(member.name.c_str());
@@ -1441,13 +1464,19 @@
     void CreateMemberWidgets(size_t memberIndex)
     {
         if (g_memberCanvas == NULL || g_jobCanvas == NULL ||
-            memberIndex >= g_squad.members.size())
+            memberIndex >= g_visibleMemberBindings.size())
+        {
+            return;
+        }
+
+        const MemberSnapshot* member = GetVisibleMember(memberIndex);
+        if (member == NULL)
         {
             return;
         }
 
         MemberWidgets widgets;
-        const int y = static_cast<int>(memberIndex) * ROW_STRIDE;
+        const int y = g_visibleMemberBindings[memberIndex].rowTop;
         widgets.memberRoot = g_memberCanvas->createWidget<MyGUI::Widget>(
             "Kenshi_SelectionPanel",
             MyGUI::IntCoord(0, y, g_memberWidth, ROW_HEIGHT),
@@ -1549,11 +1578,11 @@
         widgets.clearButton->eventMouseButtonClick += MyGUI::newDelegate(OnClearClicked);
 
         int canvasWidth = g_jobWidth;
-        if (!g_squad.members[memberIndex].jobs.empty())
+        if (!member->jobs.empty())
         {
             canvasWidth = std::max(
                 g_jobWidth,
-                static_cast<int>(g_squad.members[memberIndex].jobs.size()) * CARD_STRIDE);
+                static_cast<int>(member->jobs.size()) * CARD_STRIDE);
         }
         widgets.jobsRoot = g_jobCanvas->createWidget<MyGUI::Widget>(
             "PanelEmpty",
@@ -1570,12 +1599,7 @@
 
     size_t GetMaximumJobCount()
     {
-        size_t maximum = 0;
-        for (size_t index = 0; index < g_squad.members.size(); ++index)
-        {
-            maximum = std::max(maximum, g_squad.members[index].jobs.size());
-        }
-        return maximum;
+        return GetDisplayedMaximumJobCount();
     }
 
     void DestroyPriorityLabels()
@@ -1641,8 +1665,7 @@
 
     void UpdateScrollRanges()
     {
-        const int contentHeight =
-            static_cast<int>(g_squad.members.size()) * ROW_STRIDE;
+        const int contentHeight = GetVisibleContentHeight();
         const int contentWidth =
             static_cast<int>(GetMaximumJobCount()) * CARD_STRIDE;
         const int canvasHeight = std::max(g_bodyHeight, contentHeight);
@@ -1714,14 +1737,120 @@
             }
         }
         g_memberWidgets.clear();
+        if (gui != NULL)
+        {
+            for (size_t index = 0; index < g_squadGroupWidgets.size(); ++index)
+            {
+                if (g_squadGroupWidgets[index].memberHeader != NULL)
+                {
+                    gui->destroyWidget(g_squadGroupWidgets[index].memberHeader);
+                }
+                if (g_squadGroupWidgets[index].jobHeader != NULL)
+                {
+                    gui->destroyWidget(g_squadGroupWidgets[index].jobHeader);
+                }
+            }
+        }
+        ResetSquadGroupViewState();
+    }
+
+    void CreateSquadGroupHeader(
+        size_t squadIndex,
+        int y,
+        int canvasWidth)
+    {
+        if (g_memberCanvas == NULL || g_jobCanvas == NULL ||
+            squadIndex >= g_allSquads.squads.size())
+        {
+            return;
+        }
+        const SquadSnapshot& squad = g_allSquads.squads[squadIndex];
+        const bool collapsed = IsSquadCollapsed(squad.identity);
+        const bool selected = SameHandleIdentity(
+            squad.identity, g_squad.identity);
+
+        SquadGroupWidgets group;
+        group.squad = squad.identity;
+        group.memberHeader = g_memberCanvas->createWidget<MyGUI::Button>(
+            "Kenshi_Button1",
+            MyGUI::IntCoord(0, y, g_memberWidth, SQUAD_GROUP_HEADER_HEIGHT),
+            MyGUI::Align::Left | MyGUI::Align::Top,
+            "KJM_SquadGroupHeader");
+        std::ostringstream caption;
+        caption << (collapsed ? "+  " : "-  ")
+                << (squad.name.empty() ? "Squad" : squad.name)
+                << "  |  " << squad.members.size();
+        group.memberHeader->setCaption(caption.str());
+        group.memberHeader->setTextAlign(MyGUI::Align::Left | MyGUI::Align::Center);
+        group.memberHeader->setFontHeight(17);
+        group.memberHeader->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        group.memberHeader->setStateSelected(selected);
+        group.memberHeader->setUserString(
+            "KJM_SquadGroup", IntegerString(squadIndex));
+        group.memberHeader->eventMouseButtonClick +=
+            MyGUI::newDelegate(OnSquadGroupToggle);
+
+        group.jobHeader = g_jobCanvas->createWidget<MyGUI::Widget>(
+            "WhiteSkin",
+            MyGUI::IntCoord(0, y, canvasWidth, SQUAD_GROUP_HEADER_HEIGHT),
+            MyGUI::Align::Left | MyGUI::Align::Top,
+            "KJM_SquadGroupJobHeader");
+        group.jobHeader->setColour(selected ?
+            MyGUI::Colour(0.42f, 0.30f, 0.08f) :
+            MyGUI::Colour(0.14f, 0.11f, 0.08f));
+        group.jobHeader->setAlpha(selected ? 0.96f : 0.82f);
+        group.jobHeader->setNeedMouseFocus(false);
+        MyGUI::TextBox* jobCaption =
+            group.jobHeader->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText_Small",
+                MyGUI::IntCoord(8, 0, std::max(80, g_jobWidth - 16),
+                                SQUAD_GROUP_HEADER_HEIGHT),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_SquadGroupJobCaption");
+        jobCaption->setCaption(selected ? "CURRENT SQUAD" : "");
+        jobCaption->setFontHeight(15);
+        jobCaption->setTextAlign(MyGUI::Align::Left | MyGUI::Align::Center);
+        jobCaption->setTextColour(MyGUI::Colour(1.0f, 0.91f, 0.62f));
+        jobCaption->setNeedMouseFocus(false);
+        g_squadGroupWidgets.push_back(group);
+        BindSquadMouseWheelTree(group.memberHeader);
+        BindSquadMouseWheelTree(group.jobHeader);
+    }
+
+    void BuildVisibleMemberBindings()
+    {
+        g_visibleMemberBindings.clear();
+        int y = 0;
+        for (size_t squadIndex = 0;
+             squadIndex < g_allSquads.squads.size(); ++squadIndex)
+        {
+            const SquadSnapshot& squad = g_allSquads.squads[squadIndex];
+            y += SQUAD_GROUP_HEADER_HEIGHT;
+            if (IsSquadCollapsed(squad.identity))
+            {
+                continue;
+            }
+            for (size_t memberIndex = 0;
+                 memberIndex < squad.members.size(); ++memberIndex)
+            {
+                VisibleMemberBinding binding;
+                binding.squad = squad.identity;
+                binding.member = squad.members[memberIndex].identity;
+                binding.rowTop = y;
+                g_visibleMemberBindings.push_back(binding);
+                y += ROW_STRIDE;
+            }
+        }
     }
 
     void RebuildSquadWidgets()
     {
+        CancelDrag();
         DestroyMemberWidgets();
+        BuildVisibleMemberBindings();
         const int contentHeight = std::max(
             g_bodyHeight,
-            static_cast<int>(g_squad.members.size()) * ROW_STRIDE);
+            GetVisibleContentHeight());
         const int contentWidth = std::max(
             g_jobWidth,
             static_cast<int>(GetMaximumJobCount()) * CARD_STRIDE);
@@ -1738,8 +1867,22 @@
             g_priorityCanvas->setSize(contentWidth, HEADER_HEIGHT);
         }
 
-        g_memberWidgets.reserve(g_squad.members.size());
-        for (size_t memberIndex = 0; memberIndex < g_squad.members.size(); ++memberIndex)
+        int y = 0;
+        for (size_t squadIndex = 0;
+             squadIndex < g_allSquads.squads.size(); ++squadIndex)
+        {
+            CreateSquadGroupHeader(squadIndex, y, contentWidth);
+            y += SQUAD_GROUP_HEADER_HEIGHT;
+            if (!IsSquadCollapsed(g_allSquads.squads[squadIndex].identity))
+            {
+                y += static_cast<int>(
+                    g_allSquads.squads[squadIndex].members.size()) * ROW_STRIDE;
+            }
+        }
+
+        g_memberWidgets.reserve(g_visibleMemberBindings.size());
+        for (size_t memberIndex = 0;
+             memberIndex < g_visibleMemberBindings.size(); ++memberIndex)
         {
             CreateMemberWidgets(memberIndex);
         }
@@ -1769,6 +1912,16 @@
 
     void UpdateSquadHeading()
     {
+        if (g_prioritizeCoreJobsButton != NULL)
+        {
+            const SquadSnapshot* displayedCurrent =
+                FindDisplayedSquad(g_squad.identity);
+            g_prioritizeCoreJobsButton->setEnabled(
+                g_squad.live && !g_squad.unavailable &&
+                !g_squad.incomplete && !g_squad.members.empty() &&
+                displayedCurrent != NULL && !displayedCurrent->incomplete &&
+                displayedCurrent->live && !displayedCurrent->unavailable);
+        }
         if (g_squadText != NULL)
         {
             std::ostringstream caption;
@@ -1782,18 +1935,26 @@
             {
                 caption << "  |  read-only snapshot";
             }
+            if (g_allSquads.squads.size() > 1)
+            {
+                caption << "  |  " << g_allSquads.squads.size() << " squads";
+            }
+            if (g_allSquads.incomplete)
+            {
+                caption << "  |  roster incomplete";
+            }
             g_squadText->setCaption(caption.str().c_str());
         }
 
         if (g_emptyText != NULL)
         {
-            if (g_squad.members.empty())
+            if (g_allSquads.squads.empty())
             {
                 g_emptyText->setVisible(true);
                 g_emptyText->setCaption(
                     g_squad.unavailable
-                        ? "The current squad is unavailable and has no session snapshot."
-                        : "The current squad has no job-manageable members.");
+                        ? "The active squads are unavailable and have no session snapshot."
+                        : "There are no active squads with job-manageable members.");
             }
             else
             {
@@ -1816,131 +1977,52 @@
             return false;
         }
 
-        SquadSnapshot next;
-        if (!BuildCurrentSquadSnapshot(&next))
+        SquadSnapshot nextCurrent;
+        if (!BuildCurrentSquadSnapshot(&nextCurrent))
         {
             SetStatus("Kenshi did not expose a current squad. No jobs were changed.");
             return false;
         }
 
-        const bool squadChanged =
-            !SameHandleIdentity(g_squad.identity, next.identity);
-        const bool structureChanged = !SameRosterStructure(g_squad, next);
-        bool highlightCacheChanged =
-            !g_jobHighlightCacheValid || squadChanged || structureChanged;
-        if (!highlightCacheChanged && !structureChanged)
-        {
-            for (size_t index = 0; index < next.members.size(); ++index)
-            {
-                if (!SameJobHighlightQueue(
-                        g_squad.members[index].jobs,
-                        next.members[index].jobs))
-                {
-                    highlightCacheChanged = true;
-                    break;
-                }
-            }
-        }
-        const bool headingChanged = squadChanged || structureChanged ||
-            g_squad.name != next.name || g_squad.live != next.live ||
-            g_squad.unavailable != next.unavailable;
-        bool anyMemberChanged = structureChanged;
-        bool queueCountChanged = structureChanged;
-        if (!structureChanged)
-        {
-            for (size_t index = 0; index < next.members.size(); ++index)
-            {
-                if (!SameMemberSnapshot(g_squad.members[index], next.members[index]))
-                {
-                    anyMemberChanged = true;
-                }
-                if (g_squad.members[index].jobs.size() !=
-                    next.members[index].jobs.size())
-                {
-                    queueCountChanged = true;
-                }
-            }
-        }
-        bool dragSourceChanged = structureChanged;
-        if (g_drag.armed && !dragSourceChanged &&
-            g_drag.memberIndex >= 0 &&
-            g_drag.memberIndex < static_cast<int>(g_squad.members.size()) &&
-            g_drag.memberIndex < static_cast<int>(next.members.size()))
-        {
-            dragSourceChanged = !SameMemberSnapshot(
-                g_squad.members[g_drag.memberIndex],
-                next.members[g_drag.memberIndex]);
-        }
-        if (g_drag.armed && dragSourceChanged)
+        const HandleIdentity previousCurrent = g_squad.identity;
+        const unsigned int previousBoardRevision = g_allSquads.revision;
+        const bool refreshed = RefreshAllActiveSquadsSnapshot();
+        const bool currentChanged = !SameHandleIdentity(
+            previousCurrent, nextCurrent.identity);
+        const bool boardChanged =
+            previousBoardRevision != g_allSquads.revision;
+        g_squad = nextCurrent;
+
+        if (g_drag.armed && (boardChanged || currentChanged))
         {
             CancelDrag();
-            SetStatus("The squad or queue changed during the drag. Review it and try again.");
-        }
-        if (squadChanged)
-        {
-            StoreCurrentSquadCache();
-            g_selectedJobs.clear();
-            ResetHandleIdentity(&g_selectionAnchorMember);
-            g_selectionAnchorSlot = -1;
-            g_horizontalOffset = 0;
-            g_verticalOffset = 0;
-            const int cacheIndex = FindSquadCache(next.identity);
-            if (cacheIndex >= 0)
-            {
-                g_horizontalOffset = g_squadCaches[cacheIndex].horizontalOffset;
-                g_verticalOffset = g_squadCaches[cacheIndex].verticalOffset;
-            }
+            SetStatus(
+                "A squad or queue changed during the drag. Review it and try again.");
         }
 
-        const size_t oldMaximum = GetMaximumJobCount();
-        g_squad = next;
-        if (force || anyMemberChanged || highlightCacheChanged)
+        const bool rebuild = force || boardChanged || currentChanged ||
+            g_memberWidgets.size() != g_visibleMemberBindings.size();
+        if (rebuild)
         {
             ClearJobHoverHighlight();
-        }
-        if (highlightCacheChanged)
-        {
             RebuildJobHighlightCache();
-        }
-        const bool selectionChanged = RepairSelection();
-
-        if (structureChanged || g_memberWidgets.size() != g_squad.members.size())
-        {
+            RepairSelection();
             RebuildSquadWidgets();
+            ApplyCachedJobHighlightGroups();
         }
         else
         {
-            for (size_t index = 0; index < g_squad.members.size(); ++index)
+            for (size_t index = 0;
+                 index < g_memberWidgets.size(); ++index)
             {
-                if (force ||
-                    g_memberWidgets[index].appliedRevision != g_squad.members[index].revision)
-                {
-                    ApplyMemberWidgets(index, force);
-                }
-                else if (g_squad.members[index].loaded &&
+                const MemberSnapshot* member = GetVisibleMember(index);
+                if (member != NULL && member->loaded &&
                     !g_memberWidgets[index].portraitBound)
                 {
                     ApplyPortrait(
-                        g_memberWidgets[index], g_squad.members[index], false);
+                        g_memberWidgets[index], *member, false);
                 }
             }
-            if (oldMaximum != GetMaximumJobCount())
-            {
-                RebuildPriorityLabels();
-            }
-            if (force || queueCountChanged)
-            {
-                UpdateScrollRanges();
-            }
-            if (force || selectionChanged)
-            {
-                ApplyCardSelectionStates();
-            }
-        }
-
-        if (highlightCacheChanged)
-        {
-            ApplyCachedJobHighlightGroups();
         }
 
         // Textures are registered before the first Squad refresh. Resolve all
@@ -1954,22 +2036,22 @@
             TryDrainPendingJobStationCategoriesGuarded();
         }
 
-        if (force || headingChanged)
-        {
-            UpdateSquadHeading();
-        }
-        if (g_squad.live &&
-            (force || squadChanged || structureChanged || anyMemberChanged))
+        UpdateSquadHeading();
+        if (g_squad.live && (force || boardChanged || currentChanged))
         {
             StoreCurrentSquadCache();
         }
-        if (g_stationScan.started &&
-            (squadChanged || structureChanged || anyMemberChanged))
+        if (g_stationScan.started && boardChanged)
         {
             // The Stations tab joins against copied queue snapshots. Rebuild
             // that read-only join after any observed member/queue change; the
             // The player-station target view can rebuild for this session.
             g_stationAssignmentsDirty = true;
         }
-        return true;
+        if (!refreshed)
+        {
+            SetStatus(
+                "The squad roster refresh failed. Cached rows are read-only until the next refresh.");
+        }
+        return refreshed || !g_allSquads.squads.empty();
     }

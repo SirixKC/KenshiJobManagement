@@ -39,6 +39,9 @@ REQUIRED_FILES = (
     "scripts/install.ps1",
     "src/KenshiJobManagement.cpp",
     "src/RuntimeAccess.inl",
+    "src/SquadGroups.inl",
+    "src/SquadPriority.inl",
+    "src/GeneralJobTransfer.inl",
     "src/JobView.inl",
     "src/JobActions.inl",
     "src/JobWindow.inl",
@@ -49,6 +52,8 @@ REQUIRED_FILES = (
     "src/HudButton.inl",
     "src/StationView.inl",
     "src/SquadSelector.inl",
+    "diagnostics/GeneralJobTransferProbe.md",
+    "diagnostics/evidence/2026-08-17-general-job-transfer-promotion.md",
     "diagnostics/evidence/2026-08-15-station-handle-resolution-success.md",
 )
 
@@ -162,7 +167,23 @@ SOURCE_TOKENS = (
     "OnMouseWheel(widget, relative)",
     "g_squadSelectorOffset - relative * 80",
     "g_squadSelectorCanvas->setPosition(-g_squadSelectorOffset, 0)",
-    "TryRefreshMemberByIdentity",
+    "RefreshAllActiveSquadsSnapshot",
+    "TryBuildFreshRosterMemberByIdentity",
+    "AllSquadsSnapshot",
+    "VisibleMemberBinding",
+    "SQUAD_GROUP_HEADER_HEIGHT = 30",
+    '"KJM_SquadGroupHeader"',
+    "SetSquadCollapsed(identity, !IsSquadCollapsed(identity))",
+    "g_squadGroupRebuildRequested = true",
+    '"Prioritize Core Jobs"',
+    "TryApplySquadPriority",
+    "TryCaptureGeneralJobQueue",
+    "TryTransferGeneralPermanentJob",
+    "SameGeneralJobQueue",
+    "SameGeneralJobRowStructure",
+    "GENERAL_TRANSFER_SOURCE_CHANGED_DUPLICATE_REMAINS",
+    "KJM_GENERAL_JOB_TRANSFER_PROBE",
+    "KJM_GENERAL_JOB_TRANSFER_VERIFIED",
     "SameQueue",
     "ACTION_REMOVE_SELECTED",
     "MODAL_CLEAR",
@@ -350,6 +371,9 @@ def validate_required_files(errors: list[str]) -> None:
         if not (ROOT / relative).is_file():
             fail(errors, f"Missing required file: {relative}")
 
+    if (ROOT / "mod/README.txt").exists():
+        fail(errors, "mod/README.txt is obsolete and must remain absent")
+
     # Role icons are intentionally small, opaque, project-style bitmaps. Keep
     # the package contract explicit without requiring Pillow in the validator.
     png_signature = b"\x89PNG\r\n\x1a\n"
@@ -451,6 +475,9 @@ def validate_source(errors: list[str]) -> None:
     source_paths = (
         "src/KenshiJobManagement.cpp",
         "src/RuntimeAccess.inl",
+        "src/SquadGroups.inl",
+        "src/SquadPriority.inl",
+        "src/GeneralJobTransfer.inl",
         "src/JobView.inl",
         "src/JobActions.inl",
         "src/JobWindow.inl",
@@ -479,6 +506,15 @@ def validate_source(errors: list[str]) -> None:
 
     if "std::thread" in source or "CreateThread" in source:
         fail(errors, "0.1 UI code must remain single-threaded; MyGUI is UI-thread only")
+
+    if "#define KJM_GENERAL_JOB_TRANSFER_VERIFIED" in source:
+        fail(errors, "General transfer release enablement belongs in the project configuration, not a source define")
+
+    project = read_text("KenshiJobManagement.vcxproj", errors)
+    if project.count("KJM_GENERAL_JOB_TRANSFER_VERIFIED") != 1:
+        fail(errors, "Release project must define KJM_GENERAL_JOB_TRANSFER_VERIFIED exactly once")
+    if "KJM_GENERAL_JOB_TRANSFER_PROBE" in project:
+        fail(errors, "Release project must not define the diagnostic general-transfer probe")
 
     for token in (
         "getOwnedBuildingsH",
@@ -512,7 +548,7 @@ def validate_source(errors: list[str]) -> None:
         fail(errors, "Engine pointer operations are not consistently guarded with SEH wrappers")
 
     for token in (
-        "TryRefreshMemberByIdentity(action.member, &fresh)",
+        "TryBuildFreshRosterMemberByIdentity(action.member, &fresh)",
         "SameQueue(fresh.jobs, action.sequence)",
         "FindJobSlot(fresh, candidate.selected.job)",
         "SameJob(fresh.jobs[liveSlot], candidate.selected.job)",
@@ -526,6 +562,12 @@ def validate_source(errors: list[str]) -> None:
         "SameStationQueuePrefix(before, after)",
         "TryValidateStationActionTargetIdentity(",
         "SameQueueWithExactJobRemoved(",
+        "SameGeneralJobQueue(request.sourceBefore, sourceLive)",
+        "SameGeneralJobQueue(request.destinationBefore, destinationLive)",
+        "BuildGeneralJobDestinationAfterInsertion(",
+        "TryRemoveGeneralJobAndVerify(",
+        "GENERAL_TRANSFER_SOURCE_CHANGED_DUPLICATE_REMAINS",
+        "SameSquadPriorityQueueStructure(",
     ):
         if token not in source:
             fail(errors, f"Exact queue revalidation is missing: {token}")
@@ -606,6 +648,11 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "deferred until after vanilla `updateUT`",
         "kjm-hud-icon.png",
         "compact single-row bottom squad selector",
+        "squad groups in Kenshi's exact raw active/nonempty vanilla `TAB` order",
+        "Prioritize Core Jobs",
+        "KJM_GENERAL_JOB_TRANSFER_PROBE",
+        "KJM_GENERAL_JOB_TRANSFER_VERIFIED",
+        "identity-only cross-member and cross-squad drag intent",
         "exact raw active/nonempty vanilla `TAB` order",
         "fresh validated `setCurrentPlatoon`",
         "independent horizontal overflow",
@@ -652,6 +699,13 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "KJM_HudJobManagerButton",
         "same live root/control still has the plugin's split rectangle",
         "Bottom Squad Jobs selector",
+        "Grouped multi-squad board",
+        "AllSquadsSnapshot",
+        "RefreshAllActiveSquadsSnapshot",
+        "Prioritize Core Jobs",
+        "KJM_GENERAL_JOB_TRANSFER_PROBE",
+        "KJM_GENERAL_JOB_TRANSFER_VERIFIED",
+        "Multiple selected jobs remain remove-only",
         "exact raw active/nonempty vanilla `TAB` order",
         "fresh validated `setCurrentPlatoon`",
         "independent horizontal overflow",
@@ -698,6 +752,12 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "original JOBS",
         "JM",
         "Bottom Squad Jobs selector",
+        "Probe-gated cross-member and cross-squad transfer",
+        "Current-squad core-job priority button",
+        "KJM_GENERAL_JOB_TRANSFER_PROBE",
+        "KJM_GENERAL_JOB_TRANSFER_VERIFIED",
+        "exact green line",
+        "Multiple selected jobs remain remove-only",
         "exact raw active/nonempty vanilla `TAB` order",
         "fresh validated `setCurrentPlatoon`",
         "independent horizontal overflow",
@@ -706,7 +766,7 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "exact selected highlight",
         "editable controls, cards, or jobs",
         "read-only unavailable snapshot",
-        "The current squad is unavailable",
+        "active squads are unavailable",
         "Global behavior cards and exact target verification",
         "Builder/Engineering, Medic",
         "!IsStationDisplayJob",

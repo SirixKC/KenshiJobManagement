@@ -58,7 +58,8 @@ If the ignored command files are missing, recreate them with these settings:
 - Compile flags: `/nologo /c /O2 /Oi /Gy /GL /MD /EHsc /W4`, with
   `WIN32_LEAN_AND_MEAN`, `NOMINMAX`, `BOOST_ALL_NO_LIB`,
   `BOOST_ERROR_CODE_HEADER_ONLY`, `NDEBUG`, `_CONSOLE`, `UNICODE`, and
-  `_UNICODE`.
+  `_UNICODE`. The verified Release build also defines
+  `KJM_GENERAL_JOB_TRANSFER_VERIFIED`.
 - Link flags: `/nologo /DLL /MACHINE:X64 /SUBSYSTEM:CONSOLE /LTCG
   /INCREMENTAL:NO /DEBUG /OPT:REF /OPT:ICF`.
 - Link libraries: `KenshiLib.lib MyGUIEngine_x64.lib OgreMain_x64.lib
@@ -109,3 +110,43 @@ Never retain a borrowed source pointer or release engine memory. Assigned natura
 resource nodes remain the explicit non-owned exception. The final station
 result remains capped at 2,048; the source ownership copy uses its separate
 8,192-record safety cap.
+
+## Multi-squad Squad Jobs and transfer safety
+
+The Squad Jobs tab publishes one value-only `AllSquadsSnapshot` in the exact
+raw active/nonempty vanilla `TAB` order. It excludes empty squads and
+`__DEAD__`. `g_squad` remains Kenshi's current squad and controls the selected
+group highlight, bottom selector, `TAB`, and `Prioritize Core Jobs` target.
+Squad headers collapse or expand only. Their MyGUI callback must defer the
+widget rebuild until after the callback returns.
+
+Visible member widgets bind through copied squad/member `HandleIdentity`
+values. Never use a visible row index as an engine identity. Reacquire a fresh
+active-roster snapshot before a non-current member mutation. A failed roster
+refresh may retain cached values only after every cached member is marked
+read-only. Cancel an armed drag before any grouped-board rebuild. Collapsed
+groups must not create member or job widgets.
+
+Same-member drops use verified `movePermajob`. A single cross-member MyGUI drop
+captures only copied identities, presentation sequences, the exact source slot,
+and the exact destination gap. On the next update tick, the deferred transaction
+must verify both active-roster identities, capture and verify both complete
+`GeneralJobQueueValue` snapshots, reject semantic duplicates, verify the native
+appended row or two-row companion bundle, position it, revalidate both sides,
+and remove the source last. Never retain `Tasker*`, `TaskData*`, or a borrowed
+queue pointer. Multiple selected jobs remain remove-only.
+
+General transfer passed its field probe. The tracked Release project defines
+`KJM_GENERAL_JOB_TRANSFER_VERIFIED`; `KJM_GENERAL_JOB_TRANSFER_PROBE` is only
+for a separate diagnostic build. Never define both. If transfer code changes or
+the disposable-save matrix in `docs/TESTING.md` fails, remove the verified
+Release define until the path is proven again. There is no compensating
+rollback. After an interrupted add or insertion, retain the verified
+destination copy, leave the source unchanged when possible, and require manual
+review. Do not weaken post-mutation verification to make a probe pass.
+
+`Prioritize Core Jobs` reorders existing roles only, in this order: Find and
+Rescue, Find and Put in Bed, Medic, Robotics, Engineering. It never adds a
+missing job. It targets only the current squad, validates stable member order,
+and verifies the complete queue after every native move. Stop the remaining
+batch on the first unverified result.

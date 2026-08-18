@@ -234,9 +234,34 @@ namespace
         std::string name;
         bool live;
         bool unavailable;
+        bool incomplete;
         std::vector<MemberSnapshot> members;
 
-        SquadSnapshot() : live(false), unavailable(false) {}
+        SquadSnapshot() : live(false), unavailable(false), incomplete(false) {}
+    };
+
+    // The Squad Jobs view can show every active player platoon at once. Keep
+    // that board separate from g_squad: g_squad remains Kenshi's current
+    // platoon and continues to drive existing actions until the view is
+    // migrated to identity-based bindings.
+    struct AllSquadsSnapshot
+    {
+        std::vector<SquadSnapshot> squads;
+        bool incomplete;
+        unsigned int revision;
+
+        AllSquadsSnapshot() : incomplete(false), revision(1) {}
+    };
+
+    // Collapse state is value-only and keyed by the squad handle identity.
+    // It can survive a board rebuild without retaining a borrowed Platoon or
+    // ActivePlatoon pointer.
+    struct SquadCollapseState
+    {
+        HandleIdentity identity;
+        bool collapsed;
+
+        SquadCollapseState() : collapsed(false) {}
     };
 
     struct SquadCache
@@ -439,6 +464,8 @@ namespace
     bool g_changingScroll = false;
 
     SquadSnapshot g_squad;
+    AllSquadsSnapshot g_allSquads;
+    std::vector<SquadCollapseState> g_squadCollapseStates;
     std::vector<SquadCache> g_squadCaches;
     std::vector<SquadSelectorEntry> g_squadSelectorEntries;
     bool g_squadSelectorIncomplete = false;
@@ -519,6 +546,8 @@ namespace
     void ProcessHudManagerButtonRequest();
 
 #include "RuntimeAccess.inl"
+#include "SquadPriority.inl"
+#include "GeneralJobTransfer.inl"
 #include "StationScanner.inl"
 #include "StationSettings.inl"
 #include "StationAssets.inl"

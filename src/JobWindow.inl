@@ -415,6 +415,7 @@
         g_statusText = NULL;
         g_emptyText = NULL;
         g_removeButton = NULL;
+        g_prioritizeCoreJobsButton = NULL;
         g_optionsButton = NULL;
         g_closeButton = NULL;
         g_verticalScroll = NULL;
@@ -481,6 +482,10 @@
         g_squadSelectorIncomplete = false;
         CancelPendingSquadSelectorSelection();
         g_squad = SquadSnapshot();
+        g_allSquads = AllSquadsSnapshot();
+        g_squadCollapseStates.clear();
+        ResetSquadGroupViewState();
+        ResetMultiSquadActions();
         g_drag = DragState();
         g_modal = ModalState();
         g_pendingAction = PendingAction();
@@ -696,9 +701,21 @@
             g_removeButton->setEnabled(false);
             g_removeButton->eventMouseButtonClick += MyGUI::newDelegate(OnRemoveClicked);
 
+            g_prioritizeCoreJobsButton =
+                g_squadTabRoot->createWidget<MyGUI::Button>(
+                    "Kenshi_Button1",
+                    MyGUI::IntCoord(PAD + 232, actionTop, 220, 40),
+                    MyGUI::Align::Left | MyGUI::Align::Bottom,
+                    "KJM_PrioritizeCoreJobs");
+            g_prioritizeCoreJobsButton->setCaption("Prioritize Core Jobs");
+            g_prioritizeCoreJobsButton->setFontHeight(14);
+            g_prioritizeCoreJobsButton->setTextAlign(MyGUI::Align::Center);
+            g_prioritizeCoreJobsButton->eventMouseButtonClick +=
+                MyGUI::newDelegate(OnPrioritizeCoreJobsClicked);
+
             g_optionsButton = client->createWidget<MyGUI::Button>(
                 "Kenshi_Button1",
-                MyGUI::IntCoord(PAD + 232, actionTop, 120, 40),
+                MyGUI::IntCoord(PAD + 464, actionTop, 120, 40),
                 MyGUI::Align::Left | MyGUI::Align::Bottom,
                 "KJM_Options");
             g_optionsButton->setCaption("Options");
@@ -717,9 +734,9 @@
             g_statusText = client->createWidget<MyGUI::TextBox>(
                 "Kenshi_TextboxStandardText_Small",
                 MyGUI::IntCoord(
-                    PAD + 364,
+                    PAD + 596,
                     actionTop,
-                    std::max(120, size.width - 2 * PAD - 364 - 132),
+                    std::max(120, size.width - 2 * PAD - 596 - 132),
                     40),
                 MyGUI::Align::Bottom | MyGUI::Align::HStretch,
                 "KJM_Status");
@@ -902,6 +919,7 @@
         }
         ProcessPendingSquadSelectorSelection();
         ProcessPendingAction();
+        TickMultiSquadActions();
         // Squad-card artwork is hidden while Stations is active. Do not pair
         // its separate live-building lookup with every scanner lookup; pending
         // artwork resumes when Squad Jobs is shown or the station pass ends.
