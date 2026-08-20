@@ -17,6 +17,18 @@ The test terms below are intentional:
 - `Remove Selected` and drop-to-remove are immediate, irreversible actions with
   no prompt and no undo. `Clear Queue` is the only queue removal with a
   Yes/No/Esc review modal.
+- **recipient** means a member that receives a paste or healing action. The
+  recipient set starts empty. Plain portrait clicks select one person;
+  Ctrl-click toggles a person. Plain bottom squad buttons switch the current
+  squad and select its whole roster; Ctrl-click toggles a whole squad without
+  switching. Squad headers only collapse or expand.
+- **batch clipboard** means the value-only Ctrl+C snapshot of selected jobs,
+  exact targets, source presentation order, and board order. Ctrl+V appends it
+  to each selected recipient, skips semantic duplicates, and clears it when
+  the manager closes. A multi-selected drag appends to one non-source
+  recipient and removes source rows only after verified destination changes.
+- **toast** means the large, nonblocking result message shown for about four
+  seconds after a batch action.
 - **station** means one displayed world building/node card. A short card click
   opens its centered detail modal; Stations has no drag-to-transfer action.
 - **station view incomplete** means the card grid is still resolving copied
@@ -49,6 +61,12 @@ The test terms below are intentional:
   manager.
 - Record the current station-category Options preference. On a clean
   installation, verify the documented station-category defaults.
+- Record the appearance setting. A clean installation must start in Vanilla
+  light mode. Keep a screenshot of the manager in both Vanilla mode and Dark
+  UI mode for comparison.
+- Prepare at least one Wheat Farm XL, one Hemp Farm L, and one Rock Carrot
+  hydroponics station when the save or installed mods provide them. Record
+  their FCS/building class and the category shown by the manager.
 
 ### Native HUD JOBS entry
 
@@ -80,17 +98,22 @@ The test terms below are intentional:
 4. Record the pause state and speed immediately before opening the manager.
 5. Press `Ctrl+J`. The native full-screen grouped multi-squad manager should appear
    once. It must not open a one-character popup.
-   Confirm the primary backdrop is fully opaque and member rows, job cards,
-   controls, portraits, and text stay fully opaque.
+   Confirm the default Vanilla appearance uses a warm, light Kenshi-style
+   backdrop with dark readable text. Member rows, job cards, controls,
+   portraits, and text stay fully opaque.
    With enough members and jobs to require both scrollbars, use the wheel over
    portraits, member text, job cards, Jobs ON/OFF, Clear Queue, blank panels,
    headers, action buttons, and both scrollbar regions. Plain wheel input must
-   move only the member/job rows vertically. Shift+wheel must move only job
-   cards and priority headers horizontally. Confirm both directions clamp at
-   their ends, no control activates, and the game camera never zooms.
+   move only the member/job rows vertically. One physical wheel tick must move
+   only one small normalized step; it must not jump to the top or bottom.
+   Shift+wheel must move only job cards and priority headers horizontally.
+   Confirm both directions clamp at their ends, no control activates, and the
+   game camera never zooms.
    Hold Ctrl and move the pointer across several job cards. The rendered
    pointer must follow continuously. Ctrl-click several cards and confirm each
-   click toggles only the intended card while earlier selections remain.
+   click toggles only the intended card while earlier selections remain. The
+   recipient set must still be empty: job selection does not implicitly select
+   recipients.
    Repeat the pointer movement with Mouse3 held because it can share Kenshi's
    native mouse-rotate command. The camera must remain still and the pointer
    must not freeze, jump, or wait for a click before it updates.
@@ -159,11 +182,12 @@ The test terms below are intentional:
     disabled, while the member's independent `Jobs: ON`/`Jobs: OFF` toggle stays
     available. A queue that cannot be read displays `Queue unavailable
     (read-only)`.
-12. Confirm the bottom controls include `Remove Selected (N)`, `Prioritize Core
-    Jobs`, `Options`, and `Close`; there is no persistent instruction/current-squad footer and no
-    manual Refresh button. Trigger one safe validation failure and confirm its
-    actionable status still appears. Live changes must arrive from the
-    incremental checks.
+12. Confirm the bottom controls include `Remove Selected (N)`, `Add Healing
+    Jobs...`, `Prioritize Healing`, `Options`, and `Close`; there is no
+    persistent instruction/current-squad footer and no manual Refresh button.
+    Trigger one safe validation failure and confirm its actionable toast/status
+    appears without blocking input and fades after about four seconds. Live
+    changes must arrive from the incremental checks.
 13. If a malformed or stress-test queue exceeds 64 permanent jobs, confirm the
     manager shows only the first 64 with `Queue exceeds safety limit
     (read-only)` and disables all edits for that member.
@@ -177,7 +201,7 @@ The test terms below are intentional:
 ## Global behavior cards and exact target verification
 
 Use a disposable save with loaded members who have Builder/Engineering, Medic,
-Robotics, Rescue, and Find-and-put-in-bed permanent jobs. Include the live
+Robotics, Rescue, Splinting, and Find-and-put-in-bed permanent jobs. Include the live
 `FIND_AND_RESCUE_IF_THERES_BEDS` Rescue wrapper when Kenshi creates it. Give
 the global rows different stored subjects, including one subject that is
 unavailable if the save permits it. The TaskType-to-icon mappings are:
@@ -226,34 +250,42 @@ nonempty squads to exceed the visible strip when possible.
    buttons with the raw vanilla active-platoon list. It must preserve the exact raw active/nonempty vanilla `TAB` order and show only nonempty player squads,
    and omit empty entries and `__DEAD__`. It must not alphabetize or add a
    synthetic squad.
-2. Confirm exactly the current squad has the exact selected highlight.
-   Click another button and verify that the click first queues its value
-   identity; after the
-   update, a fresh validated `setCurrentPlatoon` selects that squad and the
-   member rows and highlight agree. No queue mutation or intermediate pointer
-   state may be visible.
-   All other squad groups must remain displayed; selection changes only the
-   current highlight and the target of `Prioritize Core Jobs`.
-3. Remove or empty the clicked squad before its queued update, or cause a load
+2. Confirm exactly the current squad has the exact selected highlight and that
+   no recipient is selected at startup. Click a portrait with no modifier and
+   confirm only that person becomes a recipient. Ctrl-click another portrait
+   and confirm it toggles that person while preserving the first recipient.
+   Click the first portrait again without Ctrl and confirm the selection resets
+   to only that person. Do not use Shift for range selection.
+3. Click another bottom squad button without Ctrl. Verify that it queues only
+   its value identity, then a fresh validated `setCurrentPlatoon` selects that
+   squad and selects every member of that squad as recipients. The member rows
+   and current highlight must agree; no queue mutation or intermediate pointer
+   state may be visible. All other squad groups remain displayed.
+4. Ctrl-click a different bottom squad button. Confirm that its complete roster
+   is added to the recipient set without switching the current squad. Ctrl-click
+   it again and confirm that whole squad is removed from the recipient set.
+   Confirm recipient markers are visually distinct from the current-squad
+   highlight and the selector caption reports the recipient count.
+5. Remove or empty the clicked squad before its queued update, or cause a load
    transition. The fresh validation must reject it, leave the current squad
    unchanged, and show a safe unavailable status. Reopen/reset the manager and
    confirm no stale `Platoon` or `ActivePlatoon` pointer is used.
-4. Force a direct selector click or observed native `TAB` change to complete,
+6. Force a direct selector click or observed native `TAB` change to complete,
    then make the following job snapshot read fail. Confirm the manager clears
    the prior member/job widgets before publishing the new identity: no old
    editable controls, cards, or jobs may remain. The new view must be a
    read-only unavailable snapshot. The active squads are unavailable until a
    fresh safe roster read succeeds; test both the click and native-`TAB` paths.
-5. Add enough squads to overflow the strip. Use its scrollbar and confirm only
+7. Add enough squads to overflow the strip. Use its scrollbar and confirm only
    the selector moves horizontally; this independent horizontal overflow must
    leave member-row vertical and job-column horizontal offsets unchanged.
    Confirm both ends clamp without blank or
    duplicated buttons.
-6. Move the pointer over the selector strip. Plain wheel over the selector strip
+8. Move the pointer over the selector strip. Plain wheel over the selector strip
    must still scroll the member rows and must not move the strip. Hold Shift and
    wheel: confirm only the strip scrolls, the member rows do not move, no squad
    button activates, and both directions clamp at their ends.
-7. Press `TAB` on the ordinary manager. Confirm Kenshi's native cycle runs once
+9. Press `TAB` on the ordinary manager. Confirm Kenshi's native cycle runs once
    and the selector highlight follows after the native update. A held key must
    not double-cycle. Put `__DEAD__` between two live squads and confirm it is
    skipped and never appears in the selector. Options and Clear Queue/detail
@@ -261,15 +293,15 @@ nonempty squads to exceed the visible strip when possible.
 
 ## Options and station categories
 
-`Options` controls one global set of station-category visibility preferences.
-It does not filter Squad Jobs or member stats.
+`Options` controls one global set of station-category visibility preferences and
+the persistent appearance mode. It does not filter Squad Jobs or member stats.
 
 1. Open `Options` from the main manager. Confirm the modal is wider than the
-   old stat-filter layout and contains only `STATION CATEGORY FILTERS`, the
-   nine broad category buttons, `Reset Default`, and `Close`. Confirm the help
-   text says that category filters apply only to Stations and Squad Jobs shows
-   every permanent job while selecting each member's top three supported base
-   stats.
+   old stat-filter layout and contains `STATION CATEGORY FILTERS`, the nine
+   broad category buttons, `Dark UI friendly font colors`, `Reset Default`,
+   and `Close`. Confirm the help text says that category filters apply only to
+   Stations and Squad Jobs shows every permanent job while selecting each
+   member's top three supported base stats.
 2. Move the mouse over a category button and use the wheel. Confirm wheel
    input reaches the shared Options scroll view and does not move the game
    camera. Repeat at a low resolution if possible.
@@ -282,12 +314,18 @@ It does not filter Squad Jobs or member stats.
    qualifying stat.
 5. Press `TAB` while Options is open. The modal must block Kenshi's
    current-squad cycling until it closes.
-6. If `settings.ini` cannot be written, confirm the current station display
-   still applies and the manager reports a station-category settings failure.
+6. Toggle `Dark UI friendly font colors` on. Confirm the open manager changes
+   immediately to the existing dark panel and light text colors. Toggle it off
+   and confirm the warm light background and dark text return immediately.
+   Close and reopen the manager in each mode; the setting must persist. If
+   `settings.ini` cannot be written, confirm the current display still applies
+   and the manager reports an Options settings failure.
 7. Save and reload the game. Confirm the category choices remain. Reinstall
    the same package and apply an update without deleting settings; confirm the
    choices remain after both operations.
-8. Press `Reset Default` and record the documented station-category defaults.
+8. Press `Reset Default` and record the documented station-category defaults
+   and Vanilla light appearance default. Confirm the next open uses those
+   defaults.
 
 ## Stations tab: player-station card grid and assignment detail
 
@@ -330,7 +368,15 @@ can be checked with a second save or rename mod.
    reopen the manager, and reload the save; confirm the documented collapse
    preference persists. Within every expanded category, unassigned cards come
    first, then exact names sort case-insensitively alphabetically.
-5. Confirm each card shows the exact station name, including a rename-mod name,
+5. Test farming classification with a save or mod set that provides Wheat Farm
+   XL, Hemp Farm L, and Rock Carrot hydroponics. Confirm all three appear under
+   Farming when that category is enabled. Confirm the result is unchanged by
+   their display names. If a modded production record is available, confirm it
+   is classified as Farming only when its `UseableStuff::getStatUsed()` is
+   `STAT_FARMING`; a generic default task must not be enough. Confirm a true
+   `BCTYPE_FARM` record stays Farming even when a later function label would
+   otherwise classify it as storage or crafting.
+6. Confirm each card shows the exact station name, including a rename-mod name,
    a translucent stable category/subtype icon, the number of unique assigned
    people or a large red `X`, and a red status only when the station cannot work.
    Confirm a usable unassigned station has a thin yellow outline. A recent blue
@@ -346,14 +392,14 @@ can be checked with a second save or rename mod.
    steel bars, copper alloy plates, electronics, crossbows, and skeleton limbs
    use stable subtype icons. Renaming one must not change its icon; unknown or
    modded identities fall back to the broad category icon.
-6. Disable and re-enable station categories in `Options`. Confirm category
+7. Disable and re-enable station categories in `Options`. Confirm category
    filters rebuild only the display, while Squad Jobs remains complete.
    Confirm the category and unassigned counts update with the visible filtered
    cards. Enable `Training` and `Defense`; confirm a player-owned training dummy
    appears under Training and a player-owned double-barrel harpoon turret appears
    under Defense without any per-skill setting. Restore the documented defaults
    (Crafting, Refining, Farming, Mining, Research, Other / Unclassified).
-7. Give loaded members the generic Engineer, Medic, Robotics, and Rescue jobs.
+8. Give loaded members the generic Engineer, Medic, Robotics, and Rescue jobs.
    Confirm all four remain visible on Squad Jobs and count in each worker's
    total jobs, but none creates a Stations card or assigned person. If the same
    target also has a station-specific job, only that station-specific job is
@@ -517,10 +563,11 @@ index semantics from one test.
 
 ## Probe-gated cross-member and cross-squad transfer
 
-The Release project defines `KJM_GENERAL_JOB_TRANSFER_VERIFIED` after successful
-live probe promotion. Use a fresh disposable-save backup for every regression
-run. Define `KJM_GENERAL_JOB_TRANSFER_PROBE` only in a separate diagnostic
-build when detailed result logging is required; never define both switches.
+The field-test project defines `KJM_GENERAL_JOB_TRANSFER_PROBE` and
+`KJM_JOB_BATCH_ACTIONS_PROBE`. It must not define
+`KJM_GENERAL_JOB_TRANSFER_VERIFIED` or a batch verified macro. Use a fresh
+disposable-save backup for every regression run. Promote either path only after
+the complete matrix passes.
 
 1. Put source and destination members in the same squad. Give the source three
    distinct jobs and the destination two. Drag the source middle job to every
@@ -550,36 +597,96 @@ build when detailed result logging is required; never define both switches.
    destination copy remains for manual review, and the source stays unchanged
    unless an exact source removal had already succeeded. Attach the result code
    and before/after structural captures.
-9. Ctrl-select two or more cards and drag. It must remain remove-only: another
-   member row must never become a transfer target. Drop on Remove Selected and
-   confirm the existing immediate batch-removal behavior.
-   Multiple selected jobs remain remove-only in every squad.
-10. Save and reload after every successful case. Confirm the source removal,
+9. Save and reload after every successful case. Confirm the source removal,
     destination insertion, and any native companion row persist exactly.
 
 If any job family, failure, partial-copy, same-squad, or cross-squad case above
-fails, remove `KJM_GENERAL_JOB_TRANSFER_VERIFIED` from the Release project until
-the regression is fixed and proven again.
+fails, keep the corresponding probe macro enabled and keep the verified macro
+absent until the regression is fixed and proven.
 
-## Current-squad core-job priority button
+## Batch clipboard and multi-recipient paste
 
-1. In the current squad, give several members existing Find and Rescue, Find
-   and Put in Bed, Medic, Robotics, and Engineering rows in mixed order with
-   unrelated jobs between them. Leave at least one role missing on each member.
-2. Click `Prioritize Core Jobs`. Confirm each member's existing core rows move
-   to the top in exactly that order and all unrelated rows retain their relative
-   order. Missing roles must not be created. Duplicate rows inside one role
-   family must retain their original relative order.
-3. Confirm the action affects only the vanilla current squad. Switch current
-   squad with the bottom selector and with `TAB`, then repeat and confirm the
-   highlighted group is the only target.
-4. After every native move, compare the complete manager and vanilla queues.
-   Force a queue or member-order change during an instrumented run and confirm
-   post-move verification stops the remaining batch and reports the partial
-   result. There is no undo.
-5. Save and reload. Confirm the verified order persists.
+Use a disposable save with at least three members across two squads. Give the
+source members jobs with distinct targets, duplicate semantic roles, and when
+possible an automatic-machine primary/companion pair.
 
-## Cross-member multi-select and drop-to-remove
+1. Select several job cards in board order with Ctrl-click, including jobs from
+   different members and squads. Press Ctrl+C. Confirm the status/toast reports
+   the count and the captured clipboard remains value-only: exact task data,
+   exact targets, source slots, presentation sequences, and board order. Change
+   the source queue and refresh the board. Confirm the clipboard does not hold
+   a live queue pointer and still represents the original capture.
+2. With no recipients selected, press Ctrl+V. Confirm it is a safe no-op with a
+   toast. Select one portrait and press Ctrl+V. Confirm jobs append at the end
+   of that member's queue in captured board order and preserve exact targets.
+3. Select two people with Ctrl-click portraits and press Ctrl+V. Confirm each
+   recipient receives the same ordered batch independently. Confirm the source
+   queue is unchanged by paste.
+4. Paste onto a recipient that already owns one selected semantic job. Confirm
+   that duplicate is skipped, other jobs are attempted, and the toast reports
+   added/skipped/failed counts. Repeat with exact same task and target but a
+   different visible name, and with same visible name but a different target;
+   only semantic duplicates are skipped.
+5. Change a recipient queue after capture and before paste. Confirm fresh
+   identity and full-queue validation stops the affected recipient safely,
+   does not claim later rows were added, and leaves verified earlier changes
+   intact. Repeat with a stale source and with a load transition.
+6. Press Ctrl+C again with a different selection. Confirm it replaces the old
+   clipboard. Close the manager and reopen it; Ctrl+V must report that the
+   clipboard is empty. Reset/load a new world and confirm no old identity or
+   target survives.
+7. Save and reload after successful paste. Confirm all appended rows and exact
+   targets persist in the vanilla job panel and the manager.
+
+## Multi-selected drag append
+
+1. Select two or more jobs from one or more source members. Drag a selected card
+   onto one visible non-source member. Confirm the destination highlight means
+   append, not an insertion gap, and the selected jobs append in board order.
+2. Confirm source rows are removed only after all destination rows and native
+   companion bundles are verified. Confirm unrelated destination rows retain
+   their order.
+3. Attempt a drop onto a source member. Confirm the operation is rejected with
+   a toast and neither queue changes. Attempt a drop where any selected job is
+   already owned by the destination. Confirm the whole drag is rejected before
+   mutation; no partial move is allowed.
+4. Collapse or reorder unrelated squads between drag start and the deferred
+   update. Confirm copied identities, not visible row indexes, drive the action.
+   Unload or remove a source/destination member and confirm the action fails
+   closed without dereferencing a stale pointer.
+5. Force an append, companion insertion, or post-mutation verification failure
+   in the probe build. Confirm the action stops at the first failure, keeps any
+   verified destination copy for manual review, and never performs an
+   unverified source removal. There is no compensating rollback.
+6. Save and reload after a successful move. Confirm source removal and
+   destination append persist exactly.
+
+## Healing batch actions
+
+1. Use a disposable save with at least two selected recipients. Give each a
+   different mix of missing and existing Rescue, Put in Bed, Medic, Robotics,
+   Splinting, and Engineering jobs, plus unrelated jobs. Select recipients with
+   portraits and with whole-squad bottom buttons. Confirm both selection paths
+   target the same set.
+2. Click `Add Healing Jobs...`. Confirm it adds only missing Rescue, Put in Bed,
+   Medic, Robotics, and Splinting jobs. Existing semantic duplicates remain
+   single rows. Confirm the resulting priority order is Rescue, Put in Bed,
+   Medic, Robotics, Splinting, Engineering, then unrelated jobs. Preserve the
+   original order within each role family and keep exact targets as required by
+   the native role.
+3. Click `Prioritize Healing` with the same recipients. Confirm it makes no
+   new rows and produces the same role order. Remove one role, click
+   `Prioritize Healing` again, and confirm the missing role remains missing.
+4. Clear the recipient set using portrait toggles and squad Ctrl-clicks. Click
+   either healing button and confirm a no-op toast; no current-squad fallback
+   is permitted. Switch the current squad without selecting recipients and
+   repeat to confirm the action still does nothing.
+5. Change one recipient's queue or membership during a probe batch. Confirm
+   fresh roster and full-queue verification stops the batch at the first
+   failure, reports the partial result, and never claims later recipients were
+   processed. Save/reload after a successful action and compare with vanilla.
+
+## Cross-member multi-select removal
 
 These operations are immediate and irreversible. Make a fresh disposable-save
 backup first. There is no prompt and no undo.
@@ -612,6 +719,16 @@ backup.
    still have no prompt and no undo.
 9. Save, reload, and confirm the partial or complete result reported by the
    manager.
+
+## Deferred imported-engineering invalidity report
+
+Do not treat this build as fixing the occasional red Engineering row after a
+save import. The report was not reproducible across all Engineering jobs, so
+the implementation intentionally leaves that issue unchanged. When a player
+can reproduce it, record the imported save, exact Engineering task type,
+stored target, target availability, source queue order, and whether
+`Prioritize Healing` also fails. Add that evidence before changing the
+engineering validation rule.
 
 ## Live target-unavailable versus unloaded/cached read-only state
 

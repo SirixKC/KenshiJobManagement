@@ -12,6 +12,29 @@
         }
     }
 
+    void ShowToast(const std::string& message)
+    {
+        if (g_toastText == NULL || message.empty())
+        {
+            return;
+        }
+        g_toastText->setCaption(message.c_str());
+        g_toastText->setVisible(true);
+        g_toastShownTick = GetTickCount();
+    }
+
+    void TickToast(DWORD now)
+    {
+        if (g_toastText != NULL && g_toastText->getVisible() &&
+            g_toastShownTick != 0 &&
+            HasElapsed(now, g_toastShownTick, TOAST_DURATION_MS))
+        {
+            g_toastText->setVisible(false);
+            g_toastText->setCaption("");
+            g_toastShownTick = 0;
+        }
+    }
+
     // Keep the player-station and assignment projection fail-closed. Ownership
     // records are copied as scalar POD, and exact queue targets are resolved
     // from loaded player queues; no borrowed or live engine pointer is cached.
@@ -413,9 +436,12 @@
         g_priorityCanvas = NULL;
         g_squadText = NULL;
         g_statusText = NULL;
+        g_background = NULL;
+        g_toastText = NULL;
         g_emptyText = NULL;
         g_removeButton = NULL;
         g_prioritizeCoreJobsButton = NULL;
+        g_addHealingJobsButton = NULL;
         g_optionsButton = NULL;
         g_closeButton = NULL;
         g_verticalScroll = NULL;
@@ -477,6 +503,8 @@
         g_jobHighlightCacheValid = false;
         g_hoveredJobHighlightGroup = -1;
         g_selectedJobs.clear();
+        ResetRecipientSelection();
+        ClearJobBatchClipboard();
         g_squadCaches.clear();
         g_squadSelectorEntries.clear();
         g_squadSelectorIncomplete = false;
@@ -510,6 +538,9 @@
         g_stationTabActive = false;
         g_settingsWriteFailed = false;
         g_escapeWasDown = false;
+        g_copyHotkeyWasDown = false;
+        g_pasteHotkeyWasDown = false;
+        g_toastShownTick = 0;
         g_squadCycleObserved = false;
         g_lastDragTick = 0;
     }
@@ -528,6 +559,7 @@
         }
 
         LoadStationCategorySettings();
+        LoadThemePaletteSettings();
         if (!TryCaptureAndPauseGame())
         {
             ErrorLog("[KenshiJobManagement] Could not acquire Kenshi's native pause state.");
@@ -560,16 +592,16 @@
                 nativeBody->setAlpha(0.0f);
             }
             const MyGUI::IntSize size = client->getSize();
-            MyGUI::Widget* background = client->createWidget<MyGUI::Widget>(
+            g_background = client->createWidget<MyGUI::Widget>(
                 "WhiteSkin",
                 MyGUI::IntCoord(0, 0, size.width, size.height),
                 MyGUI::Align::Stretch,
                 "KJM_Background");
-            background->setColour(MyGUI::Colour(0.105f, 0.085f, 0.065f));
+            TagThemeBackground(g_background);
             // Keep the manager fully opaque. The game world showing through
             // reduced contrast for portraits, station art, and small labels.
-            background->setAlpha(1.0f);
-            background->setNeedMouseFocus(true);
+            g_background->setAlpha(1.0f);
+            g_background->setNeedMouseFocus(true);
 
             g_squadTabRoot = client->createWidget<MyGUI::Widget>(
                 "PanelEmpty",
@@ -601,6 +633,7 @@
             g_squadText->setCaption("Current squad");
             g_squadText->setTextAlign(MyGUI::Align::Center);
             g_squadText->setNeedMouseFocus(false);
+            TagThemeStandardText(g_squadText);
 
             MyGUI::TextBox* memberHeader = g_squadTabRoot->createWidget<MyGUI::TextBox>(
                 "Kenshi_TextboxStandardText_Small",
@@ -610,6 +643,7 @@
             memberHeader->setCaption("SQUAD MEMBER  |  TOP STATS");
             memberHeader->setTextAlign(MyGUI::Align::Center);
             memberHeader->setNeedMouseFocus(false);
+            TagThemeStandardText(memberHeader);
 
             g_priorityViewport = g_squadTabRoot->createWidget<MyGUI::Widget>(
                 "PanelEmpty",
@@ -655,6 +689,7 @@
             g_emptyText->setTextAlign(MyGUI::Align::Center);
             g_emptyText->setNeedMouseFocus(false);
             g_emptyText->setVisible(false);
+            TagThemeStandardText(g_emptyText);
 
             g_verticalScroll = g_squadTabRoot->createWidget<MyGUI::ScrollBar>(
                 "Kenshi_ScrollBarV",
@@ -694,32 +729,50 @@
                 squadSelectorTop + SQUAD_SELECTOR_HEIGHT + PAD;
             g_removeButton = g_squadTabRoot->createWidget<MyGUI::Button>(
                 "Kenshi_Button1",
-                MyGUI::IntCoord(PAD, actionTop, 220, 40),
+                MyGUI::IntCoord(PAD, actionTop, 190, 40),
                 MyGUI::Align::Left | MyGUI::Align::Bottom,
                 "KJM_RemoveSelected");
             g_removeButton->setCaption("Remove Selected (0)");
             g_removeButton->setEnabled(false);
             g_removeButton->eventMouseButtonClick += MyGUI::newDelegate(OnRemoveClicked);
+            TagThemeButtonText(g_removeButton);
+
+            g_addHealingJobsButton =
+                g_squadTabRoot->createWidget<MyGUI::Button>(
+                    "Kenshi_Button1",
+                    MyGUI::IntCoord(PAD + 202, actionTop, 200, 40),
+                    MyGUI::Align::Left | MyGUI::Align::Bottom,
+                    "KJM_AddHealingJobs");
+            g_addHealingJobsButton->setCaption("Add Healing Jobs...");
+            g_addHealingJobsButton->setFontHeight(14);
+            g_addHealingJobsButton->setTextAlign(MyGUI::Align::Center);
+            g_addHealingJobsButton->setEnabled(false);
+            g_addHealingJobsButton->eventMouseButtonClick +=
+                MyGUI::newDelegate(OnAddHealingJobsClicked);
+            TagThemeButtonText(g_addHealingJobsButton);
 
             g_prioritizeCoreJobsButton =
                 g_squadTabRoot->createWidget<MyGUI::Button>(
                     "Kenshi_Button1",
-                    MyGUI::IntCoord(PAD + 232, actionTop, 220, 40),
+                    MyGUI::IntCoord(PAD + 414, actionTop, 190, 40),
                     MyGUI::Align::Left | MyGUI::Align::Bottom,
                     "KJM_PrioritizeCoreJobs");
-            g_prioritizeCoreJobsButton->setCaption("Prioritize Core Jobs");
+            g_prioritizeCoreJobsButton->setCaption("Prioritize Healing");
             g_prioritizeCoreJobsButton->setFontHeight(14);
             g_prioritizeCoreJobsButton->setTextAlign(MyGUI::Align::Center);
             g_prioritizeCoreJobsButton->eventMouseButtonClick +=
                 MyGUI::newDelegate(OnPrioritizeCoreJobsClicked);
+            g_prioritizeCoreJobsButton->setEnabled(false);
+            TagThemeButtonText(g_prioritizeCoreJobsButton);
 
             g_optionsButton = client->createWidget<MyGUI::Button>(
                 "Kenshi_Button1",
-                MyGUI::IntCoord(PAD + 464, actionTop, 120, 40),
+                MyGUI::IntCoord(PAD + 616, actionTop, 110, 40),
                 MyGUI::Align::Left | MyGUI::Align::Bottom,
                 "KJM_Options");
             g_optionsButton->setCaption("Options");
             g_optionsButton->eventMouseButtonClick += MyGUI::newDelegate(OnOptionsClicked);
+            TagThemeButtonText(g_optionsButton);
 
             g_closeButton = client->createWidget<MyGUI::Button>(
                 "Kenshi_Button1",
@@ -728,21 +781,39 @@
                 "KJM_Close");
             g_closeButton->setCaption("Close");
             g_closeButton->eventMouseButtonClick += MyGUI::newDelegate(OnCloseClicked);
+            TagThemeButtonText(g_closeButton);
 
             // Keep the status channel for errors and mutation results, but do
             // not show routine squad-order or drag instructions here.
+            // Keep the status channel between Options and Close on normal
+            // resolutions. At narrow widths, move it to the second line of
+            // the action area so it cannot cover either control.
+            const int closeLeft = size.width - PAD - 120;
+            const int statusLeft = PAD + 738;
+            const bool narrowActionBar =
+                closeLeft - statusLeft < 120;
+            const int statusWidth = narrowActionBar ?
+                std::max(1, size.width - 2 * PAD) :
+                std::max(120, closeLeft - statusLeft - PAD);
+            const int statusTop = narrowActionBar ? actionTop + 40 : actionTop;
+            const int statusHeight = narrowActionBar ? 20 : 40;
+            const MyGUI::Align statusAlign = narrowActionBar ?
+                (MyGUI::Align::Left | MyGUI::Align::Top |
+                 MyGUI::Align::HStretch) :
+                (MyGUI::Align::Bottom | MyGUI::Align::HStretch);
             g_statusText = client->createWidget<MyGUI::TextBox>(
                 "Kenshi_TextboxStandardText_Small",
                 MyGUI::IntCoord(
-                    PAD + 596,
-                    actionTop,
-                    std::max(120, size.width - 2 * PAD - 596 - 132),
-                    40),
-                MyGUI::Align::Bottom | MyGUI::Align::HStretch,
+                    narrowActionBar ? PAD : statusLeft,
+                    statusTop,
+                    statusWidth,
+                    statusHeight),
+                statusAlign,
                 "KJM_Status");
             g_statusText->setCaption("");
             g_statusText->setTextAlign(MyGUI::Align::Center);
             g_statusText->setNeedMouseFocus(false);
+            TagThemeMutedText(g_statusText);
 
             g_insertionLine = g_squadTabRoot->createWidget<MyGUI::Widget>(
                 "WhiteSkin",
@@ -772,6 +843,7 @@
             g_squadTabButton->setCaption("Squad Jobs");
             g_squadTabButton->eventMouseButtonClick +=
                 MyGUI::newDelegate(OnSquadTabClicked);
+            TagThemeButtonText(g_squadTabButton);
             g_stationTabButton = client->createWidget<MyGUI::Button>(
                 "Kenshi_Button1",
                 MyGUI::IntCoord(PAD + 146, PAD, 138, 36),
@@ -780,6 +852,28 @@
             g_stationTabButton->setCaption("Stations");
             g_stationTabButton->eventMouseButtonClick +=
                 MyGUI::newDelegate(OnStationTabClicked);
+            TagThemeButtonText(g_stationTabButton);
+
+            const int toastWidth = std::min(1000, size.width - 40);
+            const int toastTop = PAD + TOP_HEIGHT + 8;
+            g_toastText = client->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText_Large",
+                MyGUI::IntCoord(
+                    (size.width - toastWidth) / 2 + 8,
+                    toastTop + 6,
+                    std::max(1, toastWidth - 16),
+                    60),
+                MyGUI::Align::Top | MyGUI::Align::HCenter,
+                "KJM_Toast");
+            g_toastText->setFontHeight(22);
+            g_toastText->setTextAlign(MyGUI::Align::Center);
+            TagThemeStandardText(g_toastText);
+            g_toastText->setTextShadow(true);
+            g_toastText->setTextShadowColour(
+                MyGUI::Colour(0.0f, 0.0f, 0.0f));
+            g_toastText->setNeedMouseFocus(false);
+            g_toastText->setInheritsAlpha(false);
+            g_toastText->setVisible(false);
 
             MyGUI::InputManager::getInstance().addWidgetModal(g_window);
             g_windowModalAdded = true;
@@ -788,6 +882,12 @@
             g_lastRefreshTick = GetTickCount();
             g_squadCycleObserved = false;
             g_escapeWasDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+            const bool controlDown =
+                (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            g_copyHotkeyWasDown = controlDown &&
+                (GetAsyncKeyState('C') & 0x8000) != 0;
+            g_pasteHotkeyWasDown = controlDown &&
+                (GetAsyncKeyState('V') & 0x8000) != 0;
             // Squad cards now reuse the station-category artwork. Load the
             // same small packaged icon set before the first card build; the
             // guarded helper leaves the text-only fallback intact if Ogre
@@ -795,6 +895,11 @@
             TryEnsureStationIconResourcesGuarded();
             RefreshSquadView(true);
             RefreshSquadSelectorRoster(true);
+            ApplyThemeToTaggedTree(g_window);
+            // Theme traversal restores the base button colour. Reapply the
+            // recipient state accents after it so selected/partial squad
+            // captions retain their dark-surface contrast.
+            UpdateSquadSelectorSelection();
             BindSquadMouseWheelTree(g_squadTabRoot);
             BindSquadMouseWheelTree(g_squadTabButton);
             BindSquadMouseWheelTree(g_stationTabButton);
@@ -917,6 +1022,7 @@
         {
             CloseModalNow();
         }
+        TickJobBatchHotkeys();
         ProcessPendingSquadSelectorSelection();
         ProcessPendingAction();
         TickMultiSquadActions();
@@ -930,6 +1036,7 @@
         }
 
         const DWORD now = GetTickCount();
+        TickToast(now);
         TickDragAutoScroll(now);
         if (HasElapsed(now, g_lastRefreshTick, REFRESH_INTERVAL_MS))
         {

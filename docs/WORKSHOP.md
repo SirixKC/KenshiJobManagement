@@ -33,22 +33,32 @@ Tested on Kenshi Steam 1.0.65 x64 with RE_Kenshi 0.3.4.
 [h2]Features[/h2]
 
 [list]
-[*]View every permanent job for Kenshi's current squad.
+[*]View every permanent job for all active, nonempty player squads.
 [*]Reorder jobs by dragging within a member's queue.
-[*]Toggle Jobs, remove selected rows across members, or clear one queue.
+[*]Copy selected jobs with Ctrl+C and append them to selected people with
+Ctrl+V, while preserving exact targets and board order.
+[*]Add missing Rescue, Put in Bed, Medic, Robotics, and Splinting jobs, then
+prioritize healing jobs for the same selected recipients.
 [*]See native portraits and each member's three highest supported stats.
+[*]Select individual recipients from portraits or whole squads from the bottom
+selector. Headers only collapse or expand groups.
 [*]Switch active squads from the bottom strip or use vanilla TAB cycling.
 [*]Audit player-owned workstations by category, assignment count, and status.
 [*]Open a station to review assigned workers and assign or remove workers.
 [*]Respect renamed buildings and exact building identities.
+[*]Choose Vanilla light colors or Dark UI-friendly font colors in Options.
 [/list]
 
 [h2]Controls[/h2]
 
 [list]
 [*]Open: Ctrl+J or the Job Manager button beside the vanilla JOBS control.
-[*]Squad Jobs: mouse wheel scrolls vertically; Shift+wheel scrolls jobs horizontally.
-[*]Ctrl-click selects multiple job cards without activating Kenshi's mouse-rotate mode.
+[*]Squad Jobs: normalized mouse-wheel steps scroll vertically; Shift+wheel
+scrolls the selector horizontally. Squad groups have a readable half-row gap.
+[*]Portrait clicks select recipients; Ctrl-click toggles them. Plain bottom
+squad buttons switch and select a whole squad; Ctrl-click selects a squad
+without switching. Ctrl-click job cards selects jobs for batch actions.
+[*]Ctrl+C copies selected jobs. Ctrl+V appends them to selected recipients.
 [*]Stations: click a station card for worker details.
 [*]TAB remains Kenshi's normal squad-cycle control.
 [/list]
@@ -63,8 +73,10 @@ Tested on Kenshi Steam 1.0.65 x64 with RE_Kenshi 0.3.4.
 [*]Load a backed-up save and open the manager with Ctrl+J.
 [/olist]
 
-Remove, Clear Queue, and station assignment changes are immediate. There is no
-undo. The manager uses Kenshi's native permanent queues and pause system.
+Remove, Clear Queue, healing, copy/paste, drag transfer, and station assignment
+changes are immediate. There is no undo. Batch results use a large,
+nonblocking toast that fades after about four seconds. The manager uses
+Kenshi's native permanent queues and pause system.
 
 [h2]Source and license[/h2]
 

@@ -64,15 +64,19 @@ independently from mandatory station assets, with a `JM` caption fallback.
 The layout is a readable vertical list of member cards or rows. The current
 source labels the major controls and states as follows:
 
-- The primary full-screen backdrop is fully opaque. Foreground member rows,
-  job cards, controls, portraits, and text remain fully opaque.
+- The primary full-screen backdrop follows the appearance setting. Vanilla mode
+  is a warm light Kenshi-style surface with dark text; Dark UI mode keeps the
+  existing dark surface and light text. Foreground member rows, job cards,
+  controls, portraits, and text remain fully opaque.
 - The top bar starts as `Current squad`, then shows
   `<squad name>  |  <N> member(s)`. A squad-level read-only snapshot appends
   `  |  read-only snapshot`.
 - The member-column header is exactly `SQUAD MEMBER  |  TOP STATS`.
 - The priority rail labels columns as `Priority 1`, `Priority 2`, and so on.
-  The bottom controls are `Remove Selected (N)`, `Options`, and `Close`; while
-  dragging, the remove target reads `DROP TO REMOVE (N)`.
+  The bottom controls are `Remove Selected (N)`, `Add Healing Jobs...`,
+  `Prioritize Healing`, `Options`, and `Close`; while dragging, the remove
+  target reads `DROP TO REMOVE (N)`. Batch results use a large, nonblocking
+  toast that fades after about four seconds.
 - Each member header shows the live member name, the live `Jobs: ON` or
   `Jobs: OFF` state, that member's `Jobs` toggle, and that member's `Clear
   Queue` control. Its portrait uses Kenshi's generated character image and
@@ -160,7 +164,9 @@ squad has a synchronized header in both panes with a `+`/`-` collapse control;
 collapsed groups create no member or queue rows. Collapse state is keyed only
 by `HandleIdentity`, lasts for the manager session, and is pruned when a squad
 leaves the active roster. Header callbacks defer the rebuild until the callback
-returns, because the rebuild destroys the clicked widget tree.
+returns, because the rebuild destroys the clicked widget tree. Expanded groups
+have a 60-pixel gap (half of the 120-pixel member row) before the next squad,
+which keeps group boundaries readable without blocking controls.
 
 Every member widget has a parallel value-only squad/member identity binding.
 Callbacks resolve that identity against the latest `g_allSquads` snapshot;
@@ -192,12 +198,18 @@ target is no longer available.
 The selector owns its own horizontal canvas, viewport, and scrollbar. This
 independent horizontal overflow does not change the member-row scroll position.
 Plain wheel over the strip still routes to the member rows; Shift+wheel scrolls
-only the selector strip. Scroll positions clamp at both ends and wheel input
-never activates a selector button. Ordinary `TAB` remains vanilla-owned: the
-native cycle runs once, the manager observes the completed change after the
-native update, and then applies the exact selected highlight. Manager modals
-block native cycling; the ordinary manager does not replace Kenshi's `TAB`
-behavior.
+only the selector strip. Raw MyGUI wheel values are normalized to one small
+notch before applying the scroll step, so a single physical wheel tick cannot
+jump to the top or bottom. Scroll positions clamp at both ends and wheel input
+never activates a selector button. The selector's plain and Ctrl-click actions
+also manage whole-squad recipients: plain switches current squad and selects
+all its members; Ctrl toggles all its members without switching current squad.
+The button caption reports the selected recipient count, and recipient colors
+are distinct from the current-squad state. Ordinary `TAB` remains
+vanilla-owned: the native cycle runs once, the manager observes the completed
+change after the native update, and then applies the exact selected highlight.
+Manager modals block native cycling; the ordinary manager does not replace
+Kenshi's `TAB` behavior.
 
 ### Edits and selection
 
@@ -214,57 +226,77 @@ If the queue changed, the clear is rejected and the view is refreshed. `Clear
 Queue` never clears immediate orders or another member's queue.
 
 `Options` contains one global set of station-category visibility preferences
-and saves them immediately. These preferences apply only to Stations and
-persist across reload, reinstall, and update. Squad Jobs always shows every
-permanent job and computes each member's top three supported base stats above
-1 from all supported stats. The Options modal is wider than the old stat list,
-contains only the nine station-category toggles, and has `Reset Default` and
-`Close` controls. The mouse wheel is routed through category buttons to the
-shared scroll view. If the settings write fails, the current station display
-still applies and the status identifies the station-category save failure.
+and the persistent `Dark UI friendly font colors` toggle. Vanilla light mode
+is the default: its warm Kenshi-style background uses dark readable text. When
+the toggle is enabled, the manager keeps the existing dark background and
+light text colors for Dark UI. The setting applies to an open window
+immediately and saves for later sessions. Station preferences apply only to
+Stations; Squad Jobs always shows every permanent job and computes each
+member's top three supported base stats above 1 from all supported stats. The
+Options modal has the nine station-category toggles, the appearance toggle,
+`Reset Default`, and `Close`. The mouse wheel is routed through options to the
+shared scroll view. If the settings write fails, the in-session display still
+applies and the status identifies the save failure.
 
-The list supports multi-selection across members. A selected item is an exact
-member-plus-queue-row identity, not just a visible row number or job name.
-`Remove Selected` removes those exact rows immediately, with no prompt and no
-undo. Dropping a row onto the remove target has the same immediate,
-irreversible behavior. Each operation revalidates the member, queue, row
-identity, job data, and target immediately before removal. It stops at the
-first failed removal. It must report which removals succeeded, which item
-failed, and which items remain selected; it must not claim that later items
-were removed.
+Recipient selection and job selection are separate. The recipient set starts empty
+when the manager opens. A plain portrait click selects only that person;
+Ctrl-click toggles that person's recipient state. A plain bottom squad button
+switches the current squad and selects its complete roster. Ctrl-clicking a
+bottom squad button toggles its complete roster without switching the current
+squad. Headers only collapse or expand. Recipient markers use a distinct
+visual treatment from the current-squad highlight, and a batch action with no
+recipients is a safe no-op with a toast.
+
+Job selection remains an exact member-plus-queue-row identity, not just a
+visible row number or job name. Ctrl-click selects or toggles job cards. The
+value-only clipboard stores the selected rows, their exact target identities,
+their board order, and their source presentation sequence. `Ctrl+C` captures
+that snapshot and `Ctrl+V` appends it to every selected recipient. The
+clipboard survives source refreshes but is cleared when the manager closes or
+the world resets. Each recipient skips semantic duplicates and reports the
+added, skipped, and failed counts.
 
 Reordering within one row translates the exact insertion gap to Kenshi's native
-`movePermajob` operation. A single selected job can also be dragged to another
-loaded member, including a member in another active squad. The MyGUI drop
-callback captures only copied squad/member identities, presentation sequences,
-the exact source slot, and the exact destination gap. On the next update tick,
-the deferred path fresh-validates both active-roster identities and captures
-both complete structural queues. It rejects a semantic duplicate, appends
-through Kenshi's job API, verifies the exact native one-row or companion-row
-suffix, positions that suffix, revalidates both queues, and only then removes
-the source row.
-Multiple selected jobs remain remove-only and cannot start a transfer.
+`movePermajob` operation. A multi-selected drag moves the selected jobs to one
+non-source visible member and appends them at the end of that recipient's
+queue, preserving the board order and exact targets captured at drag start.
+The MyGUI drop callback captures only copied squad/member identities,
+presentation sequences, the exact source slots, and the destination member.
+On the next update tick, the deferred path fresh-validates every active-roster
+identity and captures complete structural queues. If any selected job already
+exists on the destination, the whole drag is rejected before mutation.
+Otherwise it appends each job through Kenshi's API, verifies each native
+one-row or companion-row suffix, revalidates both queues, and removes the
+source rows only after all destination changes are verified.
 Dragging either card in an adjacent native primary/secondary pair moves the
 pair. A separated or ambiguous companion fails before mutation; the manager
 does not guess how to repair a non-contiguous native bundle.
 
-The cross-member path passed its disposable-save probe, so the Release project
-defines `KJM_GENERAL_JOB_TRANSFER_VERIFIED`. `KJM_GENERAL_JOB_TRANSFER_PROBE`
-remains the diagnostic switch for repeating the full regression matrix. If a
-future transfer change fails that matrix, remove the verified Release define
-until the path is proven again. There is no compensating rollback. An
-unexpected append, insertion failure, or later verification failure stops the
-transaction, retains any verified destination copy, and tells the player to
-review both queues. The source remains unchanged unless an exact source removal
-was already verified. No raw `Tasker*`, borrowed queue pointer, or unverified
-source removal crosses the transaction boundary.
+Cross-member transfer and batch actions are probe-gated. The field-test
+project defines `KJM_GENERAL_JOB_TRANSFER_PROBE` and
+`KJM_JOB_BATCH_ACTIONS_PROBE`; it must not define
+`KJM_GENERAL_JOB_TRANSFER_VERIFIED` or any batch verified macro. The full
+disposable-save matrix in `docs/TESTING.md` is required before release
+promotion. There is no compensating rollback. An unexpected append, insertion
+failure, duplicate, or later verification failure stops the transaction,
+retains any verified destination copy, and tells the player to review both
+queues. No raw `Tasker*`, borrowed queue pointer, or unverified source removal
+crosses the transaction boundary.
 
-The `Prioritize Core Jobs` button targets only `g_squad`, the vanilla current
-squad. It stably moves existing Rescue, Put in Bed, Medic, Robotics, and
-Engineering rows to the top in that order; it never creates missing roles.
-Before each member and after every `movePermajob`, it rereads the current squad,
-validates the exact member order, and verifies the complete structural queue.
-The batch stops on the first unverified move and reports the partial result.
+`Add Healing Jobs...` and `Prioritize Healing` use the same selected recipient
+set. Add Healing Jobs adds only missing Rescue, Put in Bed, Medic, Robotics,
+and Splinting rows, then moves the role families to the front in this exact
+order: Rescue, Put in Bed, Medic, Robotics, Splinting, Engineering. It skips
+semantic duplicates. Prioritize Healing performs only the ordering step and
+never creates a missing row. Both actions validate the fresh active roster,
+capture complete queues, verify every native move, stop on the first
+unverified result, and report the partial result. Engineering remains in this
+priority design; the separate imported-engineering invalidity report is
+deferred until a reproducible in-game pattern is available.
+
+Batch action results use a large, nonblocking toast. The toast remains on
+screen for about four seconds, does not block input, and states whether rows
+were added, skipped, moved, or rejected.
 
 After a fully verified successful move, the affected
 worker cache and any matching station detail assignment list are refreshed
@@ -339,10 +371,10 @@ outpost discovery is added:
    partial result.
 12. Show `Clear Queue` as a Yes/No/Esc modal with the member name and reviewed
    count, and validate the full queue fingerprint before clearing.
-13. Save station-category `Options` changes immediately to one global
-    preference and load that preference across reload, reinstall, and update.
-14. Report a station-category settings write failure while retaining the
-    current-session display change.
+13. Save station-category and appearance `Options` changes immediately to one
+    global preference set and load them across reload, reinstall, and update.
+14. Report an `Options` settings write failure while retaining the current
+    session display change.
 15. Invoke native pause on open, restore the prior pause/speed on ordinary
     close, and preserve an explicit user-requested resumed speed.
 16. Let Kenshi own each ordinary `TAB` cycle, observe the completed native
@@ -405,7 +437,12 @@ area is present. An unknown relevant skill remains `Other / Unclassified` or
 category.
 The nine broad categories use the existing pictograms and stable FCS/function
 subtypes. The live display name never selects an icon, so renaming does not
-change classification.
+change classification. Farming classification gives `BCTYPE_FARM` precedence
+over later function labels, so Wheat Farm XL, Hemp Farm L, and Rock Carrot
+hydroponics remain in Farming. A modded `BCTYPE_PRODUCTION` record is accepted
+as Farming only when its `UseableStuff::getStatUsed()` value is
+`STAT_FARMING` and the task contract normalizes safely. A generic default task
+alone is never enough to classify a farm or a station.
 
 ### Player-owned and assigned targets and ordering
 
@@ -441,7 +478,8 @@ resource nodes.
 The projection excludes the exact generic permanent task types `JOB_BUILDER`
 (Engineer), `JOB_MEDIC` (Medic), `JOB_REPAIR_ROBOT` (Robotics),
 `FIND_AND_RESCUE` (Rescue), `FIND_BED_AND_PUT_IN` (Put in bed), and
-`FIND_AND_RESCUE_IF_THERES_BEDS` (the live permanent Rescue wrapper). Their
+`FIND_AND_RESCUE_IF_THERES_BEDS` (the live permanent Rescue wrapper), and
+`SPLINT_JOB` (Splinting). Their
 stored subjects do not limit those jobs'
 scope. They remain visible and editable in Squad Jobs and count toward the
 worker's total jobs, but never create a station card or assignment. Squad Jobs
@@ -548,11 +586,12 @@ Jobs state and condition refresh at the existing one-second cadence. Changing a
 filter rebuilds visible cards immediately while preserving each category's
 persistent collapse state.
 
-The shared Options page contains only `STATION CATEGORY FILTERS` and saves
-changes immediately. Station-category defaults are enabled for Crafting,
-Refining, Farming, Mining, Research, and Other / Unclassified; Training,
-Storage / Hauling, and Defense are disabled. Both tabs open this same page,
-but only Stations uses these filters.
+The shared Options page contains `STATION CATEGORY FILTERS` and the
+`Dark UI friendly font colors` appearance toggle, and saves changes
+immediately. Vanilla light mode is the default. Station-category defaults are
+enabled for Crafting, Refining, Farming, Mining, Research, and Other /
+Unclassified; Training, Storage / Hauling, and Defense are disabled. Both tabs
+open this same page, but only Stations uses the station filters.
 
 ## Why the Squad Jobs tab remains squad-wide while Stations is target-wide
 
@@ -731,25 +770,36 @@ continuously fight Kenshi's own decisions.
   `ActivePlatoon` pointers. Preserve raw active/nonempty vanilla `TAB` order,
   exclude empty and `__DEAD__` squads, fresh-validate `setCurrentPlatoon`, and
   keep selector horizontal overflow separate from member-row scrolling.
-- Test on disposable saves until save/load/import behavior is proven.
+- Test every queue mutation, appearance mode, recipient mode, and station
+  classifier on disposable saves until save/load/import behavior is proven.
+  Imported-engineering invalidity is intentionally deferred until a repeatable
+  in-game pattern is documented.
 
 ## Roadmap
 
 ### 0.1: Stage 1 squad audit/editor field test
 
-- full-screen current-squad window;
+- full-screen grouped multi-squad window;
 - Kenshi's live job text and exact live target names;
 - per-member Jobs toggle and full-fingerprint Clear Queue modal;
 - same-row drag reorder;
-- cross-member multi-select and drop-to-remove with stop-on-failure and no
-  prompt or undo;
+- empty-by-default recipient selection through portraits and whole-squad
+  selector buttons;
+- value-only Ctrl+C/Ctrl+V clipboard with exact targets, board order, duplicate
+  skipping, and clear-on-close;
+- multi-selected drag append to one non-source recipient with stop-on-failure;
+- Add Healing Jobs and Prioritize Healing for the same recipients, with Rescue,
+  Put in Bed, Medic, Robotics, Splinting, and Engineering ordering;
+- large nonblocking result toast lasting about four seconds;
 - each member's top three supported base stats above 1;
-- immediate global station-category Options preferences;
+- immediate station-category Options preferences and Vanilla-default/Dark UI
+  appearance toggle;
 - native pause/speed open/close behavior and Kenshi `TAB` cycling;
 - compact bottom Squad Jobs selector with exact raw active/nonempty vanilla
   `TAB` order, exact selected highlight, fresh validated `setCurrentPlatoon`,
   empty/`__DEAD__` exclusion, value-only records, independent horizontal
-  overflow, and plain-wheel/Shift+wheel routing;
+  overflow, normalized wheel steps, 60-pixel group gaps, and plain-wheel/
+  Shift+wheel routing;
 - unloaded/cached read-only fallback, but editable live queues with unavailable
   target labels;
 - one-second incremental refresh and transition cleanup;

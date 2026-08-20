@@ -20,7 +20,10 @@ rectangle. The packaged `gui/kjm-hud-icon.png` is loaded independently; the
 
 The Stage 1 window provides:
 
-- a fully opaque full-screen backdrop for maximum text contrast;
+- a full-screen backdrop with a persistent appearance option. Vanilla mode is
+  the default and uses a warm, light Kenshi-style panel with dark readable
+  text. `Dark UI friendly font colors` keeps the existing dark panel and light
+  text palette for Dark UI users. The option applies live and persists;
 - squad groups in Kenshi's exact raw active/nonempty vanilla `TAB` order. Each
   group has a `+`/`-` header, preserves session-only collapse state, and creates
   no member rows while collapsed. The current squad has the selected highlight;
@@ -34,7 +37,7 @@ The Stage 1 window provides:
   reuses the square station category artwork without stretching it; the icon
   `ImageBox` is directly 33% opaque (67% transparent) behind the queue text,
   and common machinery work is shown compactly as `Operating...`. Global
-  Builder/Engineering, Medic, Robotics, and Rescue rows retain their exact
+  Builder/Engineering, Medic, Robotics, Rescue, and Splinting rows retain their exact
   stored targets for mutation verification but omit target text, arrow,
   unavailable tint, and station-target artwork from the Squad card. Role art
   is TaskType-driven: `JOB_BUILDER` uses optional `job-engineering.png`
@@ -48,21 +51,29 @@ The Stage 1 window provides:
   only, without the incidental target, and mouse movement never polls
   Kenshi's queues;
 - same-row drag reorder, backed by Kenshi's `movePermajob` method, plus
-  identity-only cross-member and cross-squad drag intent with an exact green
-  insertion gap. The drop callback stores only copied identities and
-  presentation sequences. On the next update tick, the manager captures and
-  verifies both complete structural queues before it changes Kenshi; the
-  destination is verified before the source row is removed;
-- multi-select across members and immediate `Remove Selected` or drop-to-remove,
-  with no prompt or undo, stop-on-first-failure, and a partial-result report;
-- `Prioritize Core Jobs`, which reorders existing current-squad rows to Find
-  and Rescue, Find and Put in Bed, Medic, Robotics, then Engineering. It never
-  creates a missing job and verifies the complete queue after every move;
+  value-only batch actions. `Ctrl+C` copies the selected jobs, including their
+  exact targets and board order; `Ctrl+V` appends them to every selected
+  recipient. Semantic duplicates are skipped and the clipboard is cleared
+  when the manager closes. A multi-job drag moves the selected jobs to one
+  non-source recipient and appends them in board order. Every native mutation
+  is verified and stops on the first failure;
+- recipient selection that starts empty: plain portrait clicks select one
+  person, Ctrl-click toggles people, and plain bottom squad buttons switch the
+  current squad and select its whole roster. Ctrl-clicking a bottom squad
+  button selects or clears that whole squad without switching the current
+  squad. Squad headers only collapse or expand. Recipient highlighting is
+  visually distinct from the current-squad highlight;
+- `Add Healing Jobs...`, which adds missing Rescue, Put in Bed, Medic, Robotics,
+  and Splinting jobs, then prioritizes Rescue, Put in Bed, Medic, Robotics,
+  Splinting, and Engineering. `Prioritize Healing` uses the same recipients
+  and only reorders existing jobs. Both actions skip duplicates;
+- large, nonblocking result toasts that remain visible for about four seconds;
 - each member's own top three supported base stats above 1;
-- an `Options` page with broad station-category filters. These filters apply
-  only to Stations; Squad Jobs always shows every job and uses all supported
-  stats when selecting each member's top three. Category changes save
-  immediately and persist across reload, reinstall, and update;
+- an `Options` page with broad station-category filters and the persistent
+  `Dark UI friendly font colors` toggle. Station filters apply only to
+  Stations; Squad Jobs always shows every job and uses all supported stats
+  when selecting each member's top three. Changes save immediately and
+  persist across reload, reinstall, and update;
 - native pause on open, prior pause/speed restoration on ordinary close, and
   preservation of a user's resumed speed if they unpause or change speed while
   the manager is open;
@@ -73,9 +84,11 @@ The Stage 1 window provides:
 - selector clicks queue a squad `HandleIdentity` only. The update path performs
   a fresh validated `setCurrentPlatoon` call and rereads the selected identity;
   no `Platoon` or `ActivePlatoon` pointer is retained in UI state;
-- the selector has independent horizontal overflow. Plain wheel over the strip
-  still scrolls the member rows, while Shift+wheel scrolls the strip; ordinary
-  `TAB` remains vanilla-owned and moves the selector highlight after the native
+- the selector has independent horizontal overflow. Wheel input is normalized
+  to small notches, so one wheel step no longer jumps to an end.
+  Plain wheel over the strip still scrolls the member rows. Shift+wheel scrolls the strip.
+  Squad groups have a 60-pixel gap for easier reading; ordinary `TAB`
+  remains vanilla-owned and moves the selector highlight after the native
   cycle;
 - one-second incremental live-state checks, with no manual Refresh button;
 - per-member unloaded or cached queues shown read-only, while other live member
@@ -87,7 +100,7 @@ not a member-by-station board. Each card is a verified player-owned
 workstation (or an assigned natural resource node, the explicit non-owned
 exception). The strict workstation allowlist excludes walls, lights, chairs,
 and other objects that only expose a generic task. Exact queue targets are
-joined to the same card; Engineer, Medic, Robotics, and Rescue jobs remain on
+joined to the same card; Engineer, Medic, Robotics, Rescue, and Splinting jobs remain on
 Squad Jobs because their stored subjects do not define a station scope.
 
 Cards are grouped by category. Every category header shows `+` or `-`, its
@@ -127,13 +140,16 @@ feedback. Stale queues, load transitions, and failed verification remain
 fail-closed. Squad Jobs supports same-row reorder and the separately guarded
 cross-member transfer path; Stations has no drag-to-transfer interaction.
 
-Cross-member transfer passed its disposable-save probe and the Release project
-defines `KJM_GENERAL_JOB_TRANSFER_VERIFIED`. Diagnostic builds can instead use
-`KJM_GENERAL_JOB_TRANSFER_PROBE` for the regression matrix in
-`docs/TESTING.md`. The transaction verifies structural add, insertion, source
-removal, native companion rows, partial failures, and every post-mutation
-queue. There is no compensating rollback; an interrupted transfer leaves its
-verified destination copy for manual review.
+Cross-member transfer and the new batch actions are probe-only in this field
+test. The project defines `KJM_GENERAL_JOB_TRANSFER_PROBE` and
+`KJM_JOB_BATCH_ACTIONS_PROBE`; `KJM_GENERAL_JOB_TRANSFER_VERIFIED` is absent,
+as is any batch verified macro. The disposable-save matrix in
+[`docs/TESTING.md`](docs/TESTING.md)
+must pass before either path can be promoted. Each transaction verifies
+structural add, insertion, source removal, native companion rows, duplicate
+handling, partial failures, and every post-mutation queue. There is no
+compensating rollback; an interrupted transfer leaves its verified destination
+copy for manual review.
 
 The Squad Jobs roster uses enlarged `80x80` portraits and stacks each member's
 three displayed skills vertically in a larger font. The portrait remains
@@ -169,7 +185,7 @@ does not enumerate zones, towns, or unrelated world buildings. Player-owned
 workstations with no readable queue assignment remain visible with a thin
 yellow outline and a large red `X`. The borrowed source copy has a separate
 8,192-record safety cap.
-Kenshi's global Builder/Engineering, Medic, Robotics, Rescue, and Put-in-bed
+Kenshi's global Builder/Engineering, Medic, Robotics, Rescue, Splinting, and Put-in-bed
 jobs remain in the Squad Jobs queue and total job count, but they never create
 station cards because their stored targets do not define their work scope. Their
 exact stored targets remain in the queue snapshot for mutation verification;
@@ -177,9 +193,11 @@ Squad card presentation omits target text, arrow, unavailable tint, and
 station-target artwork, and hover grouping compares task type without the
 incidental target. TaskType-driven role icons are presentation-only and do not
 enter the station-target cache or Stations projection.
-The shared Options page controls only station-category visibility. Its default
-station categories are Crafting, Refining, Farming, Mining, Research, and
-Other / Unclassified; Training, Storage / Hauling, and Defense start disabled.
+The shared Options page controls station-category visibility and the manual
+appearance mode. Vanilla light mode is the default. Dark UI mode preserves
+the existing dark panel and light text colors. The default station categories
+are Crafting, Refining, Farming, Mining, Research, and Other / Unclassified;
+Training, Storage / Hauling, and Defense start disabled.
 
 The nine broad station categories use a shared set of simple 2-to-4-color
 pictograms: anvil, furnace, wheat, pickaxe, research book, training dummy,
@@ -190,6 +208,12 @@ crossbows, and skeleton limbs. The live display name is never used for this
 classification, so building-rename mods do not change the icon. Every subtype
 falls back to its broad category icon when no stable match is available. The
 same artwork identifies building-target jobs on both tabs.
+
+Farming classification preserves `BCTYPE_FARM` precedence, so Wheat Farm XL,
+Hemp Farm L, and Rock Carrot hydroponics appear in Farming. A modded production
+record is accepted as Farming only when `UseableStuff::getStatUsed()` reports
+`STAT_FARMING` and the task contract is safe; a generic default task is not
+enough.
 
 The UI uses exact live task and target data. It does not guess a target from a
 job name. Role presets and camera/world highlighting remain later milestones;

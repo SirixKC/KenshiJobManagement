@@ -100,6 +100,7 @@ namespace
     const char* const PLUGIN_VERSION = "0.1.0-alpha";
     const DWORD REFRESH_INTERVAL_MS = 1000;
     const DWORD RESET_HOTKEY_COOLDOWN_MS = 1000;
+    const DWORD TOAST_DURATION_MS = 4000;
     const int MAX_SAFE_JOB_ROWS = 64;
     const int PAD = 12;
     const int TOP_HEIGHT = 46;
@@ -328,6 +329,7 @@ namespace
     {
         MyGUI::Widget* memberRoot;
         MyGUI::Widget* jobsRoot;
+        MyGUI::Widget* recipientMarker;
         MyGUI::Button* portraitBorder;
         MyGUI::ImageBox* portraitBackground;
         MyGUI::ImageBox* portrait;
@@ -344,7 +346,8 @@ namespace
         unsigned int appliedRevision;
 
         MemberWidgets() :
-            memberRoot(NULL), jobsRoot(NULL), portraitBorder(NULL),
+            memberRoot(NULL), jobsRoot(NULL), recipientMarker(NULL),
+            portraitBorder(NULL),
             portraitBackground(NULL), portrait(NULL), portraitBackOverlay(NULL),
             portraitFrontOverlay(NULL), name(NULL), condition(NULL), skills(NULL),
             jobsToggle(NULL), clearButton(NULL), emptyJobs(NULL),
@@ -357,6 +360,7 @@ namespace
     {
         DRAG_NONE,
         DRAG_REORDER,
+        DRAG_MULTI_MOVE,
         DRAG_REMOVE_ONLY
     };
 
@@ -444,6 +448,8 @@ namespace
     MyGUI::Widget* g_priorityCanvas = NULL;
     MyGUI::TextBox* g_squadText = NULL;
     MyGUI::TextBox* g_statusText = NULL;
+    MyGUI::Widget* g_background = NULL;
+    MyGUI::TextBox* g_toastText = NULL;
     MyGUI::TextBox* g_emptyText = NULL;
     MyGUI::Button* g_removeButton = NULL;
     MyGUI::Button* g_optionsButton = NULL;
@@ -483,6 +489,7 @@ namespace
     ModalState g_modal;
     PendingAction g_pendingAction;
     MyGUI::ScrollView* g_optionsScroll = NULL;
+    MyGUI::Button* g_darkUiOptionButton = NULL;
 
     std::string g_settingsPath;
 
@@ -490,7 +497,10 @@ namespace
     DWORD g_lastResetTick = 0;
     DWORD g_lastDragTick = 0;
     bool g_hotkeyWasDown = false;
+    bool g_copyHotkeyWasDown = false;
+    bool g_pasteHotkeyWasDown = false;
     bool g_escapeWasDown = false;
+    DWORD g_toastShownTick = 0;
     bool g_squadCycleObserved = false;
     bool g_closeRequested = false;
     bool g_modalCloseRequested = false;
@@ -544,10 +554,13 @@ namespace
     void RestoreHudManagerButton();
     void TickHudManagerButton();
     void ProcessHudManagerButtonRequest();
+    void ShowToast(const std::string& message);
 
 #include "RuntimeAccess.inl"
+#include "ThemePalette.inl"
 #include "SquadPriority.inl"
 #include "GeneralJobTransfer.inl"
+#include "JobBatchActions.inl"
 #include "StationScanner.inl"
 #include "StationSettings.inl"
 #include "StationAssets.inl"

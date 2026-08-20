@@ -143,13 +143,41 @@
             {
                 continue;
             }
-            const bool selected = SameHandleIdentity(
+            const bool current = SameHandleIdentity(
                 g_squadSelectorEntries[index].identity,
                 g_squad.identity);
-            button->setStateSelected(selected);
-            button->setTextColour(selected ?
-                MyGUI::Colour(0.68f, 1.0f, 0.70f) :
-                MyGUI::Colour(1.0f, 1.0f, 1.0f));
+            button->setStateSelected(current);
+
+            const SquadSnapshot* squad = FindDisplayedSquad(
+                g_squadSelectorEntries[index].identity);
+            const size_t recipientCount = squad == NULL ? 0 :
+                GetSquadRecipientSelectionCount(*squad);
+            const bool allRecipients = squad != NULL &&
+                !squad->members.empty() &&
+                recipientCount == squad->members.size();
+            std::ostringstream caption;
+            caption << (g_squadSelectorEntries[index].name.empty() ?
+                "Unnamed squad" : g_squadSelectorEntries[index].name);
+            if (recipientCount != 0 && squad != NULL)
+            {
+                caption << " [" << recipientCount << "/"
+                        << squad->members.size() << "]";
+            }
+            FitSquadSelectorCaption(button, caption.str());
+            if (allRecipients)
+            {
+                button->setTextColour(
+                    ThemeButtonSuccessTextColour());
+            }
+            else if (recipientCount != 0)
+            {
+                button->setTextColour(
+                    ThemeButtonAccentTextColour());
+            }
+            else
+            {
+                ApplyThemeButtonText(button);
+            }
         }
     }
 
@@ -254,6 +282,7 @@
                 "KJM_SquadSelectorIndex", IntegerString(index));
             button->eventMouseButtonClick +=
                 MyGUI::newDelegate(OnSquadSelectorClicked);
+            TagThemeButtonText(button);
             BindSquadSelectorMouseWheelTree(button);
             g_squadSelectorButtons.push_back(button);
         }
@@ -331,6 +360,7 @@
         g_squadSelectorLabel->setCaption("SQUADS");
         g_squadSelectorLabel->setFontHeight(16);
         g_squadSelectorLabel->setTextAlign(MyGUI::Align::Center);
+        TagThemeStandardText(g_squadSelectorLabel);
 
         const int selectorLeft = SQUAD_SELECTOR_LABEL_WIDTH + 4;
         const int selectorWidth = std::max(1, coord.width - selectorLeft);
@@ -397,9 +427,37 @@
         {
             return;
         }
-        g_pendingSquadSelectionIdentity =
+        const HandleIdentity squadIdentity =
             g_squadSelectorEntries[static_cast<size_t>(index)].identity;
-        g_squadSelectorSelectionPending = true;
+        const SquadSnapshot* squad = FindDisplayedSquad(squadIdentity);
+        if (squad == NULL)
+        {
+            ShowToast("That squad is not available in the current roster.");
+            return;
+        }
+
+        MyGUI::InputManager* input = MyGUI::InputManager::getInstancePtr();
+        const bool control =
+            (input != NULL && input->isControlPressed()) ||
+            (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        if (control)
+        {
+            ToggleSquadRecipients(*squad);
+            ApplyRecipientSelectionStates();
+            UpdateSquadSelectorSelection();
+            UpdateSquadHeading();
+            return;
+        }
+
+        SelectOnlySquadRecipients(*squad);
+        ApplyRecipientSelectionStates();
+        UpdateSquadSelectorSelection();
+        UpdateSquadHeading();
+        if (!SameHandleIdentity(squadIdentity, g_squad.identity))
+        {
+            g_pendingSquadSelectionIdentity = squadIdentity;
+            g_squadSelectorSelectionPending = true;
+        }
     }
 
     void OnSquadSelectorScroll(MyGUI::ScrollBar*, size_t position)
@@ -436,7 +494,8 @@
             return;
         }
         g_squadSelectorOffset = ClampInt(
-            g_squadSelectorOffset - relative * 80,
+            g_squadSelectorOffset -
+                NormalizeMouseWheelNotches(relative) * 60,
             0,
             g_squadSelectorMaximumOffset);
         g_squadSelectorChangingScroll = true;

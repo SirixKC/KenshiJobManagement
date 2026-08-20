@@ -42,6 +42,8 @@ REQUIRED_FILES = (
     "src/SquadGroups.inl",
     "src/SquadPriority.inl",
     "src/GeneralJobTransfer.inl",
+    "src/JobBatchActions.inl",
+    "src/ThemePalette.inl",
     "src/JobView.inl",
     "src/JobActions.inl",
     "src/JobWindow.inl",
@@ -105,7 +107,7 @@ SOURCE_TOKENS = (
     "WrapCardJobCaption",
     "SetFittedCardTargetCaption",
     "client->setInheritsAlpha(false)",
-    "background->setAlpha(1.0f)",
+    "g_background->setAlpha(1.0f)",
     "key->mWheel = 0",
     "key->rotate = false",
     "RebuildJobHighlightCache",
@@ -155,7 +157,7 @@ SOURCE_TOKENS = (
     '"KJM_SquadSelectorCanvas"',
     '"KJM_SquadSelectorScroll"',
     '"KJM_SquadSelectorIndex"',
-    "setStateSelected(selected)",
+    "button->setStateSelected(current)",
     "g_pendingSquadSelectionIdentity",
     "TrySelectSquadByIdentity",
     "TrySetCurrentPlatoonGuardedLeaf",
@@ -165,17 +167,33 @@ SOURCE_TOKENS = (
     "if (!shift)",
     "if (g_squadSelectorMaximumOffset == 0)",
     "OnMouseWheel(widget, relative)",
-    "g_squadSelectorOffset - relative * 80",
+    "NormalizeMouseWheelNotches(relative) * 60",
     "g_squadSelectorCanvas->setPosition(-g_squadSelectorOffset, 0)",
     "RefreshAllActiveSquadsSnapshot",
     "TryBuildFreshRosterMemberByIdentity",
     "AllSquadsSnapshot",
     "VisibleMemberBinding",
     "SQUAD_GROUP_HEADER_HEIGHT = 30",
+    "SQUAD_GROUP_GAP = ROW_HEIGHT / 2",
     '"KJM_SquadGroupHeader"',
     "SetSquadCollapsed(identity, !IsSquadCollapsed(identity))",
     "g_squadGroupRebuildRequested = true",
-    '"Prioritize Core Jobs"',
+    '"Prioritize Healing"',
+    '"Add Healing Jobs..."',
+    "SelectedRecipient",
+    "OnRecipientPortraitClicked",
+    "SelectOnlySquadRecipients",
+    "ToggleSquadRecipients",
+    "CaptureJobBatchClipboard",
+    "PasteJobBatchClipboard",
+    "MoveSelectedJobBatch",
+    "ApplyJobBatchHealing",
+    "KJM_JOB_BATCH_ACTIONS_PROBE",
+    "ClearJobBatchClipboard",
+    "TickJobBatchHotkeys",
+    "DRAG_MULTI_MOVE",
+    "ShowToast",
+    "TOAST_DURATION_MS = 4000",
     "TryApplySquadPriority",
     "TryCaptureGeneralJobQueue",
     "TryTransferGeneralPermanentJob",
@@ -197,6 +215,7 @@ SOURCE_TOKENS = (
     "taskType != JOB_BUILDER",
     "taskType != JOB_MEDIC",
     "taskType != JOB_REPAIR_ROBOT",
+    "taskType != SPLINT_JOB",
     "taskType != FIND_AND_RESCUE",
     "taskType != FIND_BED_AND_PUT_IN",
     "taskType != FIND_AND_RESCUE_IF_THERES_BEDS",
@@ -285,7 +304,7 @@ SOURCE_TOKENS = (
     '"KJM_StationAssignmentUnsupported"',
     '"KJM_StationAvailableViewport"',
     "OnStationAvailableWheel",
-    "label->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f))",
+    "TagThemeStandardText(label)",
     "IsStationDetailOpen",
     "CloseStationDetail",
     "detailCloseRequested",
@@ -327,6 +346,8 @@ SOURCE_TOKENS = (
     "lowestSkillFirst ?",
     "left.relevantSkill < right.relevantSkill",
     "NormalizeStationTaskScalars",
+    "productionFarmingStat",
+    "farmingClassified",
     "TryResolveAndAddStationJobOnce",
     "IsExpectedStationAssignmentSuffix",
     "ProcessStationBundleRemovalRequest",
@@ -344,6 +365,13 @@ SOURCE_TOKENS = (
     "g_hudManagerButtonRequest",
     "RestoreHudManagerButton",
     "g_hudSplitJobsCoord",
+    # Persistent manual appearance mode. Vanilla light is the default; Dark
+    # UI keeps the previous dark canvas and light text.
+    "DarkUIFriendlyFontColors",
+    "LoadThemePaletteSettings",
+    "TagThemeBackground",
+    "ApplyThemeToTaggedTree",
+    "ThemeWarningTextColour",
 )
 
 EMPTY_FCS_MOD_MARKER = bytes.fromhex(
@@ -464,6 +492,8 @@ def validate_project(errors: list[str]) -> None:
         "RE_Kenshi.json",
         "KenshiJobManagement.mod",
         "src\\SquadSelector.inl",
+        "src\\JobBatchActions.inl",
+        "src\\ThemePalette.inl",
         "mod\\gui\\job-engineering.png",
         "mod\\gui\\job-medic.png",
     ):
@@ -478,6 +508,8 @@ def validate_source(errors: list[str]) -> None:
         "src/SquadGroups.inl",
         "src/SquadPriority.inl",
         "src/GeneralJobTransfer.inl",
+        "src/JobBatchActions.inl",
+        "src/ThemePalette.inl",
         "src/JobView.inl",
         "src/JobActions.inl",
         "src/JobWindow.inl",
@@ -511,10 +543,14 @@ def validate_source(errors: list[str]) -> None:
         fail(errors, "General transfer release enablement belongs in the project configuration, not a source define")
 
     project = read_text("KenshiJobManagement.vcxproj", errors)
-    if project.count("KJM_GENERAL_JOB_TRANSFER_VERIFIED") != 1:
-        fail(errors, "Release project must define KJM_GENERAL_JOB_TRANSFER_VERIFIED exactly once")
-    if "KJM_GENERAL_JOB_TRANSFER_PROBE" in project:
-        fail(errors, "Release project must not define the diagnostic general-transfer probe")
+    if project.count("KJM_GENERAL_JOB_TRANSFER_PROBE") != 1:
+        fail(errors, "Field-test project must define KJM_GENERAL_JOB_TRANSFER_PROBE exactly once")
+    if "KJM_GENERAL_JOB_TRANSFER_VERIFIED" in project:
+        fail(errors, "Changed general-transfer code must remain probe-gated until field testing passes")
+    if project.count("KJM_JOB_BATCH_ACTIONS_PROBE") != 1:
+        fail(errors, "Field-test project must define KJM_JOB_BATCH_ACTIONS_PROBE exactly once")
+    if "KJM_JOB_BATCH_ACTIONS_VERIFIED" in project:
+        fail(errors, "Batch actions must remain probe-gated until field testing passes")
 
     for token in (
         "getOwnedBuildingsH",
@@ -568,6 +604,12 @@ def validate_source(errors: list[str]) -> None:
         "TryRemoveGeneralJobAndVerify(",
         "GENERAL_TRANSFER_SOURCE_CHANGED_DUPLICATE_REMAINS",
         "SameSquadPriorityQueueStructure(",
+        "TryCaptureJobBatchActiveRoster(",
+        "SameJobBatchActiveRoster(",
+        "RevalidateJobBatchActiveRoster(",
+        "JobBatchRosterContainsMembers(",
+        "AppendJobBatchBundleAndVerify(",
+        "PrioritizeJobBatchHealingQueue(",
     ):
         if token not in source:
             fail(errors, f"Exact queue revalidation is missing: {token}")
@@ -649,10 +691,18 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "kjm-hud-icon.png",
         "compact single-row bottom squad selector",
         "squad groups in Kenshi's exact raw active/nonempty vanilla `TAB` order",
-        "Prioritize Core Jobs",
+        "Add Healing Jobs...",
+        "Prioritize Healing",
+        "Dark UI friendly font colors",
+        "recipient selection that starts empty",
+        "Ctrl+C",
+        "Ctrl+V",
+        "60-pixel gap",
         "KJM_GENERAL_JOB_TRANSFER_PROBE",
         "KJM_GENERAL_JOB_TRANSFER_VERIFIED",
-        "identity-only cross-member and cross-squad drag intent",
+        "KJM_JOB_BATCH_ACTIONS_PROBE",
+        "value-only batch actions",
+        "multi-job drag moves",
         "exact raw active/nonempty vanilla `TAB` order",
         "fresh validated `setCurrentPlatoon`",
         "independent horizontal overflow",
@@ -675,6 +725,11 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "job-medic.png",
         "FIND_BED_AND_PUT_IN",
         "FIND_AND_RESCUE_IF_THERES_BEDS",
+        "Wheat Farm XL",
+        "Hemp Farm L",
+        "Rock Carrot hydroponics",
+        "BCTYPE_FARM",
+        "STAT_FARMING",
         "RE_Kenshi 0.3.4 or newer",
     ):
         if token not in readme:
@@ -692,7 +747,7 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "StationVisualSubtype",
         "ImageBox",
         "Training stations sort lowest first",
-        "contains only `STATION CATEGORY FILTERS`",
+        "contains `STATION CATEGORY FILTERS`",
         "projection patches only the affected card, detail list, category counts,",
         "normal fail-closed refresh path.",
         "Native HUD JOBS entry",
@@ -702,10 +757,20 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "Grouped multi-squad board",
         "AllSquadsSnapshot",
         "RefreshAllActiveSquadsSnapshot",
-        "Prioritize Core Jobs",
+        "Add Healing Jobs...",
+        "Prioritize Healing",
+        "Dark UI friendly font colors",
+        "recipient set starts empty",
+        "Ctrl+C",
+        "Ctrl+V",
+        "60-pixel gap",
         "KJM_GENERAL_JOB_TRANSFER_PROBE",
         "KJM_GENERAL_JOB_TRANSFER_VERIFIED",
-        "Multiple selected jobs remain remove-only",
+        "KJM_JOB_BATCH_ACTIONS_PROBE",
+        "multi-selected drag moves",
+        "Add Healing Jobs adds",
+        "Splinting",
+        "about four seconds",
         "exact raw active/nonempty vanilla `TAB` order",
         "fresh validated `setCurrentPlatoon`",
         "independent horizontal overflow",
@@ -727,6 +792,9 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "job-engineering.png",
         "job-medic.png",
         "do not enter the station-target cache",
+        "BCTYPE_FARM",
+        "STAT_FARMING",
+        "UseableStuff::getStatUsed()",
     ):
         if token not in design:
             fail(errors, f"Design roadmap is missing component: {token}")
@@ -734,7 +802,10 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
     testing = read_text("docs/TESTING.md", errors)
     for token in (
         "Same-row drag reorder",
-        "Cross-member multi-select and drop-to-remove",
+        "Cross-member multi-select removal",
+        "Batch clipboard and multi-recipient paste",
+        "Multi-selected drag append",
+        "Healing batch actions",
         "Clear Queue Yes/No/Esc modal and fingerprint",
         "Stations tab: player-station card grid and assignment detail",
         "opens a fully populated grid",
@@ -753,11 +824,19 @@ def validate_scripts_and_docs(errors: list[str]) -> None:
         "JM",
         "Bottom Squad Jobs selector",
         "Probe-gated cross-member and cross-squad transfer",
-        "Current-squad core-job priority button",
+        "Prioritize Healing",
         "KJM_GENERAL_JOB_TRANSFER_PROBE",
         "KJM_GENERAL_JOB_TRANSFER_VERIFIED",
+        "KJM_JOB_BATCH_ACTIONS_PROBE",
         "exact green line",
-        "Multiple selected jobs remain remove-only",
+        "Multi-selected drag append",
+        "recipient set starts empty",
+        "Dark UI friendly font colors",
+        "Wheat Farm",
+        "Hemp Farm",
+        "Rock Carrot",
+        "STAT_FARMING",
+        "about four seconds",
         "exact raw active/nonempty vanilla `TAB` order",
         "fresh validated `setCurrentPlatoon`",
         "independent horizontal overflow",

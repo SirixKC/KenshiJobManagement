@@ -339,6 +339,7 @@
         return taskType != JOB_BUILDER &&
             taskType != JOB_MEDIC &&
             taskType != JOB_REPAIR_ROBOT &&
+            taskType != SPLINT_JOB &&
             taskType != FIND_AND_RESCUE &&
             taskType != FIND_BED_AND_PUT_IN &&
             taskType != FIND_AND_RESCUE_IF_THERES_BEDS;
@@ -1289,6 +1290,8 @@
             const BuildingClassType classType = building->getBuildingClass();
             const BuildingFunction function = building->getSpecialFunction();
             *naturalOut = function == BF_MINE_NATURAL;
+            bool farmingClassified = false;
+            bool productionFarmingStat = false;
 
             switch (classType)
             {
@@ -1301,7 +1304,35 @@
                 *statOut = STAT_FARMING;
                 *statKnownOut = true;
                 *relevantOut = true;
+                farmingClassified = true;
                 break;
+            case BCTYPE_PRODUCTION:
+            {
+                // Some farming mods use the generic production class. Keep
+                // this opt-in narrow: the engine must identify Farming as
+                // the UseableStuff stat and expose a task that the verified
+                // station-assignment path knows how to normalize.
+                UseableStuff* usable = building->getUseableStuff();
+                const StatsEnumerated engineStat = usable == NULL ?
+                    STAT_NONE : usable->getStatUsed();
+                if (engineStat == STAT_FARMING)
+                {
+                    productionFarmingStat = true;
+                    TaskType normalizedTask = NULL_TASK;
+                    bool automaticBundle = false;
+                    if (NormalizeStationTaskScalars(
+                            classType, function, building->getDefaultTask(),
+                            &normalizedTask, &automaticBundle))
+                    {
+                        *categoryOut = STATION_FARMING;
+                        *statOut = STAT_FARMING;
+                        *statKnownOut = true;
+                        *relevantOut = true;
+                        farmingClassified = true;
+                    }
+                }
+                break;
+            }
             case BCTYPE_RESEARCH:
                 *categoryOut = STATION_RESEARCH;
                 *statOut = STAT_SCIENCE;
@@ -1328,49 +1359,66 @@
                 break;
             }
 
-            switch (function)
+            // BCTYPE_FARM is authoritative for farming buildings. A few
+            // vanilla/modded farm records expose a generic special function,
+            // and that metadata must not replace the farming category. Keep
+            // the natural-resource exception explicit: Kenshi's
+            // BF_MINE_NATURAL is a deliberate mining classification.
+            // Accepted generic production farms use the same precedence.
+            if (productionFarmingStat && !farmingClassified)
             {
-            case BF_MINE:
-            case BF_MINE_NATURAL:
-                *categoryOut = STATION_MINING;
-                *statOut = STAT_LABOURING;
-                *statKnownOut = true;
-                *relevantOut = true;
-                break;
-            case BF_REFINERY:
-            case BF_ITEM_FURNACE:
-                *categoryOut = STATION_REFINING;
-                *statOut = STAT_LABOURING;
-                *statKnownOut = true;
-                *relevantOut = true;
-                break;
-            case BF_RESEARCH:
-                *categoryOut = STATION_RESEARCH;
-                *statOut = STAT_SCIENCE;
-                *statKnownOut = true;
-                *relevantOut = true;
-                break;
-            case BF_TRAINING:
-                *categoryOut = STATION_TRAINING;
-                *relevantOut = true;
-                break;
-            case BF_RESOURCE_STORAGE:
-            case BF_GENERAL_STORAGE:
-                *categoryOut = STATION_STORAGE_HAULING;
-                *relevantOut = true;
-                break;
-            case BF_TURRET:
-                *categoryOut = STATION_DEFENSE;
-                *statOut = STAT_TURRETS;
-                *statKnownOut = true;
-                *relevantOut = true;
-                break;
-            case BF_CRAFTING:
-                *categoryOut = STATION_CRAFTING;
-                *relevantOut = true;
-                break;
-            default:
-                break;
+                // Do not fall back to a generic BuildingFunction when a
+                // farming stat is present but its assignment task is not one
+                // of the supported production tasks.
+                return true;
+            }
+
+            if (!farmingClassified || function == BF_MINE_NATURAL)
+            {
+                switch (function)
+                {
+                case BF_MINE:
+                case BF_MINE_NATURAL:
+                    *categoryOut = STATION_MINING;
+                    *statOut = STAT_LABOURING;
+                    *statKnownOut = true;
+                    *relevantOut = true;
+                    break;
+                case BF_REFINERY:
+                case BF_ITEM_FURNACE:
+                    *categoryOut = STATION_REFINING;
+                    *statOut = STAT_LABOURING;
+                    *statKnownOut = true;
+                    *relevantOut = true;
+                    break;
+                case BF_RESEARCH:
+                    *categoryOut = STATION_RESEARCH;
+                    *statOut = STAT_SCIENCE;
+                    *statKnownOut = true;
+                    *relevantOut = true;
+                    break;
+                case BF_TRAINING:
+                    *categoryOut = STATION_TRAINING;
+                    *relevantOut = true;
+                    break;
+                case BF_RESOURCE_STORAGE:
+                case BF_GENERAL_STORAGE:
+                    *categoryOut = STATION_STORAGE_HAULING;
+                    *relevantOut = true;
+                    break;
+                case BF_TURRET:
+                    *categoryOut = STATION_DEFENSE;
+                    *statOut = STAT_TURRETS;
+                    *statKnownOut = true;
+                    *relevantOut = true;
+                    break;
+                case BF_CRAFTING:
+                    *categoryOut = STATION_CRAFTING;
+                    *relevantOut = true;
+                    break;
+                default:
+                    break;
+                }
             }
 
             // A known stat refines the card's worker-skill label, but it does

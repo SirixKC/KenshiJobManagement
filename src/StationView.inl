@@ -653,6 +653,7 @@
         header->eventMouseButtonClick +=
             MyGUI::newDelegate(OnStationCategoryClicked);
         header->eventMouseWheel += MyGUI::newDelegate(OnStationMouseWheel);
+        TagThemeButtonText(header);
         g_stationView.virtualWidgets.push_back(header);
         StationGridHeaderBinding binding;
         binding.category = group.category;
@@ -686,14 +687,14 @@
         if (assignedCount == 0)
         {
             assignment->setCaption("X");
-            assignment->setTextColour(MyGUI::Colour(1.0f, 0.20f, 0.16f));
+            TagThemeWarningText(assignment);
         }
         else
         {
             std::ostringstream count;
             count << assignedCount;
             assignment->setCaption(count.str());
-            assignment->setTextColour(MyGUI::Colour(0.86f, 0.92f, 0.72f));
+            TagThemeSuccessText(assignment);
         }
         assignment->setFontHeight(28);
         assignment->setTextAlign(MyGUI::Align::Center);
@@ -765,11 +766,23 @@
             MyGUI::IntCoord(x, y, STATION_GRID_CARD_WIDTH,
                 STATION_GRID_CARD_HEIGHT),
             MyGUI::Align::Left | MyGUI::Align::Top, "KJM_StationCard");
-        card->setColour(MyGUI::Colour(0.16f, 0.13f, 0.09f));
+        TagThemeBackground(card);
         card->setUserString(
             "KJM_StationIdentity", StationIdentityString(station.identity));
         card->eventMouseButtonClick += MyGUI::newDelegate(OnStationCardClicked);
         card->eventMouseWheel += MyGUI::newDelegate(OnStationMouseWheel);
+
+        // Keep station labels on an explicit palette surface. The native
+        // button atlas is dark and cannot be lightened reliably by tinting;
+        // this child preserves the button hitbox and callback state.
+        MyGUI::Widget* cardSurface = card->createWidget<MyGUI::Widget>(
+            "WhiteSkin",
+            MyGUI::IntCoord(
+                3, 3, STATION_GRID_CARD_WIDTH - 6,
+                STATION_GRID_CARD_HEIGHT - 6),
+            MyGUI::Align::Stretch,
+            "KJM_StationCardSurface");
+        TagThemeSurface(cardSurface);
 
         const char* iconResource = GetStationVisualIconResource(
             station.category, station.visualSubtype);
@@ -796,10 +809,9 @@
             SameHandleIdentity(
                 g_stationView.recentStation, station.identity) &&
             !g_stationView.recentMembers.empty();
-        tint->setColour(station.blocking || !station.blockingStatus.empty() ?
-            MyGUI::Colour(0.38f, 0.07f, 0.05f) :
-            MyGUI::Colour(0.09f, 0.07f, 0.05f));
-        tint->setAlpha(0.55f);
+        TagThemeStationCardTint(
+            tint,
+            station.blocking || !station.blockingStatus.empty());
         tint->setNeedMouseFocus(false);
 
         // A usable station with nobody assigned is a planning warning, not a
@@ -865,7 +877,7 @@
             "KJM_StationExactName");
         SetFittedStationGridName(name, station.name);
         name->setTextAlign(MyGUI::Align::Center);
-        name->setTextColour(MyGUI::Colour(1.0f, 0.96f, 0.84f));
+        TagThemeStandardText(name);
         name->setNeedMouseFocus(false);
 
         int lineTop = 49;
@@ -879,7 +891,7 @@
             SetFittedStationSingleLine(
                 area, station.areaName, 13, 9);
             area->setTextAlign(MyGUI::Align::Center);
-            area->setTextColour(MyGUI::Colour(0.95f, 0.82f, 0.53f));
+            TagThemeAccentText(area);
             area->setNeedMouseFocus(false);
             lineTop += 17;
         }
@@ -905,7 +917,7 @@
                 station.blockingStatus.empty() ?
                     "CANNOT WORK" : station.blockingStatus,
                 12, 9);
-            status->setTextColour(MyGUI::Colour(1.0f, 0.32f, 0.22f));
+            TagThemeWarningText(status);
         }
         status->setTextAlign(MyGUI::Align::Center);
         status->setNeedMouseFocus(false);
@@ -1021,13 +1033,13 @@
             snapshot.rosterIncomplete || snapshot.targetsFailed > 0 ||
             !snapshot.errors.empty();
         std::ostringstream caption;
-        MyGUI::Colour colour(0.80f, 0.86f, 0.65f);
+        int themeRole = 0; // 0 success, 1 accent, 2 warning.
         if (snapshot.truncated)
         {
             caption << "PLAYER STATION RESULT LIST TRUNCATED AT 2,048 - RESULTS INCOMPLETE";
             caption << "  |  " << snapshot.targetsFailed
                     << " target(s) failed";
-            colour = MyGUI::Colour(1.0f, 0.36f, 0.25f);
+            themeRole = 2;
         }
         else if (!snapshot.complete)
         {
@@ -1036,9 +1048,7 @@
                     << " candidates read";
             caption << "  |  " << snapshot.targetsFailed
                     << " target(s) failed";
-            colour = scanFault ?
-                MyGUI::Colour(1.0f, 0.36f, 0.25f) :
-                MyGUI::Colour(1.0f, 0.78f, 0.30f);
+            themeRole = scanFault ? 2 : 1;
         }
         else if (scanFault)
         {
@@ -1048,7 +1058,7 @@
                 caption << "  |  " << snapshot.targetsFailed
                         << " target(s) failed";
             }
-            colour = MyGUI::Colour(1.0f, 0.36f, 0.25f);
+            themeRole = 2;
         }
         else
         {
@@ -1060,7 +1070,18 @@
             caption << visibleCount << " PLAYER STATIONS";
         }
         g_stationView.scanBanner->setCaption(caption.str());
-        g_stationView.scanBanner->setTextColour(colour);
+        if (themeRole == 2)
+        {
+            TagThemeWarningText(g_stationView.scanBanner);
+        }
+        else if (themeRole == 1)
+        {
+            TagThemeAccentText(g_stationView.scanBanner);
+        }
+        else
+        {
+            TagThemeSuccessText(g_stationView.scanBanner);
+        }
         std::ostringstream errors;
         for (size_t index = 0; index < snapshot.errors.size(); ++index)
         {
@@ -1330,7 +1351,16 @@
         // portrait column. Keep the button caption empty and render text in a
         // separate child that begins after the fixed 36-pixel portrait.
         row->setCaption("");
-        row->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        TagThemeButtonText(row);
+        MyGUI::Widget* rowSurface = row->createWidget<MyGUI::Widget>(
+            "WhiteSkin",
+            MyGUI::IntCoord(2, 2,
+                std::max(1, row->getWidth() - 4),
+                std::max(1, row->getHeight() - 4)),
+            MyGUI::Align::Stretch,
+            addCandidate ? "KJM_StationAvailablePersonSurface" :
+                "KJM_StationAssignedPersonSurface");
+        TagThemeSurface(rowSurface);
         MyGUI::TextBox* label = row->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText",
             MyGUI::IntCoord(
@@ -1340,7 +1370,7 @@
                 "KJM_StationAssignedPersonText");
         SetFittedStationSingleLine(label, caption.str(), 16, 13);
         label->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
-        label->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        TagThemeStandardText(label);
         label->setColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
         label->setAlpha(1.0f);
         label->setInheritsAlpha(false);
@@ -1503,8 +1533,7 @@
                             << g_stationView.assignedPeople.size() << ")";
             g_stationView.detailAssignedHeader->setCaption(
                 assignedCaption.str());
-            g_stationView.detailAssignedHeader->setTextColour(
-                MyGUI::Colour(1.0f, 1.0f, 1.0f));
+            ApplyThemeStandardText(g_stationView.detailAssignedHeader);
         }
         if (g_stationView.detailAvailableHeader != NULL)
         {
@@ -1513,8 +1542,7 @@
                              << g_stationView.addPeople.size() << ")";
             g_stationView.detailAvailableHeader->setCaption(
                 availableCaption.str());
-            g_stationView.detailAvailableHeader->setTextColour(
-                MyGUI::Colour(1.0f, 1.0f, 1.0f));
+            ApplyThemeStandardText(g_stationView.detailAvailableHeader);
         }
 
         int assignedTop = 4;
@@ -1528,7 +1556,7 @@
                         35), MyGUI::Align::Top | MyGUI::Align::HStretch,
                     "KJM_StationNoAssignedPeople");
             empty->setCaption("UNASSIGNED");
-            empty->setTextColour(MyGUI::Colour(1.0f, 0.76f, 0.31f));
+            TagThemeAccentText(empty);
             empty->setNeedMouseFocus(false);
             empty->setNeedKeyFocus(false);
             g_stationView.detailWidgets.push_back(empty);
@@ -1568,8 +1596,7 @@
                     "KJM_StationAssignmentUnsupported");
             unsupported->setCaption(
                 "This station does not expose a verified permanent-job mapping.");
-            unsupported->setTextColour(
-                MyGUI::Colour(1.0f, 0.38f, 0.27f));
+            TagThemeWarningText(unsupported);
             unsupported->setNeedMouseFocus(false);
             unsupported->setNeedKeyFocus(false);
             g_stationView.detailWidgets.push_back(unsupported);
@@ -1586,7 +1613,7 @@
                     MyGUI::Align::Top | MyGUI::Align::HStretch,
                     "KJM_StationNoAddCandidates");
             none->setCaption("No loaded readable unassigned characters.");
-            none->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+            TagThemeStandardText(none);
             none->setNeedMouseFocus(false);
             none->setNeedKeyFocus(false);
             g_stationView.detailWidgets.push_back(none);
@@ -1708,8 +1735,7 @@
                 MyGUI::IntCoord(4, 4, panelWidth - 8, panelHeight - 8),
                 MyGUI::Align::Stretch,
                 "KJM_StationDetailBackground");
-        modalBackground->setColour(
-            MyGUI::Colour(0.105f, 0.085f, 0.065f));
+        TagThemeBackground(modalBackground);
         modalBackground->setAlpha(1.0f);
         modalBackground->setDepth(100);
         modalBackground->setNeedMouseFocus(false);
@@ -1722,7 +1748,7 @@
                 "KJM_StationDetailTitle");
         title->setCaption(station->name);
         title->setFontHeight(23);
-        title->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        TagThemeStandardText(title);
         while (title->getFontHeight() > 15 &&
             title->getTextSize().width > panelWidth - 70)
         {
@@ -1736,7 +1762,7 @@
                 MyGUI::Align::Right | MyGUI::Align::Top,
                 "KJM_StationDetailClose");
         close->setCaption("X");
-        close->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        TagThemeButtonText(close);
         close->eventMouseButtonClick +=
             MyGUI::newDelegate(OnStationDetailClose);
 
@@ -1746,7 +1772,7 @@
                 MyGUI::IntCoord(14, 43, panelWidth - 28, 66),
                 MyGUI::Align::Top | MyGUI::Align::HStretch,
                 "KJM_StationDetailSummary");
-        summary->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        TagThemeStandardText(summary);
         std::ostringstream summaryCaption;
         summaryCaption << GetStationCategoryName(station->category)
                        << "  |  Relevant skill: "
@@ -1759,7 +1785,7 @@
         if (!station->blockingStatus.empty())
         {
             summaryCaption << "\nCannot work: " << station->blockingStatus;
-            summary->setTextColour(MyGUI::Colour(1.0f, 0.38f, 0.27f));
+            TagThemeWarningText(summary);
         }
         else if (!station->blockingStatusKnown)
         {
@@ -1800,8 +1826,7 @@
         g_stationView.detailAssignedHeader->setFontHeight(17);
         g_stationView.detailAssignedHeader->setTextAlign(
             MyGUI::Align::Left | MyGUI::Align::VCenter);
-        g_stationView.detailAssignedHeader->setTextColour(
-            MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        TagThemeStandardText(g_stationView.detailAssignedHeader);
         g_stationView.detailAssignedHeader->setNeedMouseFocus(false);
         g_stationView.detailAssignedHeader->setNeedKeyFocus(false);
 
@@ -1816,8 +1841,7 @@
         g_stationView.detailAvailableHeader->setFontHeight(17);
         g_stationView.detailAvailableHeader->setTextAlign(
             MyGUI::Align::Left | MyGUI::Align::VCenter);
-        g_stationView.detailAvailableHeader->setTextColour(
-            MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        TagThemeStandardText(g_stationView.detailAvailableHeader);
         g_stationView.detailAvailableHeader->setNeedMouseFocus(false);
         g_stationView.detailAvailableHeader->setNeedKeyFocus(false);
 
@@ -1900,8 +1924,7 @@
         g_stationView.detailStatus->setTextAlign(
             MyGUI::Align::Center | MyGUI::Align::VCenter);
         g_stationView.detailStatus->setFontHeight(13);
-        g_stationView.detailStatus->setTextColour(
-            MyGUI::Colour(1.0f, 0.78f, 0.34f));
+        TagThemeAccentText(g_stationView.detailStatus);
         g_stationView.detailStatus->setNeedMouseFocus(false);
         g_stationView.detailStatusText.clear();
         g_stationView.detailStatus->setCaption("");
@@ -2206,6 +2229,7 @@
                 MyGUI::Align::Top | MyGUI::Align::HStretch,
                 "KJM_StationScanBanner");
         g_stationView.scanBanner->setTextAlign(MyGUI::Align::Center);
+        TagThemeSuccessText(g_stationView.scanBanner);
         g_stationView.scanBanner->eventToolTip +=
             MyGUI::newDelegate(OnCardToolTip);
         g_stationView.progressTrack =
@@ -2260,6 +2284,7 @@
         g_stationView.emptyText->setTextAlign(MyGUI::Align::Center);
         g_stationView.emptyText->setNeedMouseFocus(false);
         g_stationView.emptyText->setVisible(false);
+        TagThemeStandardText(g_stationView.emptyText);
     }
 
     void DestroyStationView()

@@ -204,7 +204,7 @@
         return role == FIND_AND_RESCUE ||
             role == FIND_BED_AND_PUT_IN ||
             role == JOB_MEDIC || role == JOB_REPAIR_ROBOT ||
-            role == JOB_BUILDER;
+            role == SPLINT_JOB || role == JOB_BUILDER;
     }
 
     // Duplicate policy: global roles are unique by semantic role. Fixed-target
@@ -574,6 +574,12 @@
         int to,
         GeneralJobQueueValue* afterOut)
     {
+        GeneralJobQueueValue liveBefore;
+        if (!TryCaptureGeneralJobQueue(member, &liveBefore) ||
+            !SameGeneralJobQueue(before, liveBefore))
+        {
+            return false;
+        }
         GeneralJobQueueValue expected = before;
         const GeneralJobRowValue moving = expected.rows[from];
         expected.rows.erase(expected.rows.begin() + from);
@@ -600,6 +606,12 @@
         GeneralJobQueueValue* afterOut)
     {
         if (slot < 0 || slot >= static_cast<int>(before.rows.size()))
+        {
+            return false;
+        }
+        GeneralJobQueueValue liveBefore;
+        if (!TryCaptureGeneralJobQueue(member, &liveBefore) ||
+            !SameGeneralJobQueue(before, liveBefore))
         {
             return false;
         }
@@ -849,6 +861,22 @@
             return GENERAL_TRANSFER_CAPTURE_FAILED;
         }
 
+        GeneralJobQueueValue sourceImmediatelyBeforeAdd;
+        GeneralJobQueueValue destinationImmediatelyBeforeAdd;
+        if (!TryCaptureGeneralJobQueue(
+                sourceLive.member, &sourceImmediatelyBeforeAdd) ||
+            !SameGeneralJobQueue(sourceLive, sourceImmediatelyBeforeAdd))
+        {
+            return GENERAL_TRANSFER_SOURCE_CHANGED;
+        }
+        if (!TryCaptureGeneralJobQueue(
+                destinationLive.member, &destinationImmediatelyBeforeAdd) ||
+            !SameGeneralJobQueue(
+                destinationLive, destinationImmediatelyBeforeAdd))
+        {
+            return GENERAL_TRANSFER_DESTINATION_CHANGED;
+        }
+
         bool addReturned = false;
         TryAddGeneralJobLeaf(
             &destinationLive.member, &payload, &addReturned);
@@ -937,6 +965,13 @@
                     expectedPositioned, destinationStillPositioned))
             {
                 return GENERAL_TRANSFER_REMOVE_UNEXPECTED_REVIEW;
+            }
+            GeneralJobQueueValue sourceStillCurrent;
+            if (!TryCaptureGeneralJobQueue(
+                    request.sourceBefore.member, &sourceStillCurrent) ||
+                !SameGeneralJobQueue(sourceCurrent, sourceStillCurrent))
+            {
+                return GENERAL_TRANSFER_SOURCE_CHANGED_DUPLICATE_REMAINS;
             }
             const int slot = sourceSlot +
                 static_cast<int>(removeIndex - 1);

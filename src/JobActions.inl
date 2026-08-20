@@ -38,6 +38,7 @@
         int destinationGap)
     {
         if (g_pendingGeneralMemberDrop.pending || g_pendingSquadPriority ||
+            HasPendingJobBatchUiAction() ||
             g_pendingAction.type != ACTION_NONE ||
             sourceVisibleIndex < 0 || destinationVisibleIndex < 0 ||
             sourceVisibleIndex == destinationVisibleIndex)
@@ -101,6 +102,234 @@
         return true;
     }
 
+    int FindPendingSelectedJobMatch(
+        const std::vector<SelectedJob>& selected,
+        const std::vector<bool>& matched,
+        const HandleIdentity& member,
+        const JobRowSnapshot& job,
+        int slot)
+    {
+        for (size_t index = 0; index < selected.size(); ++index)
+        {
+            if (matched[index] ||
+                !SameHandleIdentity(selected[index].member, member) ||
+                !SameJob(selected[index].job, job) ||
+                (job.taskToken == 0 && selected[index].lastSlot != slot))
+            {
+                continue;
+            }
+            return static_cast<int>(index);
+        }
+        return -1;
+    }
+
+    bool BuildJobBatchSelectionsFromUiValues(
+        const std::vector<SelectedJob>& selected,
+        std::vector<JobBatchSelectionValue>* selectionsOut)
+    {
+        if (selectionsOut == NULL || selected.empty() ||
+            !RefreshAllActiveSquadsSnapshot())
+        {
+            return false;
+        }
+        selectionsOut->clear();
+        std::vector<bool> matched(selected.size(), false);
+        size_t matchedCount = 0;
+
+        // Traverse the fresh all-squad snapshot in vanilla board order, then
+        // each member queue in priority order. Clipboard and batch moves must
+        // not depend on click-selection order.
+        for (size_t squadIndex = 0;
+             squadIndex < g_allSquads.squads.size(); ++squadIndex)
+        {
+            const SquadSnapshot& squad = g_allSquads.squads[squadIndex];
+            for (size_t memberIndex = 0;
+                 memberIndex < squad.members.size(); ++memberIndex)
+            {
+                const MemberSnapshot& member = squad.members[memberIndex];
+                std::vector<int> slots;
+                std::vector<int> selectedIndices;
+                for (size_t slot = 0; slot < member.jobs.size(); ++slot)
+                {
+                    const int selectedIndex = FindPendingSelectedJobMatch(
+                        selected, matched, member.identity,
+                        member.jobs[slot], static_cast<int>(slot));
+                    if (selectedIndex >= 0)
+                    {
+                        slots.push_back(static_cast<int>(slot));
+                        selectedIndices.push_back(selectedIndex);
+                    }
+                }
+                if (slots.empty())
+                {
+                    continue;
+                }
+                if (!member.loaded || !member.queueAvailable ||
+                    member.truncated)
+                {
+                    return false;
+                }
+                GeneralJobQueueValue structural;
+                if (!TryCaptureGeneralJobQueue(
+                        member.identity, &structural) ||
+                    !GeneralQueueMatchesPresentation(
+                        member.jobs, structural))
+                {
+                    return false;
+                }
+                for (size_t index = 0; index < slots.size(); ++index)
+                {
+                    JobBatchSelectionValue selection;
+                    selection.sourceBefore = structural;
+                    selection.sourceSlot = slots[index];
+                    selectionsOut->push_back(selection);
+                    matched[selectedIndices[index]] = true;
+                    ++matchedCount;
+                }
+            }
+        }
+        return matchedCount == selected.size() && !selectionsOut->empty();
+    }
+
+    void CopySelectedJobsToBatchClipboard()
+    {
+        if (g_selectedJobs.empty())
+        {
+            ShowToast("Select one or more jobs before copying.");
+            return;
+        }
+        const std::vector<SelectedJob> selected = g_selectedJobs;
+        std::vector<JobBatchSelectionValue> selections;
+        JobBatchActionOutcome outcome;
+        if (!BuildJobBatchSelectionsFromUiValues(selected, &selections) ||
+            !CaptureJobBatchClipboard(selections, &outcome))
+        {
+            ClearJobBatchClipboard();
+            RefreshSquadView(true);
+            const std::string message =
+                BuildJobBatchActionMessage(outcome, "Jobs copied.") +
+                " Clipboard cleared.";
+            SetStatus(message);
+            ShowToast(message);
+            return;
+        }
+        RefreshSquadView(true);
+        std::ostringstream message;
+        message << "Copied " << outcome.consideredBundles << " job"
+                << (outcome.consideredBundles == 1 ? "" : "s")
+                << ". Select recipients, then press Ctrl+V.";
+        SetStatus(message.str());
+        ShowToast(message.str());
+    }
+
+    void QueueJobBatchPaste()
+    {
+        if (HasPendingJobBatchUiAction())
+        {
+            return;
+        }
+        if (!HasJobBatchClipboard())
+        {
+            ShowToast("Copy one or more jobs before pasting.");
+            return;
+        }
+        const std::vector<HandleIdentity> recipients =
+            GetSelectedRecipientIdentities();
+        if (recipients.empty())
+        {
+            ShowToast("Select at least one recipient before pasting.");
+            return;
+        }
+        g_pendingJobBatchUiAction = PendingJobBatchUiAction();
+        g_pendingJobBatchUiAction.type = JOB_BATCH_UI_PASTE;
+        g_pendingJobBatchUiAction.recipients = recipients;
+    }
+
+    void TickJobBatchHotkeys()
+    {
+        const bool controlDown =
+            (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool copyDown = controlDown &&
+            (GetAsyncKeyState('C') & 0x8000) != 0;
+        const bool pasteDown = controlDown &&
+            (GetAsyncKeyState('V') & 0x8000) != 0;
+        const bool available = g_window != NULL && !g_stationTabActive &&
+            g_modal.kind == MODAL_NONE && !IsStationDetailOpen() &&
+            !g_drag.armed && g_pendingAction.type == ACTION_NONE &&
+            !g_pendingGeneralMemberDrop.pending &&
+            !g_pendingSquadPriority && !HasPendingJobBatchUiAction();
+        if (available && copyDown && !g_copyHotkeyWasDown)
+        {
+            CopySelectedJobsToBatchClipboard();
+        }
+        if (available && pasteDown && !g_pasteHotkeyWasDown)
+        {
+            QueueJobBatchPaste();
+        }
+        g_copyHotkeyWasDown = copyDown;
+        g_pasteHotkeyWasDown = pasteDown;
+    }
+
+    void ProcessPendingJobBatchUiAction()
+    {
+        if (!HasPendingJobBatchUiAction())
+        {
+            return;
+        }
+        const PendingJobBatchUiAction action = g_pendingJobBatchUiAction;
+        g_pendingJobBatchUiAction = PendingJobBatchUiAction();
+
+        JobBatchActionOutcome outcome;
+        const char* completed = "Job action completed.";
+        if (action.type == JOB_BATCH_UI_PASTE)
+        {
+            PasteJobBatchClipboard(action.recipients, &outcome);
+            completed = "Jobs pasted.";
+        }
+        else if (action.type == JOB_BATCH_UI_MOVE)
+        {
+            std::vector<JobBatchSelectionValue> selections;
+            if (!BuildJobBatchSelectionsFromUiValues(
+                    action.selectedJobs, &selections))
+            {
+                outcome.code = JOB_BATCH_CAPTURE_FAILED;
+                outcome.interrupted = true;
+            }
+            else
+            {
+                MoveSelectedJobBatch(
+                    selections, action.destination, &outcome);
+            }
+            completed = "Jobs moved.";
+        }
+        else if (action.type == JOB_BATCH_UI_ADD_HEALING)
+        {
+            ApplyJobBatchHealing(action.recipients, true, &outcome);
+            completed = "Healing jobs updated.";
+        }
+        else if (action.type == JOB_BATCH_UI_PRIORITIZE_HEALING)
+        {
+            ApplyJobBatchHealing(action.recipients, false, &outcome);
+            completed = "Healing priorities updated.";
+        }
+        else
+        {
+            outcome.code = JOB_BATCH_INVALID_REQUEST;
+        }
+
+        if (outcome.destinationChanged || outcome.sourceChanged ||
+            outcome.addedHealingJobs != 0 ||
+            outcome.movedPriorityRows != 0)
+        {
+            TryNotifyVanillaSelectionUI();
+        }
+        RefreshSquadView(true);
+        const std::string message =
+            BuildJobBatchActionMessage(outcome, completed);
+        SetStatus(message);
+        ShowToast(message);
+    }
+
     const char* GeneralTransferStatus(GeneralJobTransferCode code)
     {
         switch (code)
@@ -133,6 +362,11 @@
         {
             g_squadGroupRebuildRequested = false;
             RebuildSquadWidgets();
+        }
+        if (HasPendingJobBatchUiAction())
+        {
+            ProcessPendingJobBatchUiAction();
+            return;
         }
         if (g_pendingGeneralMemberDrop.pending)
         {
@@ -215,7 +449,9 @@
                 TryNotifyVanillaSelectionUI();
             }
             RefreshSquadView(true);
-            SetStatus(GeneralTransferStatus(code));
+            const std::string transferStatus = GeneralTransferStatus(code);
+            SetStatus(transferStatus);
+            ShowToast(transferStatus);
             return;
         }
 
@@ -237,6 +473,7 @@
 
     void ResetMultiSquadActions()
     {
+        g_pendingJobBatchUiAction = PendingJobBatchUiAction();
         g_pendingGeneralMemberDrop = PendingGeneralMemberDrop();
         g_pendingSquadPriority = false;
         ResetHandleIdentity(&g_pendingSquadPriorityIdentity);
@@ -496,7 +733,9 @@
 
     void UpdateDragInsertion(const MyGUI::IntPoint& mouse)
     {
-        if (!g_drag.active || g_drag.kind != DRAG_REORDER ||
+        if (!g_drag.active ||
+            (g_drag.kind != DRAG_REORDER &&
+             g_drag.kind != DRAG_MULTI_MOVE) ||
             g_jobViewport == NULL || g_insertionLine == NULL ||
             g_drag.memberIndex < 0 ||
             g_drag.memberIndex >= static_cast<int>(g_visibleMemberBindings.size()))
@@ -523,7 +762,8 @@
         const int contentX = mouse.left - view.left + g_horizontalOffset;
         const int queueCount =
             static_cast<int>(destination->jobs.size());
-        int gap = (contentX + CARD_STRIDE / 2) / CARD_STRIDE;
+        int gap = g_drag.kind == DRAG_MULTI_MOVE ? queueCount :
+            (contentX + CARD_STRIDE / 2) / CARD_STRIDE;
         gap = ClampInt(gap, 0, queueCount);
         g_drag.insertionGap = gap;
         g_dragDestinationVisibleIndex = destinationIndex;
@@ -560,7 +800,8 @@
         int,
         MyGUI::MouseButton button)
     {
-        if (button != MyGUI::MouseButton::Left || g_modal.kind != MODAL_NONE)
+        if (button != MyGUI::MouseButton::Left ||
+            g_modal.kind != MODAL_NONE || HasPendingJobBatchUiAction())
         {
             return;
         }
@@ -653,7 +894,7 @@
                 SelectOnlyJob(g_drag.memberIndex, g_drag.slot);
             }
             g_drag.kind = g_selectedJobs.size() > 1
-                ? DRAG_REMOVE_ONLY
+                ? DRAG_MULTI_MOVE
                 : DRAG_REORDER;
             StartDragVisuals();
         }
@@ -755,9 +996,42 @@
                 g_dragDestinationVisibleIndex,
                 g_drag.insertionGap);
         }
-        else if (g_drag.kind == DRAG_REMOVE_ONLY)
+        else if (g_drag.kind == DRAG_MULTI_MOVE &&
+            g_drag.insertionGap >= 0 &&
+            g_dragDestinationVisibleIndex >= 0)
         {
-            SetStatus("Multiple selected jobs can only be dropped on Remove Selected.");
+            const MemberSnapshot* destination =
+                GetVisibleMember(g_dragDestinationVisibleIndex);
+            bool destinationIsSource = false;
+            if (destination != NULL)
+            {
+                for (size_t index = 0;
+                     index < g_selectedJobs.size(); ++index)
+                {
+                    if (SameHandleIdentity(
+                            g_selectedJobs[index].member,
+                            destination->identity))
+                    {
+                        destinationIsSource = true;
+                        break;
+                    }
+                }
+            }
+            if (destination == NULL || destinationIsSource)
+            {
+                ShowToast(
+                    "Move cancelled: choose a member that does not own any selected source job.");
+            }
+            else if (!HasPendingJobBatchUiAction() &&
+                     g_pendingAction.type == ACTION_NONE &&
+                     !g_pendingGeneralMemberDrop.pending)
+            {
+                g_pendingJobBatchUiAction = PendingJobBatchUiAction();
+                g_pendingJobBatchUiAction.type = JOB_BATCH_UI_MOVE;
+                g_pendingJobBatchUiAction.selectedJobs = g_selectedJobs;
+                g_pendingJobBatchUiAction.destination =
+                    destination->identity;
+            }
         }
 
         CancelDrag();
@@ -834,7 +1108,7 @@
                 MyGUI::Align::Default,
                 "ToolTip",
                 "KJM_ToolTip");
-            g_tooltip->setColour(MyGUI::Colour(0.10f, 0.08f, 0.06f));
+            TagThemeBackground(g_tooltip);
             g_tooltip->setNeedMouseFocus(false);
             g_tooltipText = g_tooltip->createWidget<MyGUI::TextBox>(
                 "Kenshi_TextboxStandardText_Small",
@@ -842,6 +1116,7 @@
                 MyGUI::Align::Stretch,
                 "KJM_ToolTipText");
             g_tooltipText->setNeedMouseFocus(false);
+            TagThemeStandardText(g_tooltipText);
         }
         const MyGUI::IntSize view =
             MyGUI::RenderManager::getInstance().getViewSize();
@@ -905,6 +1180,20 @@
         }
     }
 
+    int NormalizeMouseWheelNotches(int relative)
+    {
+        if (relative == 0)
+        {
+            return 0;
+        }
+        if (relative >= WHEEL_DELTA || relative <= -WHEEL_DELTA)
+        {
+            const int notches = relative / WHEEL_DELTA;
+            return notches == 0 ? (relative > 0 ? 1 : -1) : notches;
+        }
+        return relative > 0 ? 1 : -1;
+    }
+
     void OnMouseWheel(MyGUI::Widget*, int relative)
     {
         if (relative == 0 || g_window == NULL || g_stationTabActive ||
@@ -914,6 +1203,7 @@
         }
 
         ClearJobHoverHighlight();
+        const int notches = NormalizeMouseWheelNotches(relative);
 
         MyGUI::InputManager* input = MyGUI::InputManager::getInstancePtr();
         const bool shift =
@@ -922,7 +1212,7 @@
         if (shift)
         {
             g_horizontalOffset = ClampInt(
-                g_horizontalOffset - relative * 40,
+                g_horizontalOffset - notches * 40,
                 0,
                 g_maxHorizontalOffset);
             g_changingScroll = true;
@@ -942,7 +1232,7 @@
         }
 
         g_verticalOffset = ClampInt(
-            g_verticalOffset - relative * 40,
+            g_verticalOffset - notches * 40,
             0,
             g_maxVerticalOffset);
         g_changingScroll = true;
@@ -1024,7 +1314,8 @@
             const int currentDistance = ClampInt(
                 -current.top, 0, maxOffset);
             const int nextDistance = ClampInt(
-                currentDistance - relative * 40, 0, maxOffset);
+                currentDistance - NormalizeMouseWheelNotches(relative) * 40,
+                0, maxOffset);
             if (nextDistance != currentDistance)
             {
                 g_optionsScroll->setViewOffset(
@@ -1040,6 +1331,7 @@
     void CloseModalNow()
     {
         g_optionsScroll = NULL;
+        g_darkUiOptionButton = NULL;
         MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
         if (gui != NULL)
         {
@@ -1112,6 +1404,19 @@
         g_modal.window->setMovable(false);
         g_modal.window->setCaption(caption);
         g_modal.kind = kind;
+        MyGUI::Widget* modalClient = g_modal.window->getClientWidget();
+        if (modalClient != NULL)
+        {
+            const MyGUI::IntSize clientSize = modalClient->getSize();
+            MyGUI::Widget* modalSurface =
+                modalClient->createWidget<MyGUI::Widget>(
+                    "WhiteSkin",
+                    MyGUI::IntCoord(
+                        0, 0, clientSize.width, clientSize.height),
+                    MyGUI::Align::Stretch,
+                    "KJM_ModalClientSurface");
+            TagThemeSurface(modalSurface);
+        }
         MyGUI::InputManager::getInstance().addWidgetModal(g_modal.window);
         return true;
     }
@@ -1145,6 +1450,7 @@
         prompt->setCaption(message.str().c_str());
         prompt->setTextAlign(MyGUI::Align::Center);
         prompt->setNeedMouseFocus(false);
+        TagThemeStandardText(prompt);
 
         MyGUI::Button* yes = client->createWidget<MyGUI::Button>(
             "Kenshi_Button1",
@@ -1153,6 +1459,7 @@
             "KJM_ClearYes");
         yes->setCaption("Yes");
         yes->eventMouseButtonClick += MyGUI::newDelegate(OnClearYes);
+        TagThemeButtonText(yes);
         MyGUI::Button* no = client->createWidget<MyGUI::Button>(
             "Kenshi_Button1",
             MyGUI::IntCoord(282, 115, 150, 38),
@@ -1160,6 +1467,8 @@
             "KJM_ClearNo");
         no->setCaption("No");
         no->eventMouseButtonClick += MyGUI::newDelegate(OnClearNo);
+        TagThemeButtonText(no);
+        ApplyThemeToTaggedTree(g_modal.window);
         MyGUI::InputManager::getInstance().setKeyFocusWidget(no);
     }
 
@@ -1183,11 +1492,35 @@
 
     void RefreshOptionButtons()
     {
+        if (g_darkUiOptionButton != NULL)
+        {
+            g_darkUiOptionButton->setStateSelected(
+                IsDarkUIFriendlyFontColorsEnabled());
+            ApplyThemeButtonText(g_darkUiOptionButton);
+        }
         for (size_t index = 0; index < g_stationOptionButtons.size(); ++index)
         {
             g_stationOptionButtons[index].button->setStateSelected(
                 IsStationCategoryEnabled(
                 g_stationOptionButtons[index].category));
+            ApplyThemeButtonText(
+                g_stationOptionButtons[index].button);
+        }
+    }
+
+    void OnDarkUiOptionClicked(MyGUI::Widget*)
+    {
+        const bool enabled = !IsDarkUIFriendlyFontColorsEnabled();
+        const bool saved = SetDarkUIFriendlyFontColors(enabled);
+        ApplyThemeToTaggedTree(g_window);
+        ApplyThemeToTaggedTree(g_modal.window);
+        ApplyThemeToTaggedTree(g_tooltip);
+        UpdateSquadSelectorSelection();
+        RefreshOptionButtons();
+        if (!saved)
+        {
+            SetStatus(
+                "Appearance changed for this session, but settings.ini could not be saved.");
         }
     }
 
@@ -1221,6 +1554,14 @@
         {
             g_settingsWriteFailed = true;
         }
+        if (!SetDarkUIFriendlyFontColors(false))
+        {
+            g_settingsWriteFailed = true;
+        }
+        ApplyThemeToTaggedTree(g_window);
+        ApplyThemeToTaggedTree(g_modal.window);
+        ApplyThemeToTaggedTree(g_tooltip);
+        UpdateSquadSelectorSelection();
         g_stationFilterRefreshRequested = true;
         RefreshOptionButtons();
     }
@@ -1232,7 +1573,7 @@
 
     void OpenOptionsModal()
     {
-        if (!BeginModal(MODAL_OPTIONS, 900, 460, "Job Manager Options"))
+        if (!BeginModal(MODAL_OPTIONS, 900, 500, "Job Manager Options"))
         {
             return;
         }
@@ -1244,9 +1585,10 @@
             MyGUI::Align::Top | MyGUI::Align::HStretch,
             "KJM_OptionsHelp");
         help->setCaption(
-            "Station category filters apply only to Stations.\nSquad Jobs always shows every permanent job and selects each member's top three from all supported base stats. Changes save globally now.");
+            "Appearance applies to the complete manager. Station category filters apply only to Stations.\nChanges save globally and apply immediately.");
         help->setTextAlign(MyGUI::Align::Center);
         help->setNeedMouseFocus(false);
+        TagThemeStandardText(help);
 
         MyGUI::ScrollView* scroll = client->createWidget<MyGUI::ScrollView>(
             "Kenshi_ScrollView",
@@ -1269,14 +1611,48 @@
         const int leftColumn = 8;
         const int rightColumn = leftColumn + columnWidth + columnGap;
 
+        MyGUI::TextBox* appearanceSection =
+            scroll->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText",
+                MyGUI::IntCoord(leftColumn, 8, canvasWidth, 30),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_AppearanceSection");
+        appearanceSection->setCaption("APPEARANCE");
+        appearanceSection->setNeedMouseFocus(false);
+        TagThemeStandardText(appearanceSection);
+
+        g_darkUiOptionButton = scroll->createWidget<MyGUI::Button>(
+            "Kenshi_TickButton1",
+            MyGUI::IntCoord(leftColumn, 44, columnWidth, 34),
+            MyGUI::Align::Left | MyGUI::Align::Top,
+            "KJM_DarkUiOption");
+        g_darkUiOptionButton->setCaption("Dark UI friendly font colors");
+        g_darkUiOptionButton->eventMouseButtonClick +=
+            MyGUI::newDelegate(OnDarkUiOptionClicked);
+        g_darkUiOptionButton->eventMouseWheel +=
+            MyGUI::newDelegate(OnOptionsMouseWheel);
+        TagThemeButtonText(g_darkUiOptionButton);
+
+        MyGUI::TextBox* appearanceHelp =
+            scroll->createWidget<MyGUI::TextBox>(
+                "Kenshi_TextboxStandardText_Small",
+                MyGUI::IntCoord(
+                    rightColumn, 42, columnWidth, 42),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_AppearanceHelp");
+        appearanceHelp->setCaption(
+            "Off: vanilla warm background with dark text.\nOn: Dark UI background with current light text.");
+        appearanceHelp->setNeedMouseFocus(false);
+        TagThemeMutedText(appearanceHelp);
+
         MyGUI::TextBox* stationSection = scroll->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText",
-            MyGUI::IntCoord(leftColumn, 8, canvasWidth, 30),
+            MyGUI::IntCoord(leftColumn, 104, canvasWidth, 30),
             MyGUI::Align::Left | MyGUI::Align::Top,
             "KJM_StationFilterSection");
         stationSection->setCaption("STATION CATEGORY FILTERS");
-        stationSection->setTextColour(MyGUI::Colour(1.0f, 0.84f, 0.45f));
         stationSection->setNeedMouseFocus(false);
+        TagThemeStandardText(stationSection);
 
         for (size_t index = 0;
              index < STATION_CATEGORY_DEFINITION_COUNT; ++index)
@@ -1286,7 +1662,7 @@
             const size_t column = index / 5;
             const size_t row = index % 5;
             const int x = column == 0 ? leftColumn : rightColumn;
-            const int y = 46 + static_cast<int>(row) * 40;
+            const int y = 142 + static_cast<int>(row) * 40;
             MyGUI::Button* category = scroll->createWidget<MyGUI::Button>(
                 "Kenshi_TickButton1",
                 MyGUI::IntCoord(
@@ -1298,27 +1674,79 @@
                 MyGUI::newDelegate(OnStationCategoryOptionClicked);
             category->eventMouseWheel +=
                 MyGUI::newDelegate(OnOptionsMouseWheel);
+            TagThemeButtonText(category);
             StationCategoryOptionButton binding;
             binding.button = category;
             binding.category = definition.category;
             g_stationOptionButtons.push_back(binding);
         }
         scroll->setCanvasSize(
-            canvasWidth, 46 + 5 * 40 + 8);
+            canvasWidth, 142 + 5 * 40 + 8);
+        MyGUI::Widget* optionsSurface = scroll->createWidget<MyGUI::Widget>(
+            "WhiteSkin",
+            MyGUI::IntCoord(0, 0, canvasWidth, 142 + 5 * 40 + 8),
+            MyGUI::Align::Left | MyGUI::Align::Top,
+            "KJM_OptionsSurface");
+        TagThemeSurface(optionsSurface);
 
         MyGUI::Button* reset = client->createWidget<MyGUI::Button>(
             "Kenshi_Button1", MyGUI::IntCoord(16, clientSize.height - 50, 160, 38),
             MyGUI::Align::Left | MyGUI::Align::Bottom, "KJM_OptionReset");
         reset->setCaption("Reset Default");
         reset->eventMouseButtonClick += MyGUI::newDelegate(OnOptionReset);
+        TagThemeButtonText(reset);
         MyGUI::Button* close = client->createWidget<MyGUI::Button>(
             "Kenshi_Button1",
             MyGUI::IntCoord(clientSize.width - 156, clientSize.height - 50, 140, 38),
             MyGUI::Align::Right | MyGUI::Align::Bottom, "KJM_OptionClose");
         close->setCaption("Close");
         close->eventMouseButtonClick += MyGUI::newDelegate(OnOptionClose);
+        TagThemeButtonText(close);
         RefreshOptionButtons();
+        ApplyThemeToTaggedTree(g_modal.window);
         MyGUI::InputManager::getInstance().setKeyFocusWidget(close);
+    }
+
+    void OnRecipientPortraitClicked(MyGUI::Widget* widget)
+    {
+        if (g_window == NULL || g_stationTabActive ||
+            g_modal.kind != MODAL_NONE || IsStationDetailOpen() ||
+            g_drag.armed || g_pendingAction.type != ACTION_NONE ||
+            g_pendingGeneralMemberDrop.pending || g_pendingSquadPriority)
+        {
+            return;
+        }
+
+        int memberIndex = -1;
+        if (!GetWidgetIndex(widget, "KJM_Member", &memberIndex) ||
+            memberIndex < 0 ||
+            memberIndex >= static_cast<int>(g_visibleMemberBindings.size()))
+        {
+            return;
+        }
+        const MemberSnapshot* member = GetVisibleMember(memberIndex);
+        if (member == NULL)
+        {
+            return;
+        }
+
+        MyGUI::InputManager* input = MyGUI::InputManager::getInstancePtr();
+        const bool control =
+            (input != NULL && input->isControlPressed()) ||
+            (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        const HandleIdentity squad =
+            g_visibleMemberBindings[memberIndex].squad;
+        if (control)
+        {
+            ToggleSelectedRecipient(squad, member->identity);
+        }
+        else
+        {
+            SelectOnlyRecipient(squad, member->identity);
+        }
+        ApplyRecipientSelectionStates();
+        UpdateSquadSelectorSelection();
+        UpdateSquadHeading();
     }
 
     void OnJobsToggleClicked(MyGUI::Widget* widget)
@@ -1374,16 +1802,47 @@
 
     void OnPrioritizeCoreJobsClicked(MyGUI::Widget*)
     {
-        if (!g_squad.identity.valid || g_squad.incomplete ||
-            g_pendingSquadPriority ||
+        if (g_allSquads.incomplete || g_pendingSquadPriority ||
             g_pendingGeneralMemberDrop.pending ||
+            HasPendingJobBatchUiAction() ||
             g_pendingAction.type != ACTION_NONE || g_drag.armed)
         {
             return;
         }
-        g_pendingSquadPriority = true;
-        g_pendingSquadPriorityIdentity = g_squad.identity;
-        SetStatus("Applying core-job priorities to the current squad...");
+        const std::vector<HandleIdentity> recipients =
+            GetSelectedRecipientIdentities();
+        if (recipients.empty())
+        {
+            ShowToast("Select at least one recipient first.");
+            return;
+        }
+        g_pendingJobBatchUiAction = PendingJobBatchUiAction();
+        g_pendingJobBatchUiAction.type =
+            JOB_BATCH_UI_PRIORITIZE_HEALING;
+        g_pendingJobBatchUiAction.recipients = recipients;
+        SetStatus("Applying healing priorities...");
+    }
+
+    void OnAddHealingJobsClicked(MyGUI::Widget*)
+    {
+        if (g_allSquads.incomplete || g_pendingSquadPriority ||
+            g_pendingGeneralMemberDrop.pending ||
+            HasPendingJobBatchUiAction() ||
+            g_pendingAction.type != ACTION_NONE || g_drag.armed)
+        {
+            return;
+        }
+        const std::vector<HandleIdentity> recipients =
+            GetSelectedRecipientIdentities();
+        if (recipients.empty())
+        {
+            ShowToast("Select at least one recipient first.");
+            return;
+        }
+        g_pendingJobBatchUiAction = PendingJobBatchUiAction();
+        g_pendingJobBatchUiAction.type = JOB_BATCH_UI_ADD_HEALING;
+        g_pendingJobBatchUiAction.recipients = recipients;
+        SetStatus("Adding and prioritizing healing jobs...");
     }
 
     void OnOptionsClicked(MyGUI::Widget*)

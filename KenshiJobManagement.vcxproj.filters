@@ -79,6 +79,8 @@
     <None Include="src\SquadGroups.inl"><Filter>Source Files</Filter></None>
     <None Include="src\SquadPriority.inl"><Filter>Source Files</Filter></None>
     <None Include="src\GeneralJobTransfer.inl"><Filter>Source Files</Filter></None>
+    <None Include="src\JobBatchActions.inl"><Filter>Source Files</Filter></None>
+    <None Include="src\ThemePalette.inl"><Filter>Source Files</Filter></None>
     <None Include="diagnostics\GeneralJobTransferProbe.md"><Filter>Diagnostics</Filter></None>
     <None Include="diagnostics\evidence\2026-08-17-general-job-transfer-promotion.md"><Filter>Diagnostics</Filter></None>
   </ItemGroup>

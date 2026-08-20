@@ -152,10 +152,19 @@
                 &backOverlay,
                 &frontOverlay))
         {
-            widgets.portraitBorder->setStateSelected(selected);
             SetPortraitImage(widgets.portraitBackground, "Background", background);
             SetPortraitImage(widgets.portraitBackOverlay, "BackOverlay", backOverlay);
             SetPortraitImage(widgets.portraitFrontOverlay, "FrontOverlay", frontOverlay);
+        }
+
+        // Recipient selection belongs to this manager and is intentionally
+        // separate from Kenshi's existing character selection.
+        widgets.portraitBorder->setStateSelected(
+            IsRecipientSelected(member.identity));
+        if (widgets.recipientMarker != NULL)
+        {
+            widgets.recipientMarker->setVisible(
+                IsRecipientSelected(member.identity));
         }
 
         if (widgets.portrait != NULL)
@@ -1136,6 +1145,7 @@
             widgets.emptyJobs->setNeedMouseFocus(false);
             widgets.emptyJobs->setCaption(
                 member.queueAvailable ? "[No permanent jobs]" : "Queue unavailable (read-only)");
+            TagThemeStandardText(widgets.emptyJobs);
             // Keep queue text fully opaque when the parent row is dimmed for
             // Jobs OFF or an unavailable queue.
             widgets.emptyJobs->setInheritsAlpha(false);
@@ -1185,6 +1195,16 @@
             card.card->eventToolTip += MyGUI::newDelegate(OnCardToolTip);
             card.highlightGroup = FindJobHighlightGroup(row);
 
+            // Kenshi_Button1 is a dark native atlas skin. Put the text-heavy
+            // queue card on an explicit palette surface while keeping the
+            // button itself, its state, and all drag callbacks unchanged.
+            MyGUI::Widget* cardSurface = card.card->createWidget<MyGUI::Widget>(
+                "WhiteSkin",
+                MyGUI::IntCoord(3, 3, CARD_WIDTH - 6, CARD_HEIGHT - 6),
+                MyGUI::Align::Stretch,
+                "KJM_JobCardSurface");
+            TagThemeSurface(cardSurface);
+
             std::ostringstream tooltip;
             tooltip << member.name << " | Priority " << (slot + 1)
                     << "\n" << StripLeadingPriorityPrefix(row.jobLabel);
@@ -1226,8 +1246,7 @@
                         MyGUI::IntCoord(0, 0, CARD_WIDTH, CARD_HEIGHT),
                         MyGUI::Align::Stretch,
                         "KJM_JobCategoryOverlay");
-                card.categoryOverlay->setColour(
-                    MyGUI::Colour(0.14f, 0.11f, 0.08f));
+                TagThemeBackground(card.categoryOverlay);
                 // Keep the dark card treatment behind the now-transparent
                 // symbol. The icon owns its exact opacity; this layer must not
                 // multiply it down to roughly 11% visibility.
@@ -1355,7 +1374,7 @@
             card.job->setTextAlign(MyGUI::Align::Center);
             // Use pure white for the primary card text.  Kenshi's default
             // warm gray is difficult to read against the dark card skin.
-            card.job->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+            TagThemeStandardText(card.job);
             card.job->setColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
             card.job->setAlpha(1.0f);
             card.job->setInheritsAlpha(false);
@@ -1372,7 +1391,7 @@
             }
             card.arrow->setCaption(showTarget ? "V" : "");
             card.arrow->setTextAlign(MyGUI::Align::Center);
-            card.arrow->setTextColour(MyGUI::Colour(1.0f, 0.91f, 0.62f));
+            TagThemeAccentText(card.arrow);
             card.arrow->setColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
             card.arrow->setAlpha(1.0f);
             card.arrow->setInheritsAlpha(false);
@@ -1392,11 +1411,11 @@
                 SetFittedCardTargetCaption(card.target, row.targetLabel);
                 if (!row.targetAvailable)
                 {
-                    card.target->setTextColour(MyGUI::Colour(1.0f, 0.82f, 0.56f));
+                    TagThemeWarningText(card.target);
                 }
                 else
                 {
-                    card.target->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+                    TagThemeStandardText(card.target);
                 }
             }
             else
@@ -1428,26 +1447,26 @@
         MemberWidgets& widgets = g_memberWidgets[memberIndex];
 
         widgets.name->setCaption(member.name.c_str());
-        widgets.name->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        ApplyThemeStandardText(widgets.name);
         widgets.condition->setCaption(member.condition.c_str());
         widgets.condition->setVisible(!member.condition.empty());
         if (!member.condition.empty())
         {
-            widgets.condition->setTextColour(MyGUI::Colour(0.95f, 0.43f, 0.32f));
+            ApplyThemeWarningText(widgets.condition);
         }
         const std::string skillCaption = BuildSkillCaption(member);
         widgets.skills->setCaption(skillCaption.c_str());
-        widgets.skills->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        ApplyThemeStandardText(widgets.skills);
 
         widgets.jobsToggle->setCaption(member.jobsEnabled ? "Jobs: ON" : "Jobs: OFF");
         widgets.jobsToggle->setFontHeight(12);
         widgets.jobsToggle->setTextAlign(MyGUI::Align::Center);
-        widgets.jobsToggle->setTextColour(MyGUI::Colour(1.0f, 0.96f, 0.84f));
+        ApplyThemeButtonText(widgets.jobsToggle);
         widgets.jobsToggle->setEnabled(member.queueAvailable);
         widgets.clearButton->setEnabled(member.queueAvailable && !member.jobs.empty());
         widgets.clearButton->setFontHeight(12);
         widgets.clearButton->setTextAlign(MyGUI::Align::Center);
-        widgets.clearButton->setTextColour(MyGUI::Colour(1.0f, 0.96f, 0.84f));
+        ApplyThemeButtonText(widgets.clearButton);
         widgets.jobsRoot->setAlpha(
             member.queueAvailable ? (member.jobsEnabled ? 1.0f : 0.42f) : 0.35f);
 
@@ -1458,6 +1477,27 @@
             DestroyCardWidgets(widgets);
             CreateCardWidgets(memberIndex, widgets);
             widgets.appliedRevision = member.revision;
+        }
+    }
+
+    void ApplyRecipientSelectionStates()
+    {
+        for (size_t index = 0; index < g_memberWidgets.size(); ++index)
+        {
+            const MemberSnapshot* member = GetVisibleMember(index);
+            if (member == NULL)
+            {
+                continue;
+            }
+            const bool selected = IsRecipientSelected(member->identity);
+            if (g_memberWidgets[index].portraitBorder != NULL)
+            {
+                g_memberWidgets[index].portraitBorder->setStateSelected(selected);
+            }
+            if (g_memberWidgets[index].recipientMarker != NULL)
+            {
+                g_memberWidgets[index].recipientMarker->setVisible(selected);
+            }
         }
     }
 
@@ -1483,12 +1523,39 @@
             MyGUI::Align::Left | MyGUI::Align::Top,
             "KJM_MemberRow");
 
+        // SelectionPanel is a light vanilla texture and does not follow the
+        // optional dark palette. Keep the row surface explicit so member
+        // labels remain readable after a live theme toggle.
+        MyGUI::Widget* memberSurface =
+            widgets.memberRoot->createWidget<MyGUI::Widget>(
+                "WhiteSkin",
+                MyGUI::IntCoord(3, 3, g_memberWidth - 6, ROW_HEIGHT - 6),
+                MyGUI::Align::Stretch,
+                "KJM_MemberRowSurface");
+        TagThemeSurface(memberSurface);
+
+        widgets.recipientMarker =
+            widgets.memberRoot->createWidget<MyGUI::Widget>(
+                "WhiteSkin",
+                MyGUI::IntCoord(0, 5, 5, ROW_HEIGHT - 10),
+                MyGUI::Align::Left | MyGUI::Align::Top,
+                "KJM_RecipientMarker");
+        widgets.recipientMarker->setColour(
+            MyGUI::Colour(0.34f, 0.92f, 0.48f));
+        widgets.recipientMarker->setAlpha(0.95f);
+        widgets.recipientMarker->setNeedMouseFocus(false);
+        widgets.recipientMarker->setVisible(false);
+
         widgets.portraitBorder = widgets.memberRoot->createWidget<MyGUI::Button>(
             "Kenshi_PortraitFrameSkin",
             MyGUI::IntCoord(7, 11, MEMBER_PORTRAIT_SIZE, MEMBER_PORTRAIT_SIZE),
             MyGUI::Align::Left | MyGUI::Align::Top,
             "KJM_PortraitFrame");
-        widgets.portraitBorder->setNeedMouseFocus(false);
+        widgets.portraitBorder->setNeedMouseFocus(true);
+        widgets.portraitBorder->setUserString(
+            "KJM_Member", IntegerString(memberIndex));
+        widgets.portraitBorder->eventMouseButtonClick +=
+            MyGUI::newDelegate(OnRecipientPortraitClicked);
         widgets.portraitBackground = widgets.portraitBorder->createWidget<MyGUI::ImageBox>(
             "ImageBox", MyGUI::IntCoord(
                 MEMBER_PORTRAIT_INSET, MEMBER_PORTRAIT_INSET,
@@ -1539,6 +1606,7 @@
             "KJM_MemberName");
         widgets.name->setFontHeight(21);
         widgets.name->setNeedMouseFocus(false);
+        TagThemeStandardText(widgets.name);
         widgets.condition = widgets.memberRoot->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText_Small",
             MyGUI::IntCoord(
@@ -1547,6 +1615,7 @@
             "KJM_MemberCondition");
         widgets.condition->setFontHeight(15);
         widgets.condition->setNeedMouseFocus(false);
+        TagThemeWarningText(widgets.condition);
         widgets.skills = widgets.memberRoot->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText_Small",
             MyGUI::IntCoord(
@@ -1556,6 +1625,7 @@
         widgets.skills->setFontHeight(16);
         widgets.skills->setTextAlign(MyGUI::Align::Left | MyGUI::Align::Top);
         widgets.skills->setNeedMouseFocus(false);
+        TagThemeStandardText(widgets.skills);
 
         widgets.jobsToggle = widgets.memberRoot->createWidget<MyGUI::Button>(
             "Kenshi_Button1",
@@ -1564,6 +1634,7 @@
             "KJM_JobsToggle");
         widgets.jobsToggle->setUserString("KJM_Member", IntegerString(memberIndex));
         widgets.jobsToggle->eventMouseButtonClick += MyGUI::newDelegate(OnJobsToggleClicked);
+        TagThemeButtonText(widgets.jobsToggle);
 
         widgets.clearButton = widgets.memberRoot->createWidget<MyGUI::Button>(
             "Kenshi_Button1",
@@ -1573,7 +1644,7 @@
         widgets.clearButton->setCaption("Clear Queue");
         widgets.clearButton->setFontHeight(12);
         widgets.clearButton->setTextAlign(MyGUI::Align::Center);
-        widgets.clearButton->setTextColour(MyGUI::Colour(1.0f, 0.96f, 0.84f));
+        TagThemeButtonText(widgets.clearButton);
         widgets.clearButton->setUserString("KJM_Member", IntegerString(memberIndex));
         widgets.clearButton->eventMouseButtonClick += MyGUI::newDelegate(OnClearClicked);
 
@@ -1643,6 +1714,7 @@
             label->setCaption(caption.str().c_str());
             label->setTextAlign(MyGUI::Align::Center);
             label->setNeedMouseFocus(false);
+            TagThemeStandardText(label);
             g_priorityLabels.push_back(label);
         }
     }
@@ -1783,7 +1855,7 @@
         group.memberHeader->setCaption(caption.str());
         group.memberHeader->setTextAlign(MyGUI::Align::Left | MyGUI::Align::Center);
         group.memberHeader->setFontHeight(17);
-        group.memberHeader->setTextColour(MyGUI::Colour(1.0f, 1.0f, 1.0f));
+        TagThemeButtonText(group.memberHeader);
         group.memberHeader->setStateSelected(selected);
         group.memberHeader->setUserString(
             "KJM_SquadGroup", IntegerString(squadIndex));
@@ -1795,9 +1867,7 @@
             MyGUI::IntCoord(0, y, canvasWidth, SQUAD_GROUP_HEADER_HEIGHT),
             MyGUI::Align::Left | MyGUI::Align::Top,
             "KJM_SquadGroupJobHeader");
-        group.jobHeader->setColour(selected ?
-            MyGUI::Colour(0.42f, 0.30f, 0.08f) :
-            MyGUI::Colour(0.14f, 0.11f, 0.08f));
+        TagThemeBackground(group.jobHeader);
         group.jobHeader->setAlpha(selected ? 0.96f : 0.82f);
         group.jobHeader->setNeedMouseFocus(false);
         MyGUI::TextBox* jobCaption =
@@ -1810,7 +1880,7 @@
         jobCaption->setCaption(selected ? "CURRENT SQUAD" : "");
         jobCaption->setFontHeight(15);
         jobCaption->setTextAlign(MyGUI::Align::Left | MyGUI::Align::Center);
-        jobCaption->setTextColour(MyGUI::Colour(1.0f, 0.91f, 0.62f));
+        TagThemeAccentText(jobCaption);
         jobCaption->setNeedMouseFocus(false);
         g_squadGroupWidgets.push_back(group);
         BindSquadMouseWheelTree(group.memberHeader);
@@ -1826,19 +1896,22 @@
         {
             const SquadSnapshot& squad = g_allSquads.squads[squadIndex];
             y += SQUAD_GROUP_HEADER_HEIGHT;
-            if (IsSquadCollapsed(squad.identity))
+            if (!IsSquadCollapsed(squad.identity))
             {
-                continue;
+                for (size_t memberIndex = 0;
+                     memberIndex < squad.members.size(); ++memberIndex)
+                {
+                    VisibleMemberBinding binding;
+                    binding.squad = squad.identity;
+                    binding.member = squad.members[memberIndex].identity;
+                    binding.rowTop = y;
+                    g_visibleMemberBindings.push_back(binding);
+                    y += ROW_STRIDE;
+                }
             }
-            for (size_t memberIndex = 0;
-                 memberIndex < squad.members.size(); ++memberIndex)
+            if (squadIndex + 1 < g_allSquads.squads.size())
             {
-                VisibleMemberBinding binding;
-                binding.squad = squad.identity;
-                binding.member = squad.members[memberIndex].identity;
-                binding.rowTop = y;
-                g_visibleMemberBindings.push_back(binding);
-                y += ROW_STRIDE;
+                y += SQUAD_GROUP_GAP;
             }
         }
     }
@@ -1878,6 +1951,10 @@
                 y += static_cast<int>(
                     g_allSquads.squads[squadIndex].members.size()) * ROW_STRIDE;
             }
+            if (squadIndex + 1 < g_allSquads.squads.size())
+            {
+                y += SQUAD_GROUP_GAP;
+            }
         }
 
         g_memberWidgets.reserve(g_visibleMemberBindings.size());
@@ -1914,13 +1991,15 @@
     {
         if (g_prioritizeCoreJobsButton != NULL)
         {
-            const SquadSnapshot* displayedCurrent =
-                FindDisplayedSquad(g_squad.identity);
             g_prioritizeCoreJobsButton->setEnabled(
-                g_squad.live && !g_squad.unavailable &&
-                !g_squad.incomplete && !g_squad.members.empty() &&
-                displayedCurrent != NULL && !displayedCurrent->incomplete &&
-                displayedCurrent->live && !displayedCurrent->unavailable);
+                !g_selectedRecipients.empty() && !g_allSquads.incomplete &&
+                !HasPendingJobBatchUiAction() && !g_drag.armed);
+        }
+        if (g_addHealingJobsButton != NULL)
+        {
+            g_addHealingJobsButton->setEnabled(
+                !g_selectedRecipients.empty() && !g_allSquads.incomplete &&
+                !HasPendingJobBatchUiAction() && !g_drag.armed);
         }
         if (g_squadText != NULL)
         {
@@ -1942,6 +2021,12 @@
             if (g_allSquads.incomplete)
             {
                 caption << "  |  roster incomplete";
+            }
+            caption << "  |  " << g_selectedRecipients.size()
+                    << " recipient";
+            if (g_selectedRecipients.size() != 1)
+            {
+                caption << "s";
             }
             g_squadText->setCaption(caption.str().c_str());
         }
@@ -1992,6 +2077,10 @@
         const bool boardChanged =
             previousBoardRevision != g_allSquads.revision;
         g_squad = nextCurrent;
+        if (refreshed)
+        {
+            PruneSelectedRecipientsToDisplayedRoster();
+        }
 
         if (g_drag.armed && (boardChanged || currentChanged))
         {

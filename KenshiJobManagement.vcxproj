@@ -42,7 +42,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;BOOST_ALL_NO_LIB;BOOST_ERROR_CODE_HEADER_ONLY;KJM_GENERAL_JOB_TRANSFER_VERIFIED;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;BOOST_ALL_NO_LIB;BOOST_ERROR_CODE_HEADER_ONLY;KJM_GENERAL_JOB_TRANSFER_PROBE;KJM_JOB_BATCH_ACTIONS_PROBE;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(KENSHILIB_DIR)\Include;$(KENSHILIB_DIR)\Include\ogre;$(BOOST_INCLUDE_PATH);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <ExceptionHandling>Sync</ExceptionHandling>
@@ -70,6 +70,7 @@ xcopy /Y /I "$(ProjectDir)mod\gui\*.png" "$(OutDir)gui\"</Command>
   </ItemGroup>
   <ItemGroup>
     <None Include="src\RuntimeAccess.inl" />
+    <None Include="src\ThemePalette.inl" />
     <None Include="src\JobView.inl" />
     <None Include="src\JobActions.inl" />
     <None Include="src\JobWindow.inl" />
@@ -83,6 +84,7 @@ xcopy /Y /I "$(ProjectDir)mod\gui\*.png" "$(OutDir)gui\"</Command>
     <None Include="src\SquadGroups.inl" />
     <None Include="src\SquadPriority.inl" />
     <None Include="src\GeneralJobTransfer.inl" />
+    <None Include="src\JobBatchActions.inl" />
     <None Include="diagnostics\GeneralJobTransferProbe.md" />
     <None Include="diagnostics\evidence\2026-08-17-general-job-transfer-promotion.md" />
     <None Include="mod\RE_Kenshi.json" />

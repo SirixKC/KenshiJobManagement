@@ -13,7 +13,8 @@
         SQUAD_PRIORITY_PUT_IN_BED = 1,
         SQUAD_PRIORITY_MEDIC = 2,
         SQUAD_PRIORITY_ROBOTICS = 3,
-        SQUAD_PRIORITY_ENGINEERING = 4
+        SQUAD_PRIORITY_SPLINTING = 4,
+        SQUAD_PRIORITY_ENGINEERING = 5
     };
 
     struct SquadPriorityResult
@@ -73,6 +74,10 @@
         {
             return SQUAD_PRIORITY_ROBOTICS;
         }
+        if (taskType == SPLINT_JOB)
+        {
+            return SQUAD_PRIORITY_SPLINTING;
+        }
         if (taskType == JOB_BUILDER)
         {
             return SQUAD_PRIORITY_ENGINEERING;
@@ -92,6 +97,8 @@
             return "Medic";
         case SQUAD_PRIORITY_ROBOTICS:
             return "Robotics";
+        case SQUAD_PRIORITY_SPLINTING:
+            return "Splinting";
         case SQUAD_PRIORITY_ENGINEERING:
             return "Engineering";
         default:
@@ -525,7 +532,7 @@
         }
         else if (result.changedMembers == 0)
         {
-            message << "No rescue, medical, robotics, or engineering jobs needed reordering.";
+            message << "No rescue, medical, robotics, splinting, or engineering jobs needed reordering.";
         }
         else
         {
