@@ -61,6 +61,7 @@
         HandleIdentity identity;
         MyGUI::Button* card;
         MyGUI::Widget* tint;
+        MyGUI::Widget* hoverOverlay;
         MyGUI::Widget* unassignedTop;
         MyGUI::Widget* unassignedBottom;
         MyGUI::Widget* unassignedLeft;
@@ -70,7 +71,7 @@
         MyGUI::TextBox* status;
 
         StationGridCardBinding() :
-            card(NULL), tint(NULL), unassignedTop(NULL),
+            card(NULL), tint(NULL), hoverOverlay(NULL), unassignedTop(NULL),
             unassignedBottom(NULL), unassignedLeft(NULL),
             unassignedRight(NULL), recentMarker(NULL), assignment(NULL),
             status(NULL)
@@ -142,6 +143,7 @@
         bool fullRefreshRequested;
         bool detailCloseRequested;
         bool detailModalAdded;
+        int hoveredCardIndex;
         std::string detailStatusText;
         HandleIdentity recentStation;
         std::vector<HandleIdentity> recentMembers;
@@ -163,7 +165,7 @@
             detailAvailableOffset(0), detailAvailableContentHeight(0),
             detailAvailableScrollChanging(false), detailRefreshRequested(false),
             fullRefreshRequested(false), detailCloseRequested(false),
-            detailModalAdded(false)
+            detailModalAdded(false), hoveredCardIndex(-1)
         {
         }
     };
@@ -182,6 +184,8 @@
     void OnStationMouseWheel(MyGUI::Widget*, int);
     void OnStationCategoryClicked(MyGUI::Widget*);
     void OnStationCardClicked(MyGUI::Widget*);
+    void OnStationCardMouseSetFocus(MyGUI::Widget*, MyGUI::Widget*);
+    void OnStationCardMouseLostFocus(MyGUI::Widget*, MyGUI::Widget*);
     void OnStationDetailClose(MyGUI::Widget*);
     void OnStationDetailScroll(MyGUI::ScrollBar*, size_t);
     void OnStationAvailableScroll(MyGUI::ScrollBar*, size_t);
@@ -726,6 +730,68 @@
             binding->unassignedRight->setVisible(visible);
     }
 
+    bool GetStationCardBinding(
+        MyGUI::Widget* widget,
+        int* indexOut)
+    {
+        if (widget == NULL || indexOut == NULL ||
+            !widget->isUserString("KJM_StationVisibleCard"))
+        {
+            return false;
+        }
+        const int index = StationParseIndex(
+            widget, "KJM_StationVisibleCard");
+        if (index < 0 ||
+            index >= static_cast<int>(g_stationView.visibleCards.size()) ||
+            g_stationView.visibleCards[index].card != widget)
+        {
+            return false;
+        }
+        *indexOut = index;
+        return true;
+    }
+
+    void SetStationCardHover(
+        int index,
+        bool visible)
+    {
+        if (index < 0 ||
+            index >= static_cast<int>(g_stationView.visibleCards.size()))
+        {
+            return;
+        }
+        MyGUI::Widget* overlay =
+            g_stationView.visibleCards[index].hoverOverlay;
+        if (overlay != NULL && overlay->getVisible() != visible)
+        {
+            overlay->setVisible(visible);
+        }
+    }
+
+    void ApplyStationCardHoverDelta(
+        int previousIndex,
+        int nextIndex)
+    {
+        if (previousIndex == nextIndex)
+        {
+            return;
+        }
+        SetStationCardHover(previousIndex, false);
+        SetStationCardHover(nextIndex, true);
+        g_stationView.hoveredCardIndex = nextIndex;
+    }
+
+    void ClearStationCardHover()
+    {
+        const int previousIndex = g_stationView.hoveredCardIndex;
+        if (previousIndex < 0)
+        {
+            return;
+        }
+        SetStationCardHover(previousIndex, false);
+        g_stationView.hoveredCardIndex = -1;
+    }
+
     void SetFittedStationSingleLine(
         MyGUI::TextBox* text,
         const std::string& caption,
@@ -769,8 +835,16 @@
         TagThemeBackground(card);
         card->setUserString(
             "KJM_StationIdentity", StationIdentityString(station.identity));
+        card->setUserString(
+            "KJM_StationVisibleCard",
+            StationIntegerString(static_cast<int>(
+                g_stationView.visibleCards.size())));
         card->eventMouseButtonClick += MyGUI::newDelegate(OnStationCardClicked);
         card->eventMouseWheel += MyGUI::newDelegate(OnStationMouseWheel);
+        card->eventMouseSetFocus +=
+            MyGUI::newDelegate(OnStationCardMouseSetFocus);
+        card->eventMouseLostFocus +=
+            MyGUI::newDelegate(OnStationCardMouseLostFocus);
 
         // Keep station labels on an explicit palette surface. The native
         // button atlas is dark and cannot be lightened reliably by tinting;
@@ -814,6 +888,20 @@
             station.blocking || !station.blockingStatus.empty());
         tint->setNeedMouseFocus(false);
 
+        // Keep hover feedback independent from the blocking tint, the
+        // unassigned warning, and the recent-change marker.  A subtle green
+        // inner wash makes the card easier to track without replacing any of
+        // those states, on either the light or dark palette.
+        MyGUI::Widget* hoverOverlay = card->createWidget<MyGUI::Widget>(
+            "WhiteSkin", MyGUI::IntCoord(3, 3,
+                STATION_GRID_CARD_WIDTH - 6,
+                STATION_GRID_CARD_HEIGHT - 6),
+            MyGUI::Align::Stretch, "KJM_StationCardHover");
+        hoverOverlay->setColour(MyGUI::Colour(0.35f, 0.95f, 0.45f));
+        hoverOverlay->setAlpha(0.18f);
+        hoverOverlay->setNeedMouseFocus(false);
+        hoverOverlay->setVisible(false);
+
         // A usable station with nobody assigned is a planning warning, not a
         // work-blocking failure. Four thin yellow edges keep that state
         // distinct from the red blocking tint and the red zero-person X.
@@ -821,6 +909,7 @@
         binding.identity = station.identity;
         binding.card = card;
         binding.tint = tint;
+        binding.hoverOverlay = hoverOverlay;
         binding.unassignedTop = card->createWidget<MyGUI::Widget>(
             "WhiteSkin", MyGUI::IntCoord(1, 1,
                 STATION_GRID_CARD_WIDTH - 2, 3),
@@ -881,7 +970,11 @@
         name->setNeedMouseFocus(false);
 
         int lineTop = 49;
-        if (g_stationView.multipleAreas)
+        // Keep the location row stable when a category filter changes.  The
+        // old multipleAreas optimization derived this from the currently
+        // visible cards, so toggling Defense could make every other card lose
+        // its location text when the filtered result collapsed to one area.
+        if (!station.areaName.empty())
         {
             MyGUI::TextBox* area = card->createWidget<MyGUI::TextBox>(
                 "Kenshi_TextboxStandardText_Small",
@@ -926,7 +1019,7 @@
         std::ostringstream tooltip;
         tooltip << station.name << "\nCategory: "
                 << GetStationCategoryName(station.category);
-        if (g_stationView.multipleAreas)
+        if (!station.areaName.empty())
         {
             tooltip << "\nArea: " << station.areaName;
         }
@@ -976,6 +1069,7 @@
 
     void RefreshStationVirtualWidgets()
     {
+        ClearStationCardHover();
         g_stationView.visibleCards.clear();
         g_stationView.visibleHeaders.clear();
         DestroyStationWidgetList(&g_stationView.virtualWidgets);
@@ -1778,7 +1872,7 @@
                        << "  |  Relevant skill: "
                        << (station->relevantSkillName.empty() ? "None" :
                            station->relevantSkillName);
-        if (g_stationView.multipleAreas)
+        if (!station->areaName.empty())
         {
             summaryCaption << "\nArea: " << station->areaName;
         }
@@ -2139,6 +2233,7 @@
         }
         else
         {
+            ClearStationCardHover();
             g_stationView.visibleCards.clear();
             g_stationView.visibleHeaders.clear();
             DestroyStationWidgetList(&g_stationView.virtualWidgets);
@@ -2290,6 +2385,7 @@
     void DestroyStationView()
     {
         CloseStationDetail();
+        ClearStationCardHover();
         g_stationView.visibleCards.clear();
         g_stationView.visibleHeaders.clear();
         DestroyStationWidgetList(&g_stationView.virtualWidgets);
@@ -2302,6 +2398,52 @@
             }
         }
         g_stationView = StationViewState();
+    }
+
+    void OnStationCardMouseSetFocus(
+        MyGUI::Widget* widget,
+        MyGUI::Widget*)
+    {
+        if (!g_stationView.visible || IsStationDetailOpen())
+        {
+            ClearStationCardHover();
+            return;
+        }
+        int nextIndex = -1;
+        if (!GetStationCardBinding(widget, &nextIndex))
+        {
+            ClearStationCardHover();
+            return;
+        }
+        if (nextIndex == g_stationView.hoveredCardIndex)
+        {
+            return;
+        }
+        ApplyStationCardHoverDelta(
+            g_stationView.hoveredCardIndex, nextIndex);
+    }
+
+    void OnStationCardMouseLostFocus(
+        MyGUI::Widget*,
+        MyGUI::Widget* nextWidget)
+    {
+        if (g_stationView.visible && !IsStationDetailOpen())
+        {
+            int nextIndex = -1;
+            // MyGUI emits lost-focus before set-focus while crossing cards.
+            // Resolve the incoming card here so one boundary crossing only
+            // toggles the old and new overlays.
+            if (GetStationCardBinding(nextWidget, &nextIndex))
+            {
+                if (nextIndex != g_stationView.hoveredCardIndex)
+                {
+                    ApplyStationCardHoverDelta(
+                        g_stationView.hoveredCardIndex, nextIndex);
+                }
+                return;
+            }
+        }
+        ClearStationCardHover();
     }
 
     void OnStationVerticalScroll(MyGUI::ScrollBar*, size_t position)
@@ -2578,10 +2720,10 @@
             }
             if (binding.tint != NULL)
             {
-                binding.tint->setColour(
-                    station->blocking || !station->blockingStatus.empty() ?
-                    MyGUI::Colour(0.38f, 0.07f, 0.05f) :
-                    MyGUI::Colour(0.09f, 0.07f, 0.05f));
+                TagThemeStationCardTint(
+                    binding.tint,
+                    station->blocking ||
+                        !station->blockingStatus.empty());
             }
             const bool recentlyChanged =
                 SameHandleIdentity(

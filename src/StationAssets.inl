@@ -11,6 +11,10 @@
     const char* const STATION_HUD_ICON_FILE = "kjm-hud-icon.png";
     const char* const JOB_ENGINEERING_ICON_FILE = "job-engineering.png";
     const char* const JOB_MEDIC_ICON_FILE = "job-medic.png";
+    const char* const JOB_SPLINT_ICON_FILE = "job-splint.png";
+    const char* const JOB_ESCORT_OUT_ICON_FILE = "job-escort-out.png";
+    const char* const JOB_FORAGING_ANIMALS_ICON_FILE =
+        "job-foraging-animals.png";
 
     const char* const STATION_ICON_FILES[] =
     {
@@ -43,6 +47,9 @@
     bool g_hudManagerIconAvailable = false;
     bool g_jobEngineeringIconAvailable = false;
     bool g_jobMedicIconAvailable = false;
+    bool g_jobSplintIconAvailable = false;
+    bool g_jobEscortOutIconAvailable = false;
+    bool g_jobForagingAnimalsIconAvailable = false;
 
     const char* GetStationCategoryIconResource(StationCategory category)
     {
@@ -100,6 +107,22 @@
         case FIND_BED_AND_PUT_IN:
         case FIND_AND_RESCUE_IF_THERES_BEDS:
             return g_jobMedicIconAvailable ? JOB_MEDIC_ICON_FILE : NULL;
+        case SPLINT_JOB:
+            return g_jobSplintIconAvailable ? JOB_SPLINT_ICON_FILE : NULL;
+        case PICKUP_INTRUDERS_BUILDING:
+        case TAKE_INTRUDER_OUTSIDE:
+        case PICKUP_INTRUDERS_TOWN:
+        case TAKE_INTRUDER_OUTSIDE_TOWN:
+        case SHOO_STRANGERS_OUT_OF_MY_BUILDING:
+        case SHOO_STRANGERS_OUT_OF_MY_BUILDING_IF_PRIVATE:
+            return g_jobEscortOutIconAvailable ?
+                JOB_ESCORT_OUT_ICON_FILE : NULL;
+        case LOOT_ANIMALS_JOB:
+        case ANIMAL_FETCH_A_LIMB:
+        case PLAY_BECAUSE_I_HAVE_A_LIMB_IN_MOUTH:
+        case CHASE_ALLY_DOGS_WITH_MOUTH_LIMBS:
+            return g_jobForagingAnimalsIconAvailable ?
+                JOB_FORAGING_ANIMALS_ICON_FILE : NULL;
         default:
             return NULL;
         }
@@ -232,6 +255,39 @@
             catch (...)
             {
                 g_jobMedicIconAvailable = false;
+            }
+            try
+            {
+                Ogre::TexturePtr texture = textures->load(
+                    JOB_SPLINT_ICON_FILE,
+                    STATION_ICON_RESOURCE_GROUP);
+                g_jobSplintIconAvailable = !texture.isNull();
+            }
+            catch (...)
+            {
+                g_jobSplintIconAvailable = false;
+            }
+            try
+            {
+                Ogre::TexturePtr texture = textures->load(
+                    JOB_ESCORT_OUT_ICON_FILE,
+                    STATION_ICON_RESOURCE_GROUP);
+                g_jobEscortOutIconAvailable = !texture.isNull();
+            }
+            catch (...)
+            {
+                g_jobEscortOutIconAvailable = false;
+            }
+            try
+            {
+                Ogre::TexturePtr texture = textures->load(
+                    JOB_FORAGING_ANIMALS_ICON_FILE,
+                    STATION_ICON_RESOURCE_GROUP);
+                g_jobForagingAnimalsIconAvailable = !texture.isNull();
+            }
+            catch (...)
+            {
+                g_jobForagingAnimalsIconAvailable = false;
             }
 
             // The manager entry icon is optional.  A package without this

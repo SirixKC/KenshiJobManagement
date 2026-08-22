@@ -31,6 +31,10 @@
     struct JobBatchMoveBundleValue
     {
         JobBatchBundleValue payload;
+        int sourcePlanIndex;
+        int sourceSlot;
+
+        JobBatchMoveBundleValue() : sourcePlanIndex(-1), sourceSlot(-1) {}
     };
 
     struct JobBatchClipboardState
@@ -56,15 +60,29 @@
         JOB_BATCH_ADD_REJECTED,
         JOB_BATCH_ADD_UNEXPECTED_REVIEW,
         JOB_BATCH_PRIORITY_FAILED_REVIEW,
+        JOB_BATCH_INVALID_REMOVAL_FAILED_REVIEW,
         JOB_BATCH_SOURCE_CHANGED_DUPLICATE_REMAINS,
         JOB_BATCH_REMOVE_FAILED_DUPLICATE_REMAINS,
         JOB_BATCH_ALLOCATION_FAILED_REVIEW
+    };
+
+    enum JobBatchCleanupFailureStage
+    {
+        JOB_BATCH_CLEANUP_STAGE_NONE,
+        JOB_BATCH_CLEANUP_STAGE_INITIAL_CAPTURE,
+        JOB_BATCH_CLEANUP_STAGE_PLAN,
+        JOB_BATCH_CLEANUP_STAGE_QUEUE_CHANGED,
+        JOB_BATCH_CLEANUP_STAGE_RAW_REMOVE,
+        JOB_BATCH_CLEANUP_STAGE_VERIFY_ERASE,
+        JOB_BATCH_CLEANUP_STAGE_RETHINK,
+        JOB_BATCH_CLEANUP_STAGE_VERIFY_RETHINK
     };
 
     struct JobBatchActionOutcome
     {
         JobBatchActionCode code;
         bool interrupted;
+        bool invalidCleanup;
         bool destinationChanged;
         bool sourceChanged;
         int consideredRecipients;
@@ -74,18 +92,25 @@
         int skippedDuplicateBundles;
         int appendedRows;
         int removedRows;
+        int removedInvalidRows;
         int addedHealingJobs;
         int movedPriorityRows;
         HandleIdentity failedMember;
         int failedBundle;
+        int failedHealingRole;
+        JobBatchCleanupFailureStage cleanupFailureStage;
 
         JobBatchActionOutcome() :
             code(JOB_BATCH_INVALID_REQUEST), interrupted(false),
+            invalidCleanup(false),
             destinationChanged(false), sourceChanged(false),
             consideredRecipients(0), completedRecipients(0),
             consideredBundles(0), appendedBundles(0),
             skippedDuplicateBundles(0), appendedRows(0), removedRows(0),
-            addedHealingJobs(0), movedPriorityRows(0), failedBundle(-1)
+            removedInvalidRows(0), addedHealingJobs(0), movedPriorityRows(0),
+            failedBundle(-1),
+            failedHealingRole(-1),
+            cleanupFailureStage(JOB_BATCH_CLEANUP_STAGE_NONE)
         {
         }
     };
@@ -279,6 +304,161 @@
         return true;
     }
 
+    bool TryFindJobBatchRosterMemberSquad(
+        const JobBatchActiveRosterValue& roster,
+        const HandleIdentity& member,
+        HandleIdentity* squadOut)
+    {
+        if (squadOut == NULL || !member.valid || member.type != CHARACTER)
+        {
+            return false;
+        }
+        HandleIdentity foundSquad;
+        int matches = 0;
+        for (size_t squadIndex = 0;
+             squadIndex < roster.squads.size(); ++squadIndex)
+        {
+            for (size_t memberIndex = 0;
+                 memberIndex < roster.squads[squadIndex].members.size();
+                 ++memberIndex)
+            {
+                if (SameHandleIdentity(
+                        roster.squads[squadIndex].members[memberIndex],
+                        member))
+                {
+                    foundSquad = roster.squads[squadIndex].squad;
+                    ++matches;
+                }
+            }
+        }
+        if (matches != 1 || !foundSquad.valid)
+        {
+            return false;
+        }
+        *squadOut = foundSquad;
+        return true;
+    }
+
+    // Validate only the expected squad and recipient. Resolve both copied
+    // handles first, compare raw pointers while scanning the active-squad and
+    // expected-squad containers, and never dereference an unrelated platoon or
+    // member. No borrowed pointer leaves this guarded leaf.
+    __declspec(noinline) bool
+    TryValidateJobBatchRecipientRosterGuarded(
+        PlayerInterface* player,
+        const hand* expectedSquadHandle,
+        const hand* requiredMemberHandle)
+    {
+        if (player == NULL || expectedSquadHandle == NULL ||
+            requiredMemberHandle == NULL)
+        {
+            return false;
+        }
+        __try
+        {
+            Faction* faction = player->getFaction();
+            if (faction == NULL || !faction->isThePlayer())
+            {
+                return false;
+            }
+            Platoon* expectedSquad = expectedSquadHandle->getPlatoon();
+            Character* requiredMember =
+                requiredMemberHandle->getCharacter();
+            if (expectedSquad == NULL || requiredMember == NULL ||
+                expectedSquad->getFaction() != faction ||
+                requiredMember->getFaction() != faction ||
+                !requiredMember->isPlayerCharacter())
+            {
+                return false;
+            }
+
+            const lektor<Platoon*>* activeSquads =
+                faction->getActivePlatoons();
+            if (activeSquads == NULL)
+            {
+                return false;
+            }
+            const unsigned int activeCount = activeSquads->size();
+            if (activeCount > 256 ||
+                (activeCount != 0 && !activeSquads->valid()))
+            {
+                return false;
+            }
+            int squadMatches = 0;
+            for (unsigned int squadIndex = 0;
+                 squadIndex < activeCount; ++squadIndex)
+            {
+                // Pointer comparison proves membership without reading an
+                // unrelated platoon object.
+                if ((*activeSquads)[squadIndex] == expectedSquad)
+                {
+                    ++squadMatches;
+                }
+            }
+            if (squadMatches != 1)
+            {
+                return false;
+            }
+
+            ActivePlatoon* active = expectedSquad->getActivePlatoon();
+            if (active == NULL || active->me != expectedSquad)
+            {
+                return false;
+            }
+            const int memberCount = active->getNumThings();
+            if (memberCount < 1 || memberCount > 256)
+            {
+                return false;
+            }
+            int memberMatches = 0;
+            for (int memberIndex = 0;
+                 memberIndex < memberCount; ++memberIndex)
+            {
+                // getThing copies one container entry. Do not inspect or call
+                // through any unrelated member pointer.
+                if (active->getThing(memberIndex) == requiredMember)
+                {
+                    ++memberMatches;
+                }
+            }
+            return memberMatches == 1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            ErrorLog(
+                "[KenshiJobManagement] Exception while validating one cleanup recipient.");
+            return false;
+        }
+    }
+
+    // Cleanup mutates one recipient at a time. Keep the fail-closed identity
+    // contract at the mutation boundary without rebuilding the complete
+    // unrelated roster: the current recipient must occur exactly once in the
+    // same active squad captured when the action started.
+    bool RevalidateJobBatchRecipientRoster(
+        const JobBatchActiveRosterValue& expected,
+        const HandleIdentity& requiredMember)
+    {
+        HandleIdentity expectedSquad;
+        if (!TryFindJobBatchRosterMemberSquad(
+                expected, requiredMember, &expectedSquad))
+        {
+            return false;
+        }
+        if (expectedSquad.type != PLATOON)
+        {
+            return false;
+        }
+        const hand expectedSquadHandle =
+            RestoreHandleIdentity(expectedSquad);
+        const hand requiredMemberHandle =
+            RestoreHandleIdentity(requiredMember);
+        return TryValidateJobBatchRecipientRosterGuarded(
+            g_playerInterface,
+            &expectedSquadHandle,
+            &requiredMemberHandle);
+    }
+
     bool RevalidateJobBatchActiveRoster(
         const JobBatchActiveRosterValue& expected,
         const std::vector<HandleIdentity>& requiredMembers)
@@ -444,6 +624,8 @@
             // boundaries. Source plans are separate and affect only the later
             // reverse-slot removal phase.
             moving.payload = payload;
+            moving.sourcePlanIndex = planIndex;
+            moving.sourceSlot = primarySlot;
             bundlesOut->push_back(moving);
         }
         return !bundlesOut->empty();
@@ -926,43 +1108,85 @@
                 outcome->interrupted = true;
                 return false;
             }
+            ++outcome->consideredRecipients;
+            outcome->consideredBundles = static_cast<int>(moving.size());
+
+            // Keep a separate removal plan. A semantic duplicate remains at
+            // its source, while a bundle that was appended successfully is
+            // added to this plan for the later reverse-slot removal phase.
+            std::vector<JobBatchSourcePlan> removalPlans = plans;
+            for (size_t planIndex = 0;
+                 planIndex < removalPlans.size(); ++planIndex)
+            {
+                removalPlans[planIndex].sourceSlots.clear();
+            }
+
             std::vector<GeneralJobRowValue> plannedRows =
                 destinationBefore.rows;
+            std::vector<size_t> appendBundleIndexes;
+            appendBundleIndexes.reserve(moving.size());
             for (size_t index = 0; index < moving.size(); ++index)
             {
-                if (HasJobBatchSemanticDuplicate(
-                        plannedRows, moving[index].payload))
+                const JobBatchMoveBundleValue& movingBundle = moving[index];
+                if (movingBundle.sourcePlanIndex < 0 ||
+                    movingBundle.sourcePlanIndex >=
+                        static_cast<int>(plans.size()) ||
+                    movingBundle.sourceSlot < 0 ||
+                    !JobBatchContainsSlot(
+                        plans[movingBundle.sourcePlanIndex].sourceSlots,
+                        movingBundle.sourceSlot))
                 {
-                    outcome->code = JOB_BATCH_DUPLICATE;
+                    outcome->code = JOB_BATCH_INVALID_REQUEST;
                     outcome->failedBundle = static_cast<int>(index);
                     return false;
                 }
-                if (!ValidateJobBatchBundleSubjects(moving[index].payload))
+                if (HasJobBatchSemanticDuplicate(
+                        plannedRows, movingBundle.payload))
+                {
+                    ++outcome->skippedDuplicateBundles;
+                    continue;
+                }
+                if (!ValidateJobBatchBundleSubjects(movingBundle.payload))
                 {
                     outcome->code = JOB_BATCH_CAPTURE_FAILED;
                     outcome->failedBundle = static_cast<int>(index);
                     return false;
                 }
+                if (plannedRows.size() + movingBundle.payload.rows.size() >
+                    static_cast<size_t>(MAX_SAFE_JOB_ROWS))
+                {
+                    outcome->code = JOB_BATCH_DESTINATION_FULL;
+                    outcome->failedBundle = static_cast<int>(index);
+                    return false;
+                }
+                appendBundleIndexes.push_back(index);
                 plannedRows.insert(
-                    plannedRows.end(), moving[index].payload.rows.begin(),
-                    moving[index].payload.rows.end());
+                    plannedRows.end(), movingBundle.payload.rows.begin(),
+                    movingBundle.payload.rows.end());
             }
-            if (plannedRows.size() > static_cast<size_t>(MAX_SAFE_JOB_ROWS))
+
+            if (appendBundleIndexes.empty())
             {
-                outcome->code = JOB_BATCH_DESTINATION_FULL;
-                return false;
+                // No native call is needed when every selected bundle is
+                // already represented at the destination. Leave all source
+                // rows untouched and report the skipped duplicates.
+                outcome->completedRecipients = 1;
+                outcome->code = JOB_BATCH_NOTHING_TO_DO;
+                return true;
             }
 
             GeneralJobQueueValue destinationWorking = destinationBefore;
-            for (size_t index = 0; index < moving.size(); ++index)
+            for (size_t appendIndex = 0;
+                 appendIndex < appendBundleIndexes.size(); ++appendIndex)
             {
-                ++outcome->consideredBundles;
+                const size_t index = appendBundleIndexes[appendIndex];
+                const JobBatchMoveBundleValue& movingBundle = moving[index];
                 GeneralJobQueueValue after;
                 bool changed = false;
                 const JobBatchActionCode appendCode =
                     AppendJobBatchBundleAndVerify(
                         destination, destinationWorking,
-                        moving[index].payload,
+                        movingBundle.payload,
                         expectedRoster, participants,
                         &after, &changed);
                 if (changed)
@@ -980,7 +1204,9 @@
                 destinationWorking = after;
                 ++outcome->appendedBundles;
                 outcome->appendedRows += static_cast<int>(
-                    moving[index].payload.rows.size());
+                    movingBundle.payload.rows.size());
+                removalPlans[movingBundle.sourcePlanIndex].sourceSlots.push_back(
+                    movingBundle.sourceSlot);
             }
 
             // All destination copies now exist. Revalidate every source and
@@ -1013,9 +1239,14 @@
             // Slots are meaningful only within one source queue. Remove
             // source plans in reverse encounter order and each plan's bundles
             // in reverse slot order. Companion rows are removed tail first.
-            for (size_t planOffset = plans.size(); planOffset > 0; --planOffset)
+            for (size_t planOffset = removalPlans.size();
+                 planOffset > 0; --planOffset)
             {
-                JobBatchSourcePlan plan = plans[planOffset - 1];
+                JobBatchSourcePlan plan = removalPlans[planOffset - 1];
+                if (plan.sourceSlots.empty())
+                {
+                    continue;
+                }
                 std::sort(
                     plan.sourceSlots.begin(), plan.sourceSlots.end(),
                     JobBatchSlotGreater);
@@ -1140,6 +1371,559 @@
         }
     }
 
+    // These jobs can legitimately carry no live subject, or can retain an
+    // incidental subject which is not the scope of the job.  A missing target
+    // must never make one of these rows eligible for the destructive cleanup
+    // action.  Keep this list TaskType-based; localized labels are presentation
+    // data and are not a safe mutation contract.
+    bool IsJobBatchInvalidRemovalProtectedTask(TaskType taskType)
+    {
+        const TaskType role = GeneralJobSemanticRole(taskType);
+        if (role == JOB_BUILDER ||
+            role == JOB_MEDIC ||
+            role == JOB_REPAIR_ROBOT ||
+            role == FIND_AND_RESCUE ||
+            role == FIND_BED_AND_PUT_IN ||
+            role == SPLINT_JOB)
+        {
+            return true;
+        }
+
+        switch (taskType)
+        {
+        // Preserve construction/engineering work even when a save contains a
+        // fixed-target form outside the usual JOB_BUILDER role.
+        case BUILD:
+        case ADD_MATERIALS_TO_BUILDING:
+        case REPAIR:
+        case DISMANTLE:
+        // Preserve the animal-harvesting order and its animal-specific
+        // follow-up forms.
+        case LOOT_ANIMALS_JOB:
+        case ANIMAL_FETCH_A_LIMB:
+        case PLAY_BECAUSE_I_HAVE_A_LIMB_IN_MOUTH:
+        case CHASE_ALLY_DOGS_WITH_MOUTH_LIMBS:
+        // Preserve every intruder/throw-out variant, including town jobs.
+        case PICKUP_INTRUDERS_BUILDING:
+        case TAKE_INTRUDER_OUTSIDE:
+        case PICKUP_INTRUDERS_TOWN:
+        case TAKE_INTRUDER_OUTSIDE_TOWN:
+        case SHOO_STRANGERS_OUT_OF_MY_BUILDING:
+        case SHOO_STRANGERS_OUT_OF_MY_BUILDING_IF_PRIVATE:
+        // Preserve medical and rescue behaviors even when they are not one of
+        // the five healing roles exposed by the batch healing button.
+        case FIRST_AID_ORDER:
+        case FIRST_AID_ROBOT:
+        case SPLINT_ORDER:
+        case HEAL_MY_LEGS:
+        case FIND_AND_RESCUE_LEADER:
+        case PUT_SOMEONE_IN_BED:
+        case PUT_DOWN_CHARACTER_IN_BED:
+        case GET_PUT_IN_BED:
+        case USE_BED:
+        case GET_OUT_OF_BED:
+        case GO_HOME_AND_GO_TO_BED:
+        case GO_HOME_AND_GO_TO_BED_SECURE:
+        case GET_OUT_OF_BED_IF_ITS_EMERGENCY:
+        case USE_BED_ORDER:
+        case CARRY_WOUNDED_SLAVES:
+        case LIFT_OBJECT_BUT_HEAL_FIRST:
+        case PUT_DOWN_CARRIED_DUDE_IF_THEY_CAN_WALK:
+        case GET_OUT_OF_BED_ONCE_HEALED:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    bool IsJobBatchInvalidRemovalProtectedRow(
+        const GeneralJobRowValue& row)
+    {
+        // TaskData::associated is the native semantic root for companion and
+        // wrapper rows. Protect both the stored task and its normalized root;
+        // a protected companion therefore protects its complete bundle.
+        const TaskType root = row.taskData.associated == NULL_TASK ?
+            row.taskType : row.taskData.associated;
+        return IsJobBatchInvalidRemovalProtectedTask(row.taskType) ||
+            IsJobBatchInvalidRemovalProtectedTask(root);
+    }
+
+    bool IsJobBatchInvalidRemovalProtectedRow(
+        const InvalidCleanupJobRowValue& row)
+    {
+        if (row.taskType == NULL_TASK || !row.taskData.available)
+        {
+            return true;
+        }
+        const TaskType root = row.taskData.associated == NULL_TASK ?
+            row.taskType : row.taskData.associated;
+        return IsJobBatchInvalidRemovalProtectedTask(row.taskType) ||
+            IsJobBatchInvalidRemovalProtectedTask(root) ||
+            IsJobBatchInvalidRemovalProtectedTask(row.taskData.key);
+    }
+
+    bool IsJobBatchInvalidFixedTarget(
+        const GeneralJobRowValue& row)
+    {
+        // fixedTarget is Kenshi's authoritative target contract. Do not infer
+        // invalidity from needsTarget or from a localized label: targetless
+        // global/medical jobs are valid, while a fixed-target row with no
+        // subject is the exact damaged state this cleanup addresses.
+        if (!row.taskData.fixedTarget ||
+            IsJobBatchInvalidRemovalProtectedRow(row))
+        {
+            return false;
+        }
+        if (!row.subjectIdentity.valid)
+        {
+            return true;
+        }
+        RootObjectBase* targetObject = NULL;
+        // Deletion depends only on the guarded handle/object resolution. A
+        // valid target can legitimately have an empty or temporarily
+        // unreadable display name; presentation text must never authorize a
+        // destructive mutation. The borrowed object is tested only inside
+        // this call and is not retained.
+        return !TryResolveTargetObject(row.subject, &targetObject);
+    }
+
+    bool IsJobBatchInvalidFixedTarget(
+        const InvalidCleanupJobRowValue& row)
+    {
+        if (!row.taskData.fixedTarget ||
+            IsJobBatchInvalidRemovalProtectedRow(row))
+        {
+            return false;
+        }
+        if (!row.subjectIdentity.valid)
+        {
+            return true;
+        }
+        RootObjectBase* targetObject = NULL;
+        return !TryResolveTargetObject(row.subject, &targetObject);
+    }
+
+    bool IsJobBatchInvalidCleanupCompanionPair(
+        const InvalidCleanupJobRowValue& primary,
+        const InvalidCleanupJobRowValue& companion)
+    {
+        return primary.taskData.associatedSecondary != NULL_TASK &&
+            companion.taskType == primary.taskData.associatedSecondary &&
+            SameHandleIdentity(
+                primary.subjectIdentity, companion.subjectIdentity) &&
+            SameGeneralJobLocation(
+                primary.location, companion.location) &&
+            (companion.taskData.associated == primary.taskType ||
+             companion.taskData.associated ==
+                primary.taskData.associated);
+    }
+
+    struct JobBatchInvalidCleanupBundleValue
+    {
+        std::vector<InvalidCleanupJobRowValue> rows;
+    };
+
+    struct JobBatchInvalidRemovalBundleValue
+    {
+        int primarySlot;
+        JobBatchInvalidCleanupBundleValue payload;
+
+        JobBatchInvalidRemovalBundleValue() : primarySlot(-1) {}
+    };
+
+    struct JobBatchInvalidRemovalPlan
+    {
+        InvalidCleanupJobQueueValue before;
+        std::vector<JobBatchInvalidRemovalBundleValue> bundles;
+    };
+
+    bool BuildJobBatchInvalidRemovalPlan(
+        const InvalidCleanupJobQueueValue& source,
+        JobBatchInvalidRemovalPlan* planOut)
+    {
+        if (planOut == NULL || !source.member.valid ||
+            source.member.type != CHARACTER)
+        {
+            return false;
+        }
+        JobBatchInvalidRemovalPlan plan;
+        plan.before = source;
+        // Cleanup must also handle the damaged queue state it is intended to
+        // repair. The transfer bundle builder deliberately rejects an
+        // associated/root wrapper and a primary whose declared secondary row
+        // is missing or no longer matches.  Using it here made one such row
+        // abort the complete recipient plan before any invalid job could be
+        // removed. The cleanup-only capture records malformed raw scalars
+        // without authorizing their reuse. Group only an exact adjacent native
+        // companion; otherwise classify the current row as a fingerprinted
+        // singleton.
+        for (int slot = 0;
+             slot < static_cast<int>(source.rows.size()); )
+        {
+            JobBatchInvalidCleanupBundleValue bundle;
+            const InvalidCleanupJobRowValue& primary = source.rows[slot];
+            bundle.rows.push_back(primary);
+            if (primary.taskData.associatedSecondary != NULL_TASK &&
+                slot + 1 < static_cast<int>(source.rows.size()) &&
+                IsJobBatchInvalidCleanupCompanionPair(
+                    primary, source.rows[slot + 1]))
+            {
+                bundle.rows.push_back(source.rows[slot + 1]);
+            }
+
+            bool protectedBundle = false;
+            bool invalidBundle = false;
+            for (size_t row = 0; row < bundle.rows.size(); ++row)
+            {
+                protectedBundle = protectedBundle ||
+                    IsJobBatchInvalidRemovalProtectedRow(bundle.rows[row]);
+                invalidBundle = invalidBundle ||
+                    IsJobBatchInvalidFixedTarget(bundle.rows[row]);
+            }
+            if (invalidBundle && !protectedBundle)
+            {
+                JobBatchInvalidRemovalBundleValue candidate;
+                candidate.primarySlot = slot;
+                candidate.payload = bundle;
+                plan.bundles.push_back(candidate);
+            }
+            slot += static_cast<int>(bundle.rows.size());
+        }
+        *planOut = plan;
+        return true;
+    }
+
+    bool JobBatchInvalidRemovalRowMatches(
+        const InvalidCleanupJobQueueValue& queue,
+        int slot,
+        const InvalidCleanupJobRowValue& expected)
+    {
+        return slot >= 0 && slot < static_cast<int>(queue.rows.size()) &&
+            SameInvalidCleanupJobRowFingerprint(queue.rows[slot], expected);
+    }
+
+    enum JobBatchInvalidCleanupRemoveResult
+    {
+        JOB_BATCH_CLEANUP_REMOVE_FAILED,
+        JOB_BATCH_CLEANUP_REMOVE_VERIFIED,
+        JOB_BATCH_CLEANUP_REMOVE_VERIFIED_RETHINK_FAILED
+    };
+
+    JobBatchInvalidCleanupRemoveResult
+    TryRemoveInvalidCleanupJobAndVerify(
+        const HandleIdentity& member,
+        const InvalidCleanupJobQueueValue& before,
+        int slot,
+        InvalidCleanupJobQueueValue* afterOut,
+        JobBatchCleanupFailureStage* failureStageOut)
+    {
+        if (failureStageOut != NULL)
+        {
+            *failureStageOut = JOB_BATCH_CLEANUP_STAGE_NONE;
+        }
+        if (afterOut == NULL || slot < 0 ||
+            slot >= static_cast<int>(before.rows.size()))
+        {
+            if (failureStageOut != NULL)
+            {
+                *failureStageOut = JOB_BATCH_CLEANUP_STAGE_RAW_REMOVE;
+            }
+            return JOB_BATCH_CLEANUP_REMOVE_FAILED;
+        }
+
+        InvalidCleanupJobQueueValue liveBefore;
+        if (!TryCaptureInvalidCleanupJobQueue(member, &liveBefore) ||
+            !SameInvalidCleanupJobQueueFingerprint(before, liveBefore))
+        {
+            if (failureStageOut != NULL)
+            {
+                *failureStageOut = JOB_BATCH_CLEANUP_STAGE_QUEUE_CHANGED;
+            }
+            return JOB_BATCH_CLEANUP_REMOVE_FAILED;
+        }
+
+        InvalidCleanupJobQueueValue expected = before;
+        expected.rows.erase(expected.rows.begin() + slot);
+        InvalidCleanupJobQueueValue afterErase;
+        InvalidCleanupJobQueueValue afterRethink;
+        const bool nativeReturned = TryRemovePermajobRaw(
+            RestoreHandleIdentity(member), slot);
+        if (!TryCaptureInvalidCleanupJobQueue(member, &afterErase) ||
+            !SameInvalidCleanupJobQueueFingerprint(expected, afterErase))
+        {
+            // The native call can fault after it has shifted the queue and
+            // destroyed the selected Tasker. Always make the defensive AI
+            // rethink before returning, but preserve the original stage that
+            // made the erase unverified.
+            TryRethinkCurrentAIAction(RestoreHandleIdentity(member));
+            if (failureStageOut != NULL)
+            {
+                *failureStageOut = nativeReturned ?
+                    JOB_BATCH_CLEANUP_STAGE_VERIFY_ERASE :
+                    JOB_BATCH_CLEANUP_STAGE_RAW_REMOVE;
+            }
+            return JOB_BATCH_CLEANUP_REMOVE_FAILED;
+        }
+
+        // The exact slot erase is now proven. A later rethink failure cannot
+        // make that destructive mutation unverified. Do not copy or allocate
+        // between the raw mutation and this mandatory rethink.
+        const bool rethinkReturned = TryRethinkCurrentAIAction(
+            RestoreHandleIdentity(member));
+        if (!rethinkReturned)
+        {
+            PublishInvalidCleanupJobQueueNoThrow(afterOut, &afterErase);
+            if (failureStageOut != NULL)
+            {
+                *failureStageOut = JOB_BATCH_CLEANUP_STAGE_RETHINK;
+            }
+            return JOB_BATCH_CLEANUP_REMOVE_VERIFIED_RETHINK_FAILED;
+        }
+        if (!TryCaptureInvalidCleanupJobQueue(member, &afterRethink) ||
+            !SameInvalidCleanupJobQueueFingerprint(
+                expected, afterRethink))
+        {
+            PublishInvalidCleanupJobQueueNoThrow(afterOut, &afterErase);
+            if (failureStageOut != NULL)
+            {
+                *failureStageOut = JOB_BATCH_CLEANUP_STAGE_VERIFY_RETHINK;
+            }
+            return JOB_BATCH_CLEANUP_REMOVE_VERIFIED_RETHINK_FAILED;
+        }
+        PublishInvalidCleanupJobQueueNoThrow(afterOut, &afterRethink);
+        return JOB_BATCH_CLEANUP_REMOVE_VERIFIED;
+    }
+
+    // Remove every fixed-target row whose freshly captured subject is absent
+    // or cannot resolve, from the selected recipients only. The caller passes
+    // stable HandleIdentity values; this function reacquires the active roster
+    // and complete value-only queues before each native removal. Companion
+    // rows are removed tail-first and all removals proceed in reverse slot
+    // order. A verified mutation is retained on later failure; no rollback is
+    // attempted.
+    bool RemoveInvalidJobBatch(
+        const std::vector<HandleIdentity>& recipients,
+        JobBatchActionOutcome* outcomeOut)
+    {
+        JobBatchActionOutcome local;
+        JobBatchActionOutcome* outcome =
+            outcomeOut == NULL ? &local : outcomeOut;
+        *outcome = JobBatchActionOutcome();
+        outcome->invalidCleanup = true;
+        try
+        {
+            std::vector<HandleIdentity> unique;
+            if (!BuildUniqueJobBatchRecipients(recipients, &unique))
+            {
+                outcome->code = JOB_BATCH_INVALID_REQUEST;
+                return false;
+            }
+
+            JobBatchActiveRosterValue expectedRoster;
+            if (!TryCaptureJobBatchActiveRoster(&expectedRoster) ||
+                !JobBatchRosterContainsMembers(expectedRoster, unique))
+            {
+                outcome->code = JOB_BATCH_CAPTURE_FAILED;
+                outcome->interrupted = true;
+                return false;
+            }
+
+            bool anyChange = false;
+            for (size_t recipientIndex = 0;
+                 recipientIndex < unique.size(); ++recipientIndex)
+            {
+                const HandleIdentity& recipient = unique[recipientIndex];
+                ++outcome->consideredRecipients;
+
+                // A remove-invalid action selects recipients, not stale row
+                // snapshots. Earlier verified removals can make Kenshi
+                // reconsider AI state before the next recipient begins. Plan
+                // this recipient from one fresh complete queue at its turn,
+                // then require exact equality after every native mutation.
+                if (!RevalidateJobBatchRecipientRoster(
+                        expectedRoster, recipient))
+                {
+                    outcome->code = JOB_BATCH_SOURCE_CHANGED;
+                    outcome->failedMember = recipient;
+                    outcome->interrupted = true;
+                    return false;
+                }
+                JobBatchInvalidRemovalPlan plan;
+                if (!TryCaptureInvalidCleanupJobQueue(
+                        recipient, &plan.before))
+                {
+                    outcome->code = JOB_BATCH_CAPTURE_FAILED;
+                    outcome->failedMember = recipient;
+                    outcome->cleanupFailureStage =
+                        JOB_BATCH_CLEANUP_STAGE_INITIAL_CAPTURE;
+                    outcome->interrupted = true;
+                    return false;
+                }
+                if (!BuildJobBatchInvalidRemovalPlan(plan.before, &plan))
+                {
+                    outcome->code = JOB_BATCH_CAPTURE_FAILED;
+                    outcome->failedMember = recipient;
+                    outcome->cleanupFailureStage =
+                        JOB_BATCH_CLEANUP_STAGE_PLAN;
+                    outcome->interrupted = true;
+                    return false;
+                }
+                outcome->consideredBundles += static_cast<int>(
+                    plan.bundles.size());
+
+                InvalidCleanupJobQueueValue working = plan.before;
+                // Higher primary slots are removed first, so lower planned
+                // slots retain their original indices. A companion is always
+                // removed before its primary row.
+                for (size_t bundleOffset = plan.bundles.size();
+                     bundleOffset > 0; --bundleOffset)
+                {
+                    const JobBatchInvalidRemovalBundleValue& bundle =
+                        plan.bundles[bundleOffset - 1];
+                    // Target availability can change between preflight and
+                    // this mutation tick. Re-capture the complete queue and
+                    // run the same protected/fixed-target test again. If the
+                    // target recovered, leave this bundle untouched instead
+                    // of deleting a now-valid job.
+                    InvalidCleanupJobQueueValue currentBeforeBundle;
+                    if (!TryCaptureInvalidCleanupJobQueue(
+                            plan.before.member,
+                            &currentBeforeBundle) ||
+                        !SameInvalidCleanupJobQueueFingerprint(
+                            working, currentBeforeBundle))
+                    {
+                        outcome->code = JOB_BATCH_SOURCE_CHANGED;
+                        outcome->failedMember = plan.before.member;
+                        outcome->failedBundle = static_cast<int>(
+                            bundleOffset - 1);
+                        outcome->cleanupFailureStage =
+                            JOB_BATCH_CLEANUP_STAGE_QUEUE_CHANGED;
+                        outcome->interrupted = true;
+                        return false;
+                    }
+                    bool protectedBundle = false;
+                    bool invalidBundle = false;
+                    for (size_t currentRow = 0;
+                         currentRow < bundle.payload.rows.size();
+                         ++currentRow)
+                    {
+                        const int currentSlot = bundle.primarySlot +
+                            static_cast<int>(currentRow);
+                        if (!JobBatchInvalidRemovalRowMatches(
+                                currentBeforeBundle, currentSlot,
+                                bundle.payload.rows[currentRow]))
+                        {
+                            outcome->code = JOB_BATCH_SOURCE_CHANGED;
+                            outcome->failedMember = plan.before.member;
+                            outcome->failedBundle = static_cast<int>(
+                                bundleOffset - 1);
+                            outcome->cleanupFailureStage =
+                                JOB_BATCH_CLEANUP_STAGE_QUEUE_CHANGED;
+                            outcome->interrupted = true;
+                            return false;
+                        }
+                        protectedBundle = protectedBundle ||
+                            IsJobBatchInvalidRemovalProtectedRow(
+                                currentBeforeBundle.rows[currentSlot]);
+                        invalidBundle = invalidBundle ||
+                            IsJobBatchInvalidFixedTarget(
+                                currentBeforeBundle.rows[currentSlot]);
+                    }
+                    if (protectedBundle || !invalidBundle)
+                    {
+                        // A target that recovered after preflight is no
+                        // longer an invalid-job cleanup candidate. Skip the
+                        // complete native companion bundle.
+                        continue;
+                    }
+
+                    for (size_t rowOffset = bundle.payload.rows.size();
+                         rowOffset > 0; --rowOffset)
+                    {
+                        if (!RevalidateJobBatchRecipientRoster(
+                                expectedRoster, recipient))
+                        {
+                            outcome->code = JOB_BATCH_SOURCE_CHANGED;
+                            outcome->failedMember = plan.before.member;
+                            outcome->failedBundle = static_cast<int>(
+                                bundleOffset - 1);
+                            outcome->cleanupFailureStage =
+                                JOB_BATCH_CLEANUP_STAGE_QUEUE_CHANGED;
+                            outcome->interrupted = true;
+                            return false;
+                        }
+
+                        const int removeSlot = bundle.primarySlot +
+                            static_cast<int>(rowOffset - 1);
+                        if (!JobBatchInvalidRemovalRowMatches(
+                                working, removeSlot,
+                                bundle.payload.rows[rowOffset - 1]))
+                        {
+                            outcome->code = JOB_BATCH_SOURCE_CHANGED;
+                            outcome->failedMember = plan.before.member;
+                            outcome->failedBundle = static_cast<int>(
+                                bundleOffset - 1);
+                            outcome->cleanupFailureStage =
+                                JOB_BATCH_CLEANUP_STAGE_QUEUE_CHANGED;
+                            outcome->interrupted = true;
+                            return false;
+                        }
+
+                        // Cleanup has its own malformed-row fingerprint. It
+                        // proves the exact native erase before AI rethink.
+                        InvalidCleanupJobQueueValue after;
+                        JobBatchCleanupFailureStage failureStage =
+                            JOB_BATCH_CLEANUP_STAGE_NONE;
+                        const JobBatchInvalidCleanupRemoveResult removeResult =
+                            TryRemoveInvalidCleanupJobAndVerify(
+                                plan.before.member, working,
+                                removeSlot, &after, &failureStage);
+                        if (removeResult ==
+                            JOB_BATCH_CLEANUP_REMOVE_FAILED)
+                        {
+                            outcome->code =
+                                JOB_BATCH_INVALID_REMOVAL_FAILED_REVIEW;
+                            outcome->failedMember = plan.before.member;
+                            outcome->failedBundle = static_cast<int>(
+                                bundleOffset - 1);
+                            outcome->cleanupFailureStage = failureStage;
+                            outcome->interrupted = true;
+                            return false;
+                        }
+                        PublishInvalidCleanupJobQueueNoThrow(
+                            &working, &after);
+                        outcome->sourceChanged = true;
+                        ++outcome->removedInvalidRows;
+                        anyChange = true;
+                        if (removeResult ==
+                            JOB_BATCH_CLEANUP_REMOVE_VERIFIED_RETHINK_FAILED)
+                        {
+                            outcome->code =
+                                JOB_BATCH_INVALID_REMOVAL_FAILED_REVIEW;
+                            outcome->failedMember = plan.before.member;
+                            outcome->failedBundle = static_cast<int>(
+                                bundleOffset - 1);
+                            outcome->cleanupFailureStage = failureStage;
+                            outcome->interrupted = true;
+                            return false;
+                        }
+                    }
+                }
+                ++outcome->completedRecipients;
+            }
+
+            outcome->code = anyChange ?
+                JOB_BATCH_SUCCESS : JOB_BATCH_NOTHING_TO_DO;
+            return true;
+        }
+        catch (...)
+        {
+            outcome->code = JOB_BATCH_ALLOCATION_FAILED_REVIEW;
+            outcome->interrupted = true;
+            return false;
+        }
+    }
+
     enum JobBatchHealingRole
     {
         JOB_BATCH_HEAL_RESCUE = 0,
@@ -1186,10 +1970,11 @@
         switch (role)
         {
         case JOB_BATCH_HEAL_RESCUE:
-            // FIND_AND_RESCUE is the user-requested task. Kenshi can publish
-            // FIND_AND_RESCUE_IF_THERES_BEDS as its live permanent wrapper;
-            // GeneralJobSemanticRole deliberately verifies both as Rescue.
-            return FIND_AND_RESCUE;
+            // Kenshi accepts the permanent Rescue wrapper here. The visible
+            // FIND_AND_RESCUE stage is not itself a reliable permanent-job
+            // request and can leave the queue unchanged. Semantic role
+            // matching still treats either live form as one Rescue job.
+            return FIND_AND_RESCUE_IF_THERES_BEDS;
         case JOB_BATCH_HEAL_PUT_IN_BED:
             return FIND_BED_AND_PUT_IN;
         case JOB_BATCH_HEAL_MEDIC:
@@ -1240,15 +2025,16 @@
             return false;
         }
         Faction* faction = character->getFaction();
-        OrdersReceiver* receiver = character->getOrdersReciever();
-        if (faction == NULL || !faction->isThePlayer() || receiver == NULL)
+        if (faction == NULL || !faction->isThePlayer())
         {
             return false;
         }
-        hand nullSubject;
-        receiver->addJob(
-            taskType, nullSubject,
-            Ogre::Vector3(0.0f, 0.0f, 0.0f), true);
+        // This is Kenshi's public permanent shift-add path. The lower-level
+        // OrdersReceiver overload rejects these targetless global jobs in the
+        // live game even though their TaskData correctly needs no target.
+        character->addJob(
+            taskType, NULL, true, true,
+            Ogre::Vector3(0.0f, 0.0f, 0.0f));
         character->reThinkCurrentAIAction();
         return true;
     }
@@ -1646,6 +2432,7 @@
                         {
                             outcome->code = addCode;
                             outcome->failedMember = unique[recipient];
+                            outcome->failedHealingRole = role;
                             outcome->interrupted = true;
                             return false;
                         }
@@ -1693,6 +2480,50 @@
         }
     }
 
+    bool TryResolveJobBatchMemberName(
+        const HandleIdentity& member,
+        std::string* nameOut)
+    {
+        if (nameOut == NULL)
+        {
+            return false;
+        }
+        nameOut->clear();
+        if (!member.valid || member.type != CHARACTER)
+        {
+            return false;
+        }
+        const hand memberHandle = RestoreHandleIdentity(member);
+        Character* character = NULL;
+        return TryResolveCharacter(memberHandle, &character) &&
+            TryGetCharacterName(character, nameOut) &&
+            !nameOut->empty();
+    }
+
+    const char* JobBatchCleanupFailureStageText(
+        JobBatchCleanupFailureStage stage)
+    {
+        switch (stage)
+        {
+        case JOB_BATCH_CLEANUP_STAGE_INITIAL_CAPTURE:
+            return "initial malformed-row capture";
+        case JOB_BATCH_CLEANUP_STAGE_PLAN:
+            return "cleanup plan";
+        case JOB_BATCH_CLEANUP_STAGE_QUEUE_CHANGED:
+            return "exact queue precheck";
+        case JOB_BATCH_CLEANUP_STAGE_RAW_REMOVE:
+            return "native exact-slot removal";
+        case JOB_BATCH_CLEANUP_STAGE_VERIFY_ERASE:
+            return "immediate erase verification";
+        case JOB_BATCH_CLEANUP_STAGE_RETHINK:
+            return "AI rethink";
+        case JOB_BATCH_CLEANUP_STAGE_VERIFY_RETHINK:
+            return "post-rethink queue verification";
+        default:
+            return "unspecified cleanup stage";
+        }
+    }
+
     std::string BuildJobBatchActionMessage(
         const JobBatchActionOutcome& outcome,
         const char* completedAction)
@@ -1721,7 +2552,7 @@
             break;
         case JOB_BATCH_SOURCE_CHANGED:
         case JOB_BATCH_DESTINATION_CHANGED:
-            message << "A job queue changed before the action completed. Review the affected members and try again.";
+            message << "A selected member or job queue changed before the action completed. Review the affected members and try again.";
             break;
         case JOB_BATCH_SOURCE_CHANGED_DUPLICATE_REMAINS:
         case JOB_BATCH_REMOVE_FAILED_DUPLICATE_REMAINS:
@@ -1732,11 +2563,43 @@
         case JOB_BATCH_ALLOCATION_FAILED_REVIEW:
             message << "The job action stopped after an unverified result. Review the affected job queues before another change.";
             break;
+        case JOB_BATCH_INVALID_REMOVAL_FAILED_REVIEW:
+            if (outcome.cleanupFailureStage ==
+                    JOB_BATCH_CLEANUP_STAGE_RETHINK ||
+                outcome.cleanupFailureStage ==
+                    JOB_BATCH_CLEANUP_STAGE_VERIFY_RETHINK)
+            {
+                message << "Invalid-job cleanup retained an exactly verified removal, but AI rethink or its resulting queue could not be verified. Review the affected queue before another change.";
+            }
+            else
+            {
+                message << "Invalid-job cleanup stopped after an unverified removal. Review the affected queue before another change.";
+            }
+            break;
         case JOB_BATCH_CAPTURE_FAILED:
             message << "A selected job queue could not be read safely. No further jobs were changed.";
             break;
         case JOB_BATCH_ADD_REJECTED:
-            message << "Kenshi rejected a permanent job. No further jobs were changed.";
+            if (outcome.failedHealingRole >= JOB_BATCH_HEAL_RESCUE &&
+                outcome.failedHealingRole <= JOB_BATCH_HEAL_SPLINTING)
+            {
+                const char* roleName = "healing";
+                switch (outcome.failedHealingRole)
+                {
+                case JOB_BATCH_HEAL_RESCUE: roleName = "Rescue"; break;
+                case JOB_BATCH_HEAL_PUT_IN_BED: roleName = "Put in Bed"; break;
+                case JOB_BATCH_HEAL_MEDIC: roleName = "Medic"; break;
+                case JOB_BATCH_HEAL_ROBOTICS: roleName = "Robotics"; break;
+                case JOB_BATCH_HEAL_SPLINTING: roleName = "Splinting"; break;
+                default: break;
+                }
+                message << "Kenshi rejected the " << roleName <<
+                    " permanent job. No further jobs were changed.";
+            }
+            else
+            {
+                message << "Kenshi rejected a permanent job. No further jobs were changed.";
+            }
             break;
         default:
             message << "The selected job action is no longer valid.";
@@ -1773,6 +2636,12 @@
                 " source row" <<
                 (outcome.removedRows == 1 ? "" : "s") << ".";
         }
+        if (outcome.removedInvalidRows != 0)
+        {
+            message << " Removed " << outcome.removedInvalidRows <<
+                " invalid job row" <<
+                (outcome.removedInvalidRows == 1 ? "" : "s") << ".";
+        }
         if (outcome.interrupted && outcome.completedRecipients != 0)
         {
             message << " Completed " << outcome.completedRecipients <<
@@ -1780,10 +2649,44 @@
                 (outcome.completedRecipients == 1 ? "" : "s") <<
                 " before stopping.";
         }
+        if (outcome.invalidCleanup && outcome.interrupted)
+        {
+            std::string failedMemberName;
+            if (TryResolveJobBatchMemberName(
+                    outcome.failedMember, &failedMemberName))
+            {
+                message << " Member: " << failedMemberName << ".";
+            }
+            if (outcome.failedBundle >= 0)
+            {
+                message << " Failed bundle: " <<
+                    (outcome.failedBundle + 1) << ".";
+            }
+            if (outcome.cleanupFailureStage !=
+                JOB_BATCH_CLEANUP_STAGE_NONE)
+            {
+                message << " Stage: " <<
+                    JobBatchCleanupFailureStageText(
+                        outcome.cleanupFailureStage) << ".";
+            }
+        }
         if (outcome.interrupted &&
             (outcome.destinationChanged || outcome.sourceChanged))
         {
             message << " Verified earlier changes remain; no rollback was attempted.";
         }
-        return message.str();
+        const std::string result = message.str();
+        if (outcome.invalidCleanup && outcome.interrupted)
+        {
+            std::ostringstream diagnostic;
+            diagnostic <<
+                "[KenshiJobManagement] Invalid cleanup stopped. stage=" <<
+                JobBatchCleanupFailureStageText(
+                    outcome.cleanupFailureStage) <<
+                " code=" << static_cast<int>(outcome.code) <<
+                " removed=" << outcome.removedInvalidRows <<
+                " bundle=" << outcome.failedBundle;
+            ErrorLog(diagnostic.str().c_str());
+        }
+        return result;
     }

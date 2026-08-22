@@ -193,7 +193,7 @@
 
     void CopySelectedJobsToBatchClipboard()
     {
-        if (g_selectedJobs.empty())
+        if (!JobCardSelectionMode())
         {
             ShowToast("Select one or more jobs before copying.");
             return;
@@ -231,6 +231,11 @@
         if (!HasJobBatchClipboard())
         {
             ShowToast("Copy one or more jobs before pasting.");
+            return;
+        }
+        if (!RecipientSelectionMode())
+        {
+            ShowToast("Select at least one recipient before pasting.");
             return;
         }
         const std::vector<HandleIdentity> recipients =
@@ -312,6 +317,11 @@
             ApplyJobBatchHealing(action.recipients, false, &outcome);
             completed = "Healing priorities updated.";
         }
+        else if (action.type == JOB_BATCH_UI_REMOVE_INVALID)
+        {
+            RemoveInvalidJobBatch(action.recipients, &outcome);
+            completed = "Invalid-job cleanup completed.";
+        }
         else
         {
             outcome.code = JOB_BATCH_INVALID_REQUEST;
@@ -325,7 +335,10 @@
         }
         RefreshSquadView(true);
         const std::string message =
-            BuildJobBatchActionMessage(outcome, completed);
+            action.type == JOB_BATCH_UI_REMOVE_INVALID &&
+            outcome.code == JOB_BATCH_NOTHING_TO_DO ?
+                "No removable invalid jobs were found." :
+                BuildJobBatchActionMessage(outcome, completed);
         SetStatus(message);
         ShowToast(message);
     }
@@ -495,8 +508,13 @@
 
     void ClearJobHoverHighlight()
     {
+        const int previousGroup = g_hoveredJobHighlightGroup;
+        if (previousGroup < 0)
+        {
+            return;
+        }
         g_hoveredJobHighlightGroup = -1;
-        ApplyCardHoverHighlights();
+        ApplyCardHoverHighlights(previousGroup, -1);
     }
 
     void OnCardMouseSetFocus(MyGUI::Widget* widget, MyGUI::Widget*)
@@ -524,12 +542,46 @@
             ClearJobHoverHighlight();
             return;
         }
+        if (group == g_hoveredJobHighlightGroup)
+        {
+            return;
+        }
+        const int previousGroup = g_hoveredJobHighlightGroup;
         g_hoveredJobHighlightGroup = group;
-        ApplyCardHoverHighlights();
+        ApplyCardHoverHighlights(previousGroup, group);
     }
 
-    void OnCardMouseLostFocus(MyGUI::Widget*, MyGUI::Widget*)
+    void OnCardMouseLostFocus(
+        MyGUI::Widget*,
+        MyGUI::Widget* nextWidget)
     {
+        // MyGUI commonly emits lost-focus immediately before set-focus while
+        // the pointer crosses adjacent cards. Resolve the incoming card here
+        // so one boundary crossing performs one old-to-new delta instead of a
+        // full clear followed by a second full show pass.
+        if (g_modal.kind == MODAL_NONE && !g_drag.active)
+        {
+            int memberIndex = -1;
+            int slot = -1;
+            if (GetCardBinding(nextWidget, &memberIndex, &slot) &&
+                memberIndex < static_cast<int>(g_memberWidgets.size()) &&
+                slot < static_cast<int>(
+                    g_memberWidgets[memberIndex].cards.size()))
+            {
+                const int nextGroup =
+                    g_memberWidgets[memberIndex].cards[slot].highlightGroup;
+                if (nextGroup >= 0)
+                {
+                    if (nextGroup != g_hoveredJobHighlightGroup)
+                    {
+                        const int previousGroup = g_hoveredJobHighlightGroup;
+                        g_hoveredJobHighlightGroup = nextGroup;
+                        ApplyCardHoverHighlights(previousGroup, nextGroup);
+                    }
+                    return;
+                }
+            }
+        }
         ClearJobHoverHighlight();
     }
 
@@ -647,17 +699,55 @@
 
     void ClearJobSelection()
     {
+        if (g_selectedJobs.empty() &&
+            !g_selectionAnchorMember.valid &&
+            g_selectionAnchorSlot < 0)
+        {
+            return;
+        }
         g_selectedJobs.clear();
         ResetHandleIdentity(&g_selectionAnchorMember);
         g_selectionAnchorSlot = -1;
         ApplyCardSelectionStates();
     }
 
+    void ClearRecipientSelectionForJobInteraction()
+    {
+        if (g_selectedRecipients.empty())
+        {
+            return;
+        }
+        ResetRecipientSelection();
+        ApplyRecipientSelectionStates();
+        UpdateSquadSelectorSelection();
+        UpdateSquadHeading();
+    }
+
+    void ClearJobSelectionForRecipientInteraction()
+    {
+        ClearJobSelection();
+    }
+
     void OnEmptyPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton button)
     {
-        if (button == MyGUI::MouseButton::Left && g_modal.kind == MODAL_NONE)
+        if (button == MyGUI::MouseButton::Left &&
+            g_modal.kind == MODAL_NONE &&
+            !HasPendingJobBatchUiAction() &&
+            g_pendingAction.type == ACTION_NONE &&
+            !g_pendingGeneralMemberDrop.pending &&
+            !g_pendingSquadPriority)
         {
+            // Keep an established Ctrl multi-selection stable when the
+            // pointer lands in unused board space. The user can still reduce
+            // the set with Ctrl-clicks or replace it by clicking a different
+            // job card.
+            if (g_selectedJobs.size() > 1)
+            {
+                ClearRecipientSelectionForJobInteraction();
+                return;
+            }
             ClearJobSelection();
+            ClearRecipientSelectionForJobInteraction();
         }
     }
 
@@ -677,12 +767,78 @@
         UpdateRemoveButton();
     }
 
+    void SetDragDestinationOutlineVisible(bool visible)
+    {
+        if (g_dragDestinationOutlineTop != NULL)
+        {
+            g_dragDestinationOutlineTop->setVisible(visible);
+        }
+        if (g_dragDestinationOutlineBottom != NULL)
+        {
+            g_dragDestinationOutlineBottom->setVisible(visible);
+        }
+        if (g_dragDestinationOutlineLeft != NULL)
+        {
+            g_dragDestinationOutlineLeft->setVisible(visible);
+        }
+        if (g_dragDestinationOutlineRight != NULL)
+        {
+            g_dragDestinationOutlineRight->setVisible(visible);
+        }
+    }
+
+    void UpdateDragDestinationOutline(int destinationIndex)
+    {
+        if (!g_drag.active || g_squadTabRoot == NULL ||
+            g_memberViewport == NULL || g_jobViewport == NULL ||
+            destinationIndex < 0 ||
+            destinationIndex >= static_cast<int>(g_visibleMemberBindings.size()) ||
+            g_dragDestinationOutlineTop == NULL ||
+            g_dragDestinationOutlineBottom == NULL ||
+            g_dragDestinationOutlineLeft == NULL ||
+            g_dragDestinationOutlineRight == NULL)
+        {
+            SetDragDestinationOutlineVisible(false);
+            return;
+        }
+
+        const MyGUI::IntCoord memberViewport = g_memberViewport->getCoord();
+        const MyGUI::IntCoord jobViewport = g_jobViewport->getCoord();
+        const int rowTop = memberViewport.top +
+            g_visibleMemberBindings[destinationIndex].rowTop -
+            g_verticalOffset;
+        const int rowBottom = rowTop + ROW_HEIGHT;
+        const int clippedTop = std::max(rowTop, memberViewport.top);
+        const int clippedBottom = std::min(rowBottom, memberViewport.bottom());
+        const int left = memberViewport.left;
+        const int right = jobViewport.right();
+        const int width = right - left;
+        const int visibleHeight = clippedBottom - clippedTop;
+        if (width <= 6 || visibleHeight <= 6)
+        {
+            SetDragDestinationOutlineVisible(false);
+            return;
+        }
+
+        const int thickness = 3;
+        g_dragDestinationOutlineTop->setCoord(
+            left, clippedTop, width, thickness);
+        g_dragDestinationOutlineBottom->setCoord(
+            left, clippedBottom - thickness, width, thickness);
+        g_dragDestinationOutlineLeft->setCoord(
+            left, clippedTop, thickness, visibleHeight);
+        g_dragDestinationOutlineRight->setCoord(
+            right - thickness, clippedTop, thickness, visibleHeight);
+        SetDragDestinationOutlineVisible(true);
+    }
+
     void CancelDrag()
     {
         g_drag = DragState();
         g_dragDestinationVisibleIndex = -1;
         g_lastDragTick = 0;
         ClearJobHoverHighlight();
+        SetDragDestinationOutlineVisible(false);
         if (g_insertionLine != NULL)
         {
             g_insertionLine->setVisible(false);
@@ -699,24 +855,39 @@
             {
             }
         }
+        // Edge auto-scroll keeps the captured source subtree visible while a
+        // drag is armed. Reapply normal viewport culling after capture ends so
+        // a canceled drop cannot leave that offscreen subtree active.
+        ApplySquadViewportVisibility();
     }
 
     int FindVisibleMemberRowAtMouse(const MyGUI::IntPoint& mouse)
     {
-        if (g_jobViewport == NULL)
+        if (g_memberViewport == NULL || g_jobViewport == NULL)
         {
             return -1;
         }
-        const MyGUI::IntCoord view = g_jobViewport->getAbsoluteCoord();
-        if (mouse.left < view.left || mouse.left >= view.right() ||
-            mouse.top < view.top || mouse.top >= view.bottom())
+        const MyGUI::IntCoord memberView =
+            g_memberViewport->getAbsoluteCoord();
+        const MyGUI::IntCoord jobView = g_jobViewport->getAbsoluteCoord();
+        const bool inMemberView =
+            mouse.left >= memberView.left &&
+            mouse.left < memberView.right() &&
+            mouse.top >= memberView.top &&
+            mouse.top < memberView.bottom();
+        const bool inJobView =
+            mouse.left >= jobView.left &&
+            mouse.left < jobView.right() &&
+            mouse.top >= jobView.top &&
+            mouse.top < jobView.bottom();
+        if (!inMemberView && !inJobView)
         {
             return -1;
         }
         for (size_t index = 0;
              index < g_visibleMemberBindings.size(); ++index)
         {
-            const int rowTop = view.top +
+            const int rowTop = jobView.top +
                 g_visibleMemberBindings[index].rowTop - g_verticalOffset;
             if (mouse.top >= rowTop && mouse.top < rowTop + ROW_HEIGHT)
             {
@@ -744,6 +915,7 @@
             {
                 g_insertionLine->setVisible(false);
             }
+            SetDragDestinationOutlineVisible(false);
             return;
         }
 
@@ -755,6 +927,7 @@
             g_drag.insertionGap = -1;
             g_dragDestinationVisibleIndex = -1;
             g_insertionLine->setVisible(false);
+            SetDragDestinationOutlineVisible(false);
             return;
         }
 
@@ -767,6 +940,7 @@
         gap = ClampInt(gap, 0, queueCount);
         g_drag.insertionGap = gap;
         g_dragDestinationVisibleIndex = destinationIndex;
+        UpdateDragDestinationOutline(destinationIndex);
 
         MyGUI::Widget* client = g_window != NULL ? g_window->getClientWidget() : NULL;
         if (client == NULL)
@@ -788,9 +962,10 @@
         {
             g_removeButton->setColour(MyGUI::Colour(1.0f, 0.34f, 0.30f));
             g_removeButton->setStateSelected(true);
-            std::ostringstream caption;
-            caption << "DROP TO REMOVE (" << g_selectedJobs.size() << ")";
-            g_removeButton->setCaption(caption.str().c_str());
+            // Keep the temporary drop target affordance short enough for the
+            // button while the normal action remains "Remove Job(s)".
+            g_removeButton->setCaption("DROP TO REMOVE");
+            g_removeButton->setFontHeight(12);
         }
     }
 
@@ -801,7 +976,9 @@
         MyGUI::MouseButton button)
     {
         if (button != MyGUI::MouseButton::Left ||
-            g_modal.kind != MODAL_NONE || HasPendingJobBatchUiAction())
+            g_modal.kind != MODAL_NONE || HasPendingJobBatchUiAction() ||
+            g_pendingAction.type != ACTION_NONE ||
+            g_pendingGeneralMemberDrop.pending || g_pendingSquadPriority)
         {
             return;
         }
@@ -820,8 +997,13 @@
         }
         const MemberSnapshot& member = *memberPointer;
         const JobRowSnapshot& job = member.jobs[slot];
+        // Job-card selection and recipient selection are separate action
+        // modes. Entering the job mode clears any selected people/squads so
+        // a later button press cannot act on a stale mixed selection.
+        ClearRecipientSelectionForJobInteraction();
         MyGUI::InputManager& input = MyGUI::InputManager::getInstance();
-        const bool plain = !input.isControlPressed() && !input.isShiftPressed();
+        const bool control = input.isControlPressed();
+        const bool plain = !control && !input.isShiftPressed();
         const bool alreadySelected =
             FindSelectedJobIndex(member.identity, job, slot) >= 0;
 
@@ -833,9 +1015,13 @@
         g_drag.startSequence = member.jobs;
         g_drag.deferredPlainClick =
             plain && alreadySelected && g_selectedJobs.size() > 1;
-        g_drag.sourceWasSelected = alreadySelected;
+        // A Ctrl-click on a selected card normally toggles it off. Defer that
+        // toggle until release so the same press can start a drag without the
+        // card disappearing from the multi-selection first.
+        g_drag.deferredControlToggle = control && alreadySelected;
 
-        if (!g_drag.deferredPlainClick)
+        if (!g_drag.deferredPlainClick &&
+            !g_drag.deferredControlToggle)
         {
             ApplyCardClickSelection(memberIndex, slot);
         }
@@ -883,10 +1069,10 @@
             }
             g_drag.active = true;
             g_drag.deferredPlainClick = false;
+            g_drag.deferredControlToggle = false;
             ClearJobHoverHighlight();
             const MemberSnapshot& sourceMember = *sourceMemberPointer;
-            if (!g_drag.sourceWasSelected ||
-                FindSelectedJobIndex(
+            if (FindSelectedJobIndex(
                     sourceMember.identity,
                     sourceMember.jobs[g_drag.slot],
                     g_drag.slot) < 0)
@@ -903,7 +1089,7 @@
 
     void QueueRemoveSelectedAction()
     {
-        if (g_selectedJobs.empty() || g_pendingAction.type != ACTION_NONE)
+        if (!JobCardSelectionMode() || g_pendingAction.type != ACTION_NONE)
         {
             return;
         }
@@ -947,10 +1133,24 @@
             MyGUI::InputManager::getInstance().getMousePosition();
         if (!g_drag.active)
         {
-            if (g_drag.deferredPlainClick)
+            if (g_drag.deferredControlToggle)
             {
-                SelectOnlyJob(g_drag.memberIndex, g_drag.slot);
+                const MemberSnapshot& sourceMember = *sourceMemberPointer;
+                const int selectedIndex = FindSelectedJobIndex(
+                    sourceMember.identity,
+                    sourceMember.jobs[g_drag.slot],
+                    g_drag.slot);
+                if (selectedIndex >= 0)
+                {
+                    g_selectedJobs.erase(
+                        g_selectedJobs.begin() + selectedIndex);
+                }
+                g_selectionAnchorMember = sourceMember.identity;
+                g_selectionAnchorSlot = g_drag.slot;
+                ApplyCardSelectionStates();
             }
+            // deferredPlainClick deliberately performs no selection change:
+            // a plain click on a member of a multi-set now keeps that set.
             CancelDrag();
             return;
         }
@@ -1331,6 +1531,7 @@
     void CloseModalNow()
     {
         g_optionsScroll = NULL;
+        g_messageLogScroll = NULL;
         g_darkUiOptionButton = NULL;
         MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
         if (gui != NULL)
@@ -1419,6 +1620,160 @@
         }
         MyGUI::InputManager::getInstance().addWidgetModal(g_modal.window);
         return true;
+    }
+
+    void OnMessageLogMouseWheel(MyGUI::Widget*, int relative)
+    {
+        if (g_modal.kind != MODAL_MESSAGE_LOG ||
+            g_messageLogScroll == NULL || relative == 0)
+        {
+            return;
+        }
+        try
+        {
+            const MyGUI::IntSize canvas =
+                g_messageLogScroll->getCanvasSize();
+            const MyGUI::IntCoord view =
+                g_messageLogScroll->getViewCoord();
+            const int maximum = std::max(0, canvas.height - view.height);
+            const MyGUI::IntPoint current =
+                g_messageLogScroll->getViewOffset();
+            const int currentDistance = ClampInt(
+                -current.top, 0, maximum);
+            const int nextDistance = ClampInt(
+                currentDistance -
+                    NormalizeMouseWheelNotches(relative) * 40,
+                0, maximum);
+            if (nextDistance != currentDistance)
+            {
+                g_messageLogScroll->setViewOffset(
+                    MyGUI::IntPoint(current.left, -nextDistance));
+            }
+        }
+        catch (...)
+        {
+            // The log is optional UI. A closing MyGUI tree must not affect
+            // manager actions or the stored value-only messages.
+        }
+    }
+
+    void OnStatusFrameClicked(MyGUI::Widget*)
+    {
+        if (g_window == NULL || g_modal.kind != MODAL_NONE ||
+            IsStationDetailOpen() || g_drag.armed ||
+            g_pendingAction.type != ACTION_NONE ||
+            g_pendingGeneralMemberDrop.pending || g_pendingSquadPriority ||
+            g_squadSelectorSelectionPending || HasPendingJobBatchUiAction())
+        {
+            return;
+        }
+        if (g_recentStatusMessages.empty())
+        {
+            ShowToast("No recent messages in this session.");
+            return;
+        }
+        if (!BeginModal(
+                MODAL_MESSAGE_LOG, 840, 540,
+                "Recent Job Manager Messages"))
+        {
+            return;
+        }
+
+        MyGUI::Widget* client = g_modal.window->getClientWidget();
+        if (client == NULL)
+        {
+            g_modalCloseRequested = true;
+            return;
+        }
+        const MyGUI::IntSize clientSize = client->getSize();
+        MyGUI::TextBox* help = client->createWidget<MyGUI::TextBox>(
+            "Kenshi_TextboxStandardText_Small",
+            MyGUI::IntCoord(16, 10, clientSize.width - 32, 26),
+            MyGUI::Align::Top | MyGUI::Align::HStretch,
+            "KJM_MessageLogHelp");
+        help->setCaption(
+            "The 10 most recent non-empty timestamped messages from this game session (oldest to newest).");
+        help->setFontHeight(15);
+        help->setTextAlign(MyGUI::Align::Center);
+        help->setNeedMouseFocus(false);
+        TagThemeStandardText(help);
+
+        std::ostringstream historyCaption;
+        size_t historyLineCount = 0;
+        const size_t messageWrapCharacters = static_cast<size_t>(
+            std::min(
+                86,
+                std::max(24, (clientSize.width - 76) / 8)));
+        for (size_t index = 0;
+             index < g_recentStatusMessages.size(); ++index)
+        {
+            if (index != 0)
+            {
+                historyCaption << "\n\n";
+                ++historyLineCount;
+            }
+            std::ostringstream numberedMessage;
+            numberedMessage << (index + 1) << ". " <<
+                "[" << g_recentStatusMessages[index].timestamp << "] " <<
+                g_recentStatusMessages[index].text;
+            size_t messageLineCount = 0;
+            historyCaption << WrapToolTipCaption(
+                numberedMessage.str(), messageWrapCharacters,
+                &messageLineCount);
+            historyLineCount += messageLineCount;
+        }
+
+        MyGUI::ScrollView* scroll = client->createWidget<MyGUI::ScrollView>(
+            "Kenshi_ScrollView",
+            MyGUI::IntCoord(
+                16, 44, clientSize.width - 32,
+                std::max(100, clientSize.height - 104)),
+            MyGUI::Align::Stretch,
+            "KJM_MessageLogScroll");
+        g_messageLogScroll = scroll;
+        scroll->setVisibleHScroll(false);
+        scroll->eventMouseWheel +=
+            MyGUI::newDelegate(OnMessageLogMouseWheel);
+        const MyGUI::IntCoord view = scroll->getViewCoord();
+        const int canvasWidth = std::max(1, view.width - 8);
+        const int canvasHeight = std::max(
+            view.height,
+            static_cast<int>(historyLineCount) * 22 + 20);
+        scroll->setCanvasSize(canvasWidth, canvasHeight);
+        scroll->setVisibleVScroll(canvasHeight > view.height);
+
+        MyGUI::Widget* historySurface = scroll->createWidget<MyGUI::Widget>(
+            "WhiteSkin",
+            MyGUI::IntCoord(0, 0, canvasWidth, canvasHeight),
+            MyGUI::Align::Left | MyGUI::Align::Top,
+            "KJM_MessageLogSurface");
+        TagThemeStatusFrame(historySurface);
+        historySurface->setNeedMouseFocus(true);
+        historySurface->eventMouseWheel +=
+            MyGUI::newDelegate(OnMessageLogMouseWheel);
+
+        MyGUI::TextBox* history = scroll->createWidget<MyGUI::TextBox>(
+            "Kenshi_TextboxStandardText",
+            MyGUI::IntCoord(14, 10, canvasWidth - 28, canvasHeight - 20),
+            MyGUI::Align::Left | MyGUI::Align::Top,
+            "KJM_MessageLogText");
+        history->setCaption(historyCaption.str().c_str());
+        history->setFontHeight(16);
+        history->setTextAlign(MyGUI::Align::Left | MyGUI::Align::Top);
+        history->setNeedMouseFocus(false);
+        TagThemeStandardText(history);
+
+        MyGUI::Button* close = client->createWidget<MyGUI::Button>(
+            "Kenshi_Button1",
+            MyGUI::IntCoord(
+                clientSize.width - 156, clientSize.height - 50, 140, 38),
+            MyGUI::Align::Right | MyGUI::Align::Bottom,
+            "KJM_MessageLogClose");
+        close->setCaption("Close");
+        close->eventMouseButtonClick += MyGUI::newDelegate(OnOptionClose);
+        TagThemeButtonText(close);
+        ApplyThemeToTaggedTree(g_modal.window);
+        MyGUI::InputManager::getInstance().setKeyFocusWidget(close);
     }
 
     void OpenClearModal(int memberIndex)
@@ -1573,7 +1928,11 @@
 
     void OpenOptionsModal()
     {
-        if (!BeginModal(MODAL_OPTIONS, 900, 500, "Job Manager Options"))
+        // Give the two-column filter list enough vertical room to show every
+        // option at once. The canvas remains a ScrollView for compatibility
+        // with existing input routing, but it no longer needs a scrollbar at
+        // the normal supported resolutions.
+        if (!BeginModal(MODAL_OPTIONS, 1000, 600, "Job Manager Options"))
         {
             return;
         }
@@ -1599,7 +1958,7 @@
                 std::max(180, clientSize.height - 122)),
             MyGUI::Align::Stretch,
             "KJM_OptionsScroll");
-        scroll->setVisibleVScroll(true);
+        scroll->setVisibleVScroll(false);
         scroll->setVisibleHScroll(false);
         scroll->eventMouseWheel += MyGUI::newDelegate(OnOptionsMouseWheel);
         g_optionsScroll = scroll;
@@ -1712,7 +2071,8 @@
         if (g_window == NULL || g_stationTabActive ||
             g_modal.kind != MODAL_NONE || IsStationDetailOpen() ||
             g_drag.armed || g_pendingAction.type != ACTION_NONE ||
-            g_pendingGeneralMemberDrop.pending || g_pendingSquadPriority)
+            g_pendingGeneralMemberDrop.pending || g_pendingSquadPriority ||
+            HasPendingJobBatchUiAction())
         {
             return;
         }
@@ -1725,10 +2085,14 @@
             return;
         }
         const MemberSnapshot* member = GetVisibleMember(memberIndex);
-        if (member == NULL)
+        if (member == NULL || !member->queueAvailable)
         {
             return;
         }
+
+        // Entering recipient mode clears the job-card mode while preserving
+        // the existing recipient set so Ctrl can still toggle one person.
+        ClearJobSelectionForRecipientInteraction();
 
         MyGUI::InputManager* input = MyGUI::InputManager::getInstancePtr();
         const bool control =
@@ -1809,6 +2173,11 @@
         {
             return;
         }
+        if (!RecipientSelectionMode())
+        {
+            ShowToast("Select at least one recipient first.");
+            return;
+        }
         const std::vector<HandleIdentity> recipients =
             GetSelectedRecipientIdentities();
         if (recipients.empty())
@@ -1832,6 +2201,11 @@
         {
             return;
         }
+        if (!RecipientSelectionMode())
+        {
+            ShowToast("Select at least one recipient first.");
+            return;
+        }
         const std::vector<HandleIdentity> recipients =
             GetSelectedRecipientIdentities();
         if (recipients.empty())
@@ -1843,6 +2217,33 @@
         g_pendingJobBatchUiAction.type = JOB_BATCH_UI_ADD_HEALING;
         g_pendingJobBatchUiAction.recipients = recipients;
         SetStatus("Adding and prioritizing healing jobs...");
+    }
+
+    void OnRemoveInvalidJobsClicked(MyGUI::Widget*)
+    {
+        if (g_allSquads.incomplete || g_pendingSquadPriority ||
+            g_pendingGeneralMemberDrop.pending ||
+            HasPendingJobBatchUiAction() ||
+            g_pendingAction.type != ACTION_NONE || g_drag.armed)
+        {
+            return;
+        }
+        if (!RecipientSelectionMode())
+        {
+            ShowToast("Select at least one recipient first.");
+            return;
+        }
+        const std::vector<HandleIdentity> recipients =
+            GetSelectedRecipientIdentities();
+        if (recipients.empty())
+        {
+            ShowToast("Select at least one recipient first.");
+            return;
+        }
+        g_pendingJobBatchUiAction = PendingJobBatchUiAction();
+        g_pendingJobBatchUiAction.type = JOB_BATCH_UI_REMOVE_INVALID;
+        g_pendingJobBatchUiAction.recipients = recipients;
+        SetStatus("Removing invalid fixed-target jobs...");
     }
 
     void OnOptionsClicked(MyGUI::Widget*)

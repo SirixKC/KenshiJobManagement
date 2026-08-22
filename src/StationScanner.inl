@@ -1262,6 +1262,12 @@
         }
     }
 
+    bool StationStringIdEquals(const GameData* data, const char* expected);
+
+    bool StationIsWellBuilding(
+        const GameData* buildingData,
+        const GameData* functionalityData);
+
     bool TryClassifyStationBuilding(
         Building* building,
         StationCategory* categoryOut,
@@ -1289,6 +1295,12 @@
         {
             const BuildingClassType classType = building->getBuildingClass();
             const BuildingFunction function = building->getSpecialFunction();
+            GameData* buildingData = building->getGameData();
+            UseableStuff* usable = building->getUseableStuff();
+            GameData* functionalityData = usable == NULL ?
+                NULL : usable->getFunctionalityData();
+            const bool well = StationIsWellBuilding(
+                buildingData, functionalityData);
             *naturalOut = function == BF_MINE_NATURAL;
             bool farmingClassified = false;
             bool productionFarmingStat = false;
@@ -1312,7 +1324,6 @@
                 // this opt-in narrow: the engine must identify Farming as
                 // the UseableStuff stat and expose a task that the verified
                 // station-assignment path knows how to normalize.
-                UseableStuff* usable = building->getUseableStuff();
                 const StatsEnumerated engineStat = usable == NULL ?
                     STAT_NONE : usable->getStatUsed();
                 if (engineStat == STAT_FARMING)
@@ -1359,6 +1370,15 @@
                 break;
             }
 
+            if (well)
+            {
+                // Vanilla wells use the mining special function for their
+                // water-production worker task.  Their exact FCS identity is
+                // a storage/hauling station in this board, not an ore mine.
+                *categoryOut = STATION_STORAGE_HAULING;
+                *relevantOut = true;
+            }
+
             // BCTYPE_FARM is authoritative for farming buildings. A few
             // vanilla/modded farm records expose a generic special function,
             // and that metadata must not replace the farming category. Keep
@@ -1373,7 +1393,8 @@
                 return true;
             }
 
-            if (!farmingClassified || function == BF_MINE_NATURAL)
+            if (!well &&
+                (!farmingClassified || function == BF_MINE_NATURAL))
             {
                 switch (function)
                 {
@@ -1436,7 +1457,6 @@
             *assignmentSupportedOut = NormalizeStationTaskScalars(
                 classType, function, building->getDefaultTask(),
                 &normalizedTask, &automaticBundle);
-            UseableStuff* usable = building->getUseableStuff();
             if (usable != NULL)
             {
                 const StatsEnumerated engineStat = usable->getStatUsed();
@@ -1458,6 +1478,21 @@
     {
         return data != NULL && expected != NULL &&
             std::strcmp(data->stringID.c_str(), expected) == 0;
+    }
+
+    bool StationIsWellBuilding(
+        const GameData* buildingData,
+        const GameData* functionalityData)
+    {
+        // These are the vanilla Well, Well II, and Well III BUILDING records.
+        // All three point at the exact 1926 functionality record.  Use these
+        // immutable FCS identities instead of the localized/renameable object
+        // name, and keep the check ahead of the generic BF_MINE fallback.
+        return StationStringIdEquals(
+                functionalityData, "1926-gamedata.base") ||
+            StationStringIdEquals(buildingData, "1921-gamedata.base") ||
+            StationStringIdEquals(buildingData, "1924-gamedata.base") ||
+            StationStringIdEquals(buildingData, "1925-gamedata.base");
     }
 
     __declspec(noinline) StationVisualSubtype CallReadStationVisualSubtype(

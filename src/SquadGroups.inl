@@ -8,18 +8,25 @@
     {
         HandleIdentity squad;
         HandleIdentity member;
+        size_t squadIndex;
+        size_t memberIndex;
         int rowTop;
 
-        VisibleMemberBinding() : rowTop(0) {}
+        VisibleMemberBinding() : squadIndex(0), memberIndex(0), rowTop(0) {}
     };
 
     struct SquadGroupWidgets
     {
         HandleIdentity squad;
+        std::string name;
+        size_t memberCount;
+        bool collapsed;
         MyGUI::Button* memberHeader;
         MyGUI::Widget* jobHeader;
 
-        SquadGroupWidgets() : memberHeader(NULL), jobHeader(NULL) {}
+        SquadGroupWidgets() :
+            memberCount(0), collapsed(false),
+            memberHeader(NULL), jobHeader(NULL) {}
     };
 
     struct SelectedRecipient
@@ -34,7 +41,8 @@
         JOB_BATCH_UI_PASTE,
         JOB_BATCH_UI_MOVE,
         JOB_BATCH_UI_ADD_HEALING,
-        JOB_BATCH_UI_PRIORITIZE_HEALING
+        JOB_BATCH_UI_PRIORITIZE_HEALING,
+        JOB_BATCH_UI_REMOVE_INVALID
     };
 
     struct PendingJobBatchUiAction
@@ -59,10 +67,81 @@
     void OnSquadGroupToggle(MyGUI::Widget* widget);
     void OnPrioritizeCoreJobsClicked(MyGUI::Widget* widget);
     void OnAddHealingJobsClicked(MyGUI::Widget* widget);
+    void OnRemoveInvalidJobsClicked(MyGUI::Widget* widget);
     void OnRecipientPortraitClicked(MyGUI::Widget* widget);
     void ApplyRecipientSelectionStates();
     void UpdateSquadHeading();
     void UpdateSquadSelectorSelection();
+
+    bool IsDisplayedRecipientEditable(
+        const HandleIdentity& squadIdentity,
+        const HandleIdentity& memberIdentity)
+    {
+        if (g_allSquads.incomplete)
+        {
+            return false;
+        }
+        for (size_t squadIndex = 0;
+             squadIndex < g_allSquads.squads.size(); ++squadIndex)
+        {
+            const SquadSnapshot& squad = g_allSquads.squads[squadIndex];
+            if (!SameHandleIdentity(squad.identity, squadIdentity))
+            {
+                continue;
+            }
+            for (size_t memberIndex = 0;
+                 memberIndex < squad.members.size(); ++memberIndex)
+            {
+                const MemberSnapshot& member = squad.members[memberIndex];
+                if (SameHandleIdentity(member.identity, memberIdentity))
+                {
+                    return member.queueAvailable;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
+    bool SquadRecipientSelectionAvailable(const SquadSnapshot& squad)
+    {
+        if (g_allSquads.incomplete || squad.incomplete ||
+            squad.unavailable || squad.members.empty())
+        {
+            return false;
+        }
+        for (size_t index = 0; index < squad.members.size(); ++index)
+        {
+            if (!squad.members[index].queueAvailable)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool JobCardSelectionMode()
+    {
+        return !g_selectedJobs.empty() && g_selectedRecipients.empty();
+    }
+
+    bool RecipientSelectionMode()
+    {
+        if (!g_selectedJobs.empty() || g_selectedRecipients.empty())
+        {
+            return false;
+        }
+        for (size_t index = 0; index < g_selectedRecipients.size(); ++index)
+        {
+            if (!IsDisplayedRecipientEditable(
+                    g_selectedRecipients[index].squad,
+                    g_selectedRecipients[index].member))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
     bool HasPendingJobBatchUiAction()
     {
@@ -92,6 +171,7 @@
         const HandleIdentity& member)
     {
         if (!squad.valid || !member.valid || member.type != CHARACTER ||
+            !IsDisplayedRecipientEditable(squad, member) ||
             IsRecipientSelected(member))
         {
             return;
@@ -187,7 +267,8 @@
                 for (size_t memberIndex = 0;
                      memberIndex < squad.members.size(); ++memberIndex)
                 {
-                    if (SameHandleIdentity(
+                    if (squad.members[memberIndex].queueAvailable &&
+                        SameHandleIdentity(
                             squad.members[memberIndex].identity,
                             g_selectedRecipients[selectedIndex].member))
                     {
@@ -273,9 +354,32 @@
             }
             return NULL;
         }
-        const VisibleMemberBinding& binding =
+        VisibleMemberBinding& binding =
             g_visibleMemberBindings[visibleIndex];
-        const SquadSnapshot* squad = FindDisplayedSquad(binding.squad);
+        if (binding.squadIndex < g_allSquads.squads.size())
+        {
+            const SquadSnapshot& indexedSquad =
+                g_allSquads.squads[binding.squadIndex];
+            if (SameHandleIdentity(indexedSquad.identity, binding.squad) &&
+                binding.memberIndex < indexedSquad.members.size() &&
+                SameHandleIdentity(
+                    indexedSquad.members[binding.memberIndex].identity,
+                    binding.member))
+            {
+                if (squadOut != NULL)
+                {
+                    *squadOut = &indexedSquad;
+                }
+                return &indexedSquad.members[binding.memberIndex];
+            }
+        }
+
+        // A structural refresh should rebuild all bindings before this path
+        // is needed. Keep an identity-based repair fallback so a stale index
+        // can never address the wrong engine-facing row.
+        const int squadIndex = FindAllSquadSnapshotIndex(binding.squad);
+        const SquadSnapshot* squad = squadIndex >= 0 ?
+            &g_allSquads.squads[squadIndex] : NULL;
         if (squad == NULL)
         {
             if (squadOut != NULL)
@@ -294,11 +398,63 @@
             }
             return NULL;
         }
+        binding.squadIndex = static_cast<size_t>(squadIndex);
+        binding.memberIndex = static_cast<size_t>(memberIndex);
         if (squadOut != NULL)
         {
             *squadOut = squad;
         }
         return &squad->members[memberIndex];
+    }
+
+    bool SquadWidgetStructureMatchesBoard()
+    {
+        if (g_squadGroupWidgets.size() != g_allSquads.squads.size())
+        {
+            return false;
+        }
+        size_t visibleIndex = 0;
+        for (size_t squadIndex = 0;
+             squadIndex < g_allSquads.squads.size(); ++squadIndex)
+        {
+            const SquadGroupWidgets& group =
+                g_squadGroupWidgets[squadIndex];
+            const SquadSnapshot& squad = g_allSquads.squads[squadIndex];
+            const bool collapsed = IsSquadCollapsed(squad.identity);
+            if (!SameHandleIdentity(group.squad, squad.identity) ||
+                group.name != squad.name ||
+                group.memberCount != squad.members.size() ||
+                group.collapsed != collapsed)
+            {
+                return false;
+            }
+            if (collapsed)
+            {
+                continue;
+            }
+            for (size_t memberIndex = 0;
+                 memberIndex < squad.members.size(); ++memberIndex)
+            {
+                if (visibleIndex >= g_visibleMemberBindings.size())
+                {
+                    return false;
+                }
+                const VisibleMemberBinding& binding =
+                    g_visibleMemberBindings[visibleIndex];
+                if (binding.squadIndex != squadIndex ||
+                    binding.memberIndex != memberIndex ||
+                    !SameHandleIdentity(binding.squad, squad.identity) ||
+                    !SameHandleIdentity(
+                        binding.member,
+                        squad.members[memberIndex].identity))
+                {
+                    return false;
+                }
+                ++visibleIndex;
+            }
+        }
+        return visibleIndex == g_visibleMemberBindings.size() &&
+            visibleIndex == g_memberWidgets.size();
     }
 
     int FindVisibleMemberIndex(const HandleIdentity& memberIdentity)
@@ -378,4 +534,50 @@
         g_squadGroupWidgets.clear();
         g_dragDestinationVisibleIndex = -1;
         g_squadGroupRebuildRequested = false;
+    }
+
+    bool ApplyNativeTabSquadCollapseTransition()
+    {
+        // The hook runs after Kenshi processes TAB. Resolve the final native
+        // current squad before changing UI-only collapse state. The refresh
+        // that follows this helper then needs only one widget rebuild.
+        if (!TrySkipDeadCurrentSquad())
+        {
+            return false;
+        }
+
+        hand currentHandle;
+        std::string currentName;
+        RootObjectContainer* currentActive = NULL;
+        if (!TryGetCurrentSquad(
+                g_playerInterface,
+                &currentHandle,
+                &currentName,
+                &currentActive))
+        {
+            return false;
+        }
+        HandleIdentity currentIdentity;
+        CaptureHandleIdentity(currentHandle, &currentIdentity);
+        if (!currentIdentity.valid ||
+            SameHandleIdentity(currentIdentity, g_squad.identity))
+        {
+            return true;
+        }
+
+        const int previousIndex =
+            FindSquadCollapseStateIndex(g_squad.identity);
+        if (previousIndex >= 0 &&
+            g_squadCollapseStates[previousIndex].autoExpandedByNativeTab)
+        {
+            SetSquadCollapsedForNativeTab(
+                g_squad.identity, true, false);
+        }
+
+        if (IsSquadCollapsed(currentIdentity))
+        {
+            SetSquadCollapsedForNativeTab(
+                currentIdentity, false, true);
+        }
+        return true;
     }

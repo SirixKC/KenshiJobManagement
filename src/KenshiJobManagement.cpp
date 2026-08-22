@@ -98,14 +98,19 @@ namespace
 {
     const char* const PLUGIN_NAME = "Kenshi Job Management";
     const char* const PLUGIN_VERSION = "0.1.0-alpha";
+    // Keep failed station-assignment recovery bounded while the Stations tab
+    // is active. The paused Squad Jobs board refreshes only at explicit UI or
+    // mutation boundaries.
     const DWORD REFRESH_INTERVAL_MS = 1000;
     const DWORD RESET_HOTKEY_COOLDOWN_MS = 1000;
-    const DWORD TOAST_DURATION_MS = 4000;
+    const DWORD RECENT_MESSAGE_DEDUP_WINDOW_MS = 50;
     const int MAX_SAFE_JOB_ROWS = 64;
     const int PAD = 12;
     const int TOP_HEIGHT = 46;
     const int HEADER_HEIGHT = 38;
-    const int ACTION_HEIGHT = 62;
+    // The status frame now keeps three timestamped message lines. Reserve
+    // enough bottom-bar height for that frame and the compact action buttons.
+    const int ACTION_HEIGHT = 82;
     const int SCROLL_SIZE = 20;
     const int SQUAD_SELECTOR_HEIGHT = 54;
     const int SQUAD_SELECTOR_LABEL_WIDTH = 76;
@@ -118,8 +123,10 @@ namespace
     // the original tick-button skin was being stretched over a very large
     // 220x112 surface and its checkbox texture read like a distorted icon.
     // Member rows need room for three readable, vertically stacked skills.
+    // The first skill is two points larger, so keep two extra pixels between
+    // the skill block and the bottom controls.
     // Job cards keep their compact 88px height and are centered in the row.
-    const int ROW_HEIGHT = 120;
+    const int ROW_HEIGHT = 122;
     const int ROW_GAP = 6;
     const int ROW_STRIDE = ROW_HEIGHT + ROW_GAP;
     const int CARD_HEIGHT = 88;
@@ -193,16 +200,31 @@ namespace
     struct JobRowSnapshot
     {
         TaskType taskType;
+        // TaskData::associated is the native semantic root for wrapper and
+        // companion rows. Keep it as a copied scalar so presentation can use
+        // the same protected-family contract as destructive cleanup.
+        TaskType associatedTaskType;
         std::string jobLabel;
         std::string targetLabel;
+        // `fixedTarget` is Kenshi's authoritative perma-job scope.  A
+        // Tasker can still carry an incidental subject for global jobs, so
+        // the presence of a subject is not enough to make a card target
+        // scoped or invalid.
+        bool fixedTarget;
         bool hasTarget;
+        // `targetAvailable` remains the display-name result used by older
+        // station projections.  `targetResolvable` is the separate object
+        // lookup result used by the Squad Jobs card warning state.
         bool targetAvailable;
+        bool targetResolvable;
         ULONG_PTR taskToken;
         HandleIdentity target;
 
         JobRowSnapshot() :
-            taskType(static_cast<TaskType>(0)), hasTarget(false),
-            targetAvailable(false), taskToken(0)
+            taskType(static_cast<TaskType>(0)),
+            associatedTaskType(NULL_TASK), fixedTarget(false),
+            hasTarget(false), targetAvailable(false),
+            targetResolvable(false), taskToken(0)
         {
         }
     };
@@ -261,8 +283,10 @@ namespace
     {
         HandleIdentity identity;
         bool collapsed;
+        bool autoExpandedByNativeTab;
 
-        SquadCollapseState() : collapsed(false) {}
+        SquadCollapseState() :
+            collapsed(true), autoExpandedByNativeTab(false) {}
     };
 
     struct SquadCache
@@ -337,6 +361,7 @@ namespace
         MyGUI::ImageBox* portraitFrontOverlay;
         MyGUI::TextBox* name;
         MyGUI::TextBox* condition;
+        MyGUI::TextBox* highestSkill;
         MyGUI::TextBox* skills;
         MyGUI::Button* jobsToggle;
         MyGUI::Button* clearButton;
@@ -349,7 +374,8 @@ namespace
             memberRoot(NULL), jobsRoot(NULL), recipientMarker(NULL),
             portraitBorder(NULL),
             portraitBackground(NULL), portrait(NULL), portraitBackOverlay(NULL),
-            portraitFrontOverlay(NULL), name(NULL), condition(NULL), skills(NULL),
+            portraitFrontOverlay(NULL), name(NULL), condition(NULL),
+            highestSkill(NULL), skills(NULL),
             jobsToggle(NULL), clearButton(NULL), emptyJobs(NULL),
             portraitBound(false), appliedRevision(0)
         {
@@ -374,13 +400,13 @@ namespace
         int slot;
         int insertionGap;
         bool deferredPlainClick;
-        bool sourceWasSelected;
+        bool deferredControlToggle;
         std::vector<JobRowSnapshot> startSequence;
 
         DragState() :
             kind(DRAG_NONE), armed(false), active(false),
             pressPoint(0, 0), memberIndex(-1), slot(-1), insertionGap(-1),
-            deferredPlainClick(false), sourceWasSelected(false)
+            deferredPlainClick(false), deferredControlToggle(false)
         {
         }
     };
@@ -389,7 +415,8 @@ namespace
     {
         MODAL_NONE,
         MODAL_CLEAR,
-        MODAL_OPTIONS
+        MODAL_OPTIONS,
+        MODAL_MESSAGE_LOG
     };
 
     struct ModalState
@@ -448,15 +475,42 @@ namespace
     MyGUI::Widget* g_priorityCanvas = NULL;
     MyGUI::TextBox* g_squadText = NULL;
     MyGUI::TextBox* g_statusText = NULL;
+    MyGUI::Widget* g_statusFrame = NULL;
+    MyGUI::ScrollView* g_messageLogScroll = NULL;
+    const size_t MAX_RECENT_STATUS_MESSAGES = 10;
+
+    struct RecentStatusMessage
+    {
+        std::string timestamp;
+        std::string text;
+
+        RecentStatusMessage() {}
+
+        RecentStatusMessage(
+            const std::string& timestampValue,
+            const std::string& textValue) :
+            timestamp(timestampValue), text(textValue)
+        {
+        }
+    };
+
+    std::vector<RecentStatusMessage> g_recentStatusMessages;
+    DWORD g_lastRecentStatusMessageTick = 0;
     MyGUI::Widget* g_background = NULL;
-    MyGUI::TextBox* g_toastText = NULL;
     MyGUI::TextBox* g_emptyText = NULL;
     MyGUI::Button* g_removeButton = NULL;
+    MyGUI::Button* g_removeInvalidJobsButton = NULL;
     MyGUI::Button* g_optionsButton = NULL;
     MyGUI::Button* g_closeButton = NULL;
     MyGUI::ScrollBar* g_verticalScroll = NULL;
     MyGUI::ScrollBar* g_horizontalScroll = NULL;
     MyGUI::Widget* g_insertionLine = NULL;
+    // Four thin, mouse-transparent edges make the current drag destination
+    // unambiguous across both the member and job halves of the board.
+    MyGUI::Widget* g_dragDestinationOutlineTop = NULL;
+    MyGUI::Widget* g_dragDestinationOutlineBottom = NULL;
+    MyGUI::Widget* g_dragDestinationOutlineLeft = NULL;
+    MyGUI::Widget* g_dragDestinationOutlineRight = NULL;
     MyGUI::Widget* g_tooltip = NULL;
     MyGUI::TextBox* g_tooltipText = NULL;
 
@@ -493,14 +547,12 @@ namespace
 
     std::string g_settingsPath;
 
-    DWORD g_lastRefreshTick = 0;
     DWORD g_lastResetTick = 0;
     DWORD g_lastDragTick = 0;
     bool g_hotkeyWasDown = false;
     bool g_copyHotkeyWasDown = false;
     bool g_pasteHotkeyWasDown = false;
     bool g_escapeWasDown = false;
-    DWORD g_toastShownTick = 0;
     bool g_squadCycleObserved = false;
     bool g_closeRequested = false;
     bool g_modalCloseRequested = false;
@@ -533,6 +585,9 @@ namespace
     void OnJobsToggleClicked(MyGUI::Widget*);
     void OnClearClicked(MyGUI::Widget*);
     void OnRemoveClicked(MyGUI::Widget*);
+    // Implemented by the job-action layer. The window owns only presentation
+    // and forwards this button click through the named hook.
+    void OnRemoveInvalidJobsClicked(MyGUI::Widget*);
     void OnOptionsClicked(MyGUI::Widget*);
     void OnCloseClicked(MyGUI::Widget*);
     void OnWindowButtonPressed(MyGUI::Window*, const std::string&);
@@ -554,6 +609,7 @@ namespace
     void RestoreHudManagerButton();
     void TickHudManagerButton();
     void ProcessHudManagerButtonRequest();
+    void RefreshStatusMessageFrame();
     void ShowToast(const std::string& message);
 
 #include "RuntimeAccess.inl"

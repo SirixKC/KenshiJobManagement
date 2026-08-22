@@ -204,6 +204,58 @@
         return false;
     }
 
+    bool JobRowUsesFixedTarget(const JobRowSnapshot& job)
+    {
+        // Keep the visual rule aligned with Remove Invalid Jobs.  The
+        // TaskData flag is authoritative for ordinary station work, but the
+        // protected families remain targetless even if an imported save
+        // contains an unexpected fixed-target bit on their TaskData.
+        const TaskType root = job.associatedTaskType == NULL_TASK ?
+            job.taskType : job.associatedTaskType;
+        return job.fixedTarget &&
+            !IsJobBatchInvalidRemovalProtectedTask(job.taskType) &&
+            !IsJobBatchInvalidRemovalProtectedTask(root);
+    }
+
+    bool JobRowTargetUnavailable(const JobRowSnapshot& job)
+    {
+        return JobRowUsesFixedTarget(job) &&
+            (!job.hasTarget || !job.targetResolvable);
+    }
+
+    MyGUI::Colour JobSelectionMarkerColour()
+    {
+        // Keep a single selected card green for the normal single-job state.
+        // Once Ctrl-selection contains more than one card, use the same light
+        // blue accent used by the manager's other selected/recent markers so
+        // a multi-selection is visually distinct without changing the
+        // unavailable warning layer or hover outline.
+        return g_selectedJobs.size() > 1 ?
+            MyGUI::Colour(0.48f, 0.82f, 1.0f) :
+            MyGUI::Colour(0.45f, 0.90f, 0.55f);
+    }
+
+    void ApplyJobSelectionMarker(
+        CardWidgets& card,
+        bool selected)
+    {
+        if (card.selectionMarker == NULL)
+        {
+            return;
+        }
+        // Only selected markers need a colour write. Most cards are not part
+        // of the selection, so avoid invalidating every card subtree on each
+        // Ctrl-click in a large roster.
+        if (selected)
+        {
+            card.selectionMarker->setColour(JobSelectionMarkerColour());
+        }
+        if (card.selectionMarker->getVisible() != selected)
+        {
+            card.selectionMarker->setVisible(selected);
+        }
+    }
+
     bool RepairSelection()
     {
         std::vector<SelectedJob> repaired;
@@ -278,10 +330,12 @@
         {
             return;
         }
-        std::ostringstream caption;
-        caption << "Remove Selected (" << g_selectedJobs.size() << ")";
-        g_removeButton->setCaption(caption.str().c_str());
-        g_removeButton->setEnabled(!g_selectedJobs.empty());
+        // Keep this caption short enough for the fixed action-bar button.
+        // The selected count remains visible through the card selection and
+        // status/tooltip channels, while the action name stays readable.
+        g_removeButton->setCaption("Remove Job(s)");
+        g_removeButton->setFontHeight(14);
+        g_removeButton->setEnabled(JobCardSelectionMode());
     }
 
     void ApplyCardSelectionStates()
@@ -302,20 +356,21 @@
                         member->identity,
                         member->jobs[slot],
                         static_cast<int>(slot));
-                    widgets.cards[slot].card->setStateSelected(selected);
-                    if (widgets.cards[slot].selectionMarker != NULL)
+                    if (widgets.cards[slot].card->getStateSelected() != selected)
                     {
-                        widgets.cards[slot].selectionMarker->setVisible(selected);
+                        widgets.cards[slot].card->setStateSelected(selected);
                     }
+                    ApplyJobSelectionMarker(widgets.cards[slot], selected);
                     if (widgets.cards[slot].unavailableMarker != NULL)
                     {
-                        const bool targetUnavailable =
-                            member->jobs[slot].hasTarget &&
-                            IsStationDisplayJob(
-                                member->jobs[slot].taskType) &&
-                            !member->jobs[slot].targetAvailable;
-                        widgets.cards[slot].unavailableMarker->setVisible(
-                            targetUnavailable);
+                        const bool targetUnavailable = JobRowTargetUnavailable(
+                            member->jobs[slot]);
+                        if (widgets.cards[slot].unavailableMarker->getVisible() !=
+                            targetUnavailable)
+                        {
+                            widgets.cards[slot].unavailableMarker->setVisible(
+                                targetUnavailable);
+                        }
                     }
                 }
             }
@@ -327,12 +382,10 @@
     {
         JobHighlightKey key;
         key.taskType = job.taskType;
-        // Builder, Medic, Robotics, and Rescue are global behaviors. Kenshi
-        // stores an incidental subject on some of these queue rows, but that
-        // subject does not scope the permanent job. Keep it for exact engine
-        // mutation checks while omitting it from presentation and hover
-        // grouping.
-        key.hasTarget = job.hasTarget && IsStationDisplayJob(job.taskType);
+        // Kenshi stores an incidental subject on some global queue rows. Only
+        // TaskData::permaJob_FixedTarget makes that subject authoritative for
+        // presentation and hover grouping.
+        key.hasTarget = JobRowUsesFixedTarget(job) && job.hasTarget;
         if (key.hasTarget)
         {
             key.target = job.target;
@@ -428,34 +481,94 @@
     {
         if (card.highlightTop != NULL)
         {
-            card.highlightTop->setVisible(visible);
+            if (card.highlightTop->getVisible() != visible)
+            {
+                card.highlightTop->setVisible(visible);
+            }
         }
         if (card.highlightBottom != NULL)
         {
-            card.highlightBottom->setVisible(visible);
+            if (card.highlightBottom->getVisible() != visible)
+            {
+                card.highlightBottom->setVisible(visible);
+            }
         }
         if (card.highlightLeft != NULL)
         {
-            card.highlightLeft->setVisible(visible);
+            if (card.highlightLeft->getVisible() != visible)
+            {
+                card.highlightLeft->setVisible(visible);
+            }
         }
         if (card.highlightRight != NULL)
         {
-            card.highlightRight->setVisible(visible);
+            if (card.highlightRight->getVisible() != visible)
+            {
+                card.highlightRight->setVisible(visible);
+            }
         }
     }
 
-    void ApplyCardHoverHighlights()
+    bool CardIntersectsSquadJobsViewport(
+        const CardWidgets& card,
+        const MyGUI::IntCoord& viewport)
     {
-        for (size_t memberIndex = 0; memberIndex < g_memberWidgets.size(); ++memberIndex)
+        if (card.card == NULL || card.memberIndex < 0 ||
+            card.memberIndex >= static_cast<int>(g_visibleMemberBindings.size()) ||
+            card.slot < 0)
+        {
+            return false;
+        }
+        // Card positions are deterministic children of the scrolled job
+        // canvas. Use the copied row binding and the two scroll offsets instead
+        // of asking MyGUI for an absolute rectangle for every matching card.
+        const int cardLeft = viewport.left +
+            card.slot * CARD_STRIDE - g_horizontalOffset;
+        const int cardTop = viewport.top +
+            g_visibleMemberBindings[card.memberIndex].rowTop + CARD_TOP -
+            g_verticalOffset;
+        return cardLeft < viewport.right() &&
+            cardLeft + CARD_WIDTH > viewport.left &&
+            cardTop < viewport.bottom() &&
+            cardTop + CARD_HEIGHT > viewport.top;
+    }
+
+    void ApplyCardHoverHighlights(int previousGroup, int nextGroup)
+    {
+        if (previousGroup == nextGroup || g_jobViewport == NULL)
+        {
+            return;
+        }
+
+        // The hover outline is presentation-only.  Limit the native visibility
+        // writes to the old/new groups and to cards that are actually inside
+        // the two-dimensional Squad Jobs viewport.  Cards outside either
+        // scroll axis are already hidden and will be rebuilt or re-hovered when
+        // they become visible.
+        const MyGUI::IntCoord viewport = g_jobViewport->getAbsoluteCoord();
+        for (size_t memberIndex = 0;
+             memberIndex < g_memberWidgets.size();
+             ++memberIndex)
         {
             MemberWidgets& widgets = g_memberWidgets[memberIndex];
             for (size_t slot = 0; slot < widgets.cards.size(); ++slot)
             {
                 CardWidgets& card = widgets.cards[slot];
+                const bool hidePrevious = previousGroup >= 0 &&
+                    card.highlightGroup == previousGroup;
+                const bool showNext = nextGroup >= 0 &&
+                    card.highlightGroup == nextGroup;
+                if (!hidePrevious && !showNext)
+                {
+                    continue;
+                }
+                if (!CardIntersectsSquadJobsViewport(card, viewport))
+                {
+                    continue;
+                }
                 SetCardHighlightVisible(
                     card,
-                    g_hoveredJobHighlightGroup >= 0 &&
-                        card.highlightGroup == g_hoveredJobHighlightGroup);
+                    showNext);
             }
         }
     }
@@ -863,7 +976,7 @@
                 widgets.cards.size(), member->jobs.size());
             for (size_t slot = 0; slot < cardCount; ++slot)
             {
-                if (!IsStationDisplayJob(member->jobs[slot].taskType) ||
+                if (!JobRowUsesFixedTarget(member->jobs[slot]) ||
                     !SameHandleIdentity(member->jobs[slot].target, target))
                 {
                     continue;
@@ -1075,7 +1188,16 @@
         }
     }
 
-    std::string BuildSkillCaption(const MemberSnapshot& member)
+    std::string BuildSkillLineCaption(const SkillValue& skill)
+    {
+        std::ostringstream caption;
+        caption << skill.name << " " << skill.value;
+        return caption.str();
+    }
+
+    std::string BuildSkillCaption(
+        const MemberSnapshot& member,
+        size_t firstSkill)
     {
         if (!member.loaded)
         {
@@ -1085,15 +1207,19 @@
         {
             return "No stats above 1";
         }
+        if (firstSkill >= member.skills.size())
+        {
+            return "";
+        }
 
         std::ostringstream caption;
-        for (size_t index = 0; index < member.skills.size(); ++index)
+        for (size_t index = firstSkill; index < member.skills.size(); ++index)
         {
-            if (index != 0)
+            if (index != firstSkill)
             {
                 caption << "\n";
             }
-            caption << member.skills[index].name << " " << member.skills[index].value;
+            caption << BuildSkillLineCaption(member.skills[index]);
         }
         return caption.str();
     }
@@ -1156,8 +1282,7 @@
         for (size_t slot = 0; slot < member.jobs.size(); ++slot)
         {
             const JobRowSnapshot& row = member.jobs[slot];
-            const bool showTarget =
-                row.hasTarget && IsStationDisplayJob(row.taskType);
+            const bool showTarget = JobRowUsesFixedTarget(row);
             const char* roleIconResource =
                 GetGlobalJobIconResource(row.taskType);
             const bool hasStationArtworkTarget =
@@ -1292,7 +1417,7 @@
             }
 
             const bool targetUnavailable =
-                showTarget && !row.targetAvailable;
+                JobRowTargetUnavailable(row);
 
             // Keep an unavailable target visible at a glance.  The warning
             // layer is inset only slightly, leaving the button edge intact;
@@ -1317,7 +1442,7 @@
                 MyGUI::IntCoord(5, 5, CARD_WIDTH - 10, CARD_HEIGHT - 10),
                 MyGUI::Align::Stretch,
                 "KJM_CardSelectionTint");
-            card.selectionMarker->setColour(MyGUI::Colour(0.45f, 0.90f, 0.55f));
+            card.selectionMarker->setColour(JobSelectionMarkerColour());
             card.selectionMarker->setAlpha(0.24f);
             card.selectionMarker->setNeedMouseFocus(false);
             card.selectionMarker->setVisible(selected);
@@ -1409,7 +1534,7 @@
             if (showTarget)
             {
                 SetFittedCardTargetCaption(card.target, row.targetLabel);
-                if (!row.targetAvailable)
+                if (targetUnavailable)
                 {
                     TagThemeWarningText(card.target);
                 }
@@ -1454,7 +1579,17 @@
         {
             ApplyThemeWarningText(widgets.condition);
         }
-        const std::string skillCaption = BuildSkillCaption(member);
+        const bool hasHighestSkill = member.loaded && !member.skills.empty();
+        if (widgets.highestSkill != NULL)
+        {
+            const std::string highestSkillCaption =
+                hasHighestSkill ?
+                    BuildSkillLineCaption(member.skills[0]) : "";
+            widgets.highestSkill->setCaption(highestSkillCaption.c_str());
+            widgets.highestSkill->setVisible(hasHighestSkill);
+            ApplyThemeStandardText(widgets.highestSkill);
+        }
+        const std::string skillCaption = BuildSkillCaption(member, 1);
         widgets.skills->setCaption(skillCaption.c_str());
         ApplyThemeStandardText(widgets.skills);
 
@@ -1616,11 +1751,22 @@
         widgets.condition->setFontHeight(15);
         widgets.condition->setNeedMouseFocus(false);
         TagThemeWarningText(widgets.condition);
+        widgets.highestSkill = widgets.memberRoot->createWidget<MyGUI::TextBox>(
+            "Kenshi_TextboxStandardText_Small",
+            MyGUI::IntCoord(
+                MEMBER_TEXT_LEFT, 49, g_memberWidth - MEMBER_TEXT_LEFT - 7, 18),
+            MyGUI::Align::Top | MyGUI::Align::HStretch,
+            "KJM_MemberHighestSkill");
+        widgets.highestSkill->setFontHeight(18);
+        widgets.highestSkill->setTextAlign(
+            MyGUI::Align::Left | MyGUI::Align::Top);
+        widgets.highestSkill->setNeedMouseFocus(false);
+        TagThemeStandardText(widgets.highestSkill);
         widgets.skills = widgets.memberRoot->createWidget<MyGUI::TextBox>(
             "Kenshi_TextboxStandardText_Small",
             MyGUI::IntCoord(
-                MEMBER_TEXT_LEFT, 49, g_memberWidth - MEMBER_TEXT_LEFT - 7, 48),
-            MyGUI::Align::Stretch,
+                MEMBER_TEXT_LEFT, 67, g_memberWidth - MEMBER_TEXT_LEFT - 7, 32),
+            MyGUI::Align::Top | MyGUI::Align::HStretch,
             "KJM_MemberSkills");
         widgets.skills->setFontHeight(16);
         widgets.skills->setTextAlign(MyGUI::Align::Left | MyGUI::Align::Top);
@@ -1719,6 +1865,115 @@
         }
     }
 
+    void SetSquadWidgetVisibleIfChanged(
+        MyGUI::Widget* widget,
+        bool visible)
+    {
+        if (widget != NULL && widget->getVisible() != visible)
+        {
+            widget->setVisible(visible);
+        }
+    }
+
+    bool IntersectsSquadViewportAxis(
+        int itemStart,
+        int itemLength,
+        int viewportStart,
+        int viewportLength,
+        int overscan)
+    {
+        const int visibleStart = viewportStart - overscan;
+        const int visibleEnd = viewportStart + viewportLength + overscan;
+        return itemStart < visibleEnd &&
+            itemStart + itemLength > visibleStart;
+    }
+
+    void ApplySquadViewportVisibility()
+    {
+        // MyGUI clips descendants to the PanelEmpty viewports, but a visible
+        // row root can still make it traverse every horizontally offscreen
+        // card subtree. Explicit root visibility lets MyGUI reject that work
+        // before it reaches the card surfaces, artwork, outlines, and text.
+        // Keep one row/card ready outside each edge so incremental scrolling
+        // does not reveal a blank strip before the next input callback.
+        for (size_t memberIndex = 0;
+             memberIndex < g_memberWidgets.size(); ++memberIndex)
+        {
+            MemberWidgets& widgets = g_memberWidgets[memberIndex];
+            const bool rowIntersectsViewport =
+                memberIndex < g_visibleMemberBindings.size() &&
+                IntersectsSquadViewportAxis(
+                    g_visibleMemberBindings[memberIndex].rowTop,
+                    ROW_HEIGHT,
+                    g_verticalOffset,
+                    g_bodyHeight,
+                    ROW_STRIDE);
+            // Do not hide the captured source subtree during edge-scroll.
+            // The viewport still clips it, while MyGUI keeps the drag's mouse
+            // capture and delivers the eventual release callback.
+            const bool dragSourceRow = g_drag.armed &&
+                g_drag.memberIndex == static_cast<int>(memberIndex);
+            const bool rowVisible =
+                rowIntersectsViewport || dragSourceRow;
+            SetSquadWidgetVisibleIfChanged(
+                widgets.memberRoot, rowVisible);
+            SetSquadWidgetVisibleIfChanged(
+                widgets.jobsRoot, rowVisible);
+
+            for (size_t cardIndex = 0;
+                 cardIndex < widgets.cards.size(); ++cardIndex)
+            {
+                CardWidgets& card = widgets.cards[cardIndex];
+                const bool dragSourceCard = dragSourceRow &&
+                    card.slot == g_drag.slot;
+                const bool cardVisible = dragSourceCard ||
+                    (rowIntersectsViewport && card.slot >= 0 &&
+                        IntersectsSquadViewportAxis(
+                            card.slot * CARD_STRIDE,
+                            CARD_WIDTH,
+                            g_horizontalOffset,
+                            g_jobWidth,
+                            CARD_STRIDE));
+                SetSquadWidgetVisibleIfChanged(
+                    card.card, cardVisible);
+            }
+        }
+
+        for (size_t groupIndex = 0;
+             groupIndex < g_squadGroupWidgets.size(); ++groupIndex)
+        {
+            SquadGroupWidgets& group = g_squadGroupWidgets[groupIndex];
+            bool memberHeaderVisible = false;
+            if (group.memberHeader != NULL)
+            {
+                const MyGUI::IntCoord coord =
+                    group.memberHeader->getCoord();
+                memberHeaderVisible = IntersectsSquadViewportAxis(
+                    coord.top,
+                    coord.height,
+                    g_verticalOffset,
+                    g_bodyHeight,
+                    ROW_STRIDE);
+            }
+            SetSquadWidgetVisibleIfChanged(
+                group.memberHeader, memberHeaderVisible);
+            SetSquadWidgetVisibleIfChanged(
+                group.jobHeader, memberHeaderVisible);
+        }
+
+        for (size_t slot = 0; slot < g_priorityLabels.size(); ++slot)
+        {
+            const bool labelVisible = IntersectsSquadViewportAxis(
+                static_cast<int>(slot) * CARD_STRIDE,
+                CARD_WIDTH,
+                g_horizontalOffset,
+                g_jobWidth,
+                CARD_STRIDE);
+            SetSquadWidgetVisibleIfChanged(
+                g_priorityLabels[slot], labelVisible);
+        }
+    }
+
     void ApplyScrollOffsets()
     {
         if (g_memberCanvas != NULL)
@@ -1733,6 +1988,7 @@
         {
             g_priorityCanvas->setPosition(-g_horizontalOffset, 0);
         }
+        ApplySquadViewportVisibility();
     }
 
     void UpdateScrollRanges()
@@ -1759,6 +2015,14 @@
             if (g_memberWidgets[index].jobsRoot != NULL)
             {
                 g_memberWidgets[index].jobsRoot->setSize(canvasWidth, ROW_HEIGHT);
+            }
+        }
+        for (size_t index = 0; index < g_squadGroupWidgets.size(); ++index)
+        {
+            if (g_squadGroupWidgets[index].jobHeader != NULL)
+            {
+                g_squadGroupWidgets[index].jobHeader->setSize(
+                    canvasWidth, SQUAD_GROUP_HEADER_HEIGHT);
             }
         }
         g_maxVerticalOffset = std::max(0, contentHeight - g_bodyHeight);
@@ -1843,6 +2107,9 @@
 
         SquadGroupWidgets group;
         group.squad = squad.identity;
+        group.name = squad.name;
+        group.memberCount = squad.members.size();
+        group.collapsed = collapsed;
         group.memberHeader = g_memberCanvas->createWidget<MyGUI::Button>(
             "Kenshi_Button1",
             MyGUI::IntCoord(0, y, g_memberWidth, SQUAD_GROUP_HEADER_HEIGHT),
@@ -1904,6 +2171,8 @@
                     VisibleMemberBinding binding;
                     binding.squad = squad.identity;
                     binding.member = squad.members[memberIndex].identity;
+                    binding.squadIndex = squadIndex;
+                    binding.memberIndex = memberIndex;
                     binding.rowTop = y;
                     g_visibleMemberBindings.push_back(binding);
                     y += ROW_STRIDE;
@@ -1968,37 +2237,24 @@
         ApplyCardSelectionStates();
     }
 
-    bool SameRosterStructure(
-        const SquadSnapshot& left,
-        const SquadSnapshot& right)
-    {
-        if (!SameHandleIdentity(left.identity, right.identity) ||
-            left.members.size() != right.members.size())
-        {
-            return false;
-        }
-        for (size_t index = 0; index < left.members.size(); ++index)
-        {
-            if (!SameHandleIdentity(left.members[index].identity, right.members[index].identity))
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
     void UpdateSquadHeading()
     {
         if (g_prioritizeCoreJobsButton != NULL)
         {
             g_prioritizeCoreJobsButton->setEnabled(
-                !g_selectedRecipients.empty() && !g_allSquads.incomplete &&
+                RecipientSelectionMode() && !g_allSquads.incomplete &&
                 !HasPendingJobBatchUiAction() && !g_drag.armed);
         }
         if (g_addHealingJobsButton != NULL)
         {
             g_addHealingJobsButton->setEnabled(
-                !g_selectedRecipients.empty() && !g_allSquads.incomplete &&
+                RecipientSelectionMode() && !g_allSquads.incomplete &&
+                !HasPendingJobBatchUiAction() && !g_drag.armed);
+        }
+        if (g_removeInvalidJobsButton != NULL)
+        {
+            g_removeInvalidJobsButton->setEnabled(
+                RecipientSelectionMode() && !g_allSquads.incomplete &&
                 !HasPendingJobBatchUiAction() && !g_drag.armed);
         }
         if (g_squadText != NULL)
@@ -2062,35 +2318,77 @@
             return false;
         }
 
-        SquadSnapshot nextCurrent;
-        if (!BuildCurrentSquadSnapshot(&nextCurrent))
+        // Read only the current identity before the complete all-squad pass.
+        // The matching value snapshot below becomes g_squad, which avoids a
+        // second full member/stat/job capture for the current squad.
+        hand currentHandle;
+        std::string currentName;
+        RootObjectContainer* currentActive = NULL;
+        if (!TryGetCurrentSquad(
+                g_playerInterface,
+                &currentHandle,
+                &currentName,
+                &currentActive))
         {
             SetStatus("Kenshi did not expose a current squad. No jobs were changed.");
             return false;
         }
+        HandleIdentity currentIdentity;
+        CaptureHandleIdentity(currentHandle, &currentIdentity);
 
         const HandleIdentity previousCurrent = g_squad.identity;
         const unsigned int previousBoardRevision = g_allSquads.revision;
         const bool refreshed = RefreshAllActiveSquadsSnapshot();
+
+        SquadSnapshot fallbackCurrent;
+        const SquadSnapshot* nextCurrent = NULL;
+        const int currentSquadIndex =
+            FindAllSquadSnapshotIndex(currentIdentity);
+        if (currentSquadIndex >= 0)
+        {
+            nextCurrent = &g_allSquads.squads[currentSquadIndex];
+        }
+        else if (!BuildCurrentSquadSnapshot(&fallbackCurrent))
+        {
+            // Empty or temporarily omitted squads are not part of the active
+            // nonempty board. Retain the established current-squad fallback
+            // for that exceptional case.
+            SetStatus("Kenshi did not expose a current squad. No jobs were changed.");
+            return false;
+        }
+        else
+        {
+            nextCurrent = &fallbackCurrent;
+        }
         const bool currentChanged = !SameHandleIdentity(
-            previousCurrent, nextCurrent.identity);
+            previousCurrent, nextCurrent->identity);
         const bool boardChanged =
             previousBoardRevision != g_allSquads.revision;
-        g_squad = nextCurrent;
+        // g_squad remains an independent value snapshot. Avoid two complete
+        // nested-vector copies, and retain the existing copy when this current
+        // squad publication is unchanged.
+        if (!SameSquadSnapshot(g_squad, *nextCurrent))
+        {
+            g_squad = *nextCurrent;
+        }
         if (refreshed)
         {
             PruneSelectedRecipientsToDisplayedRoster();
         }
 
-        if (g_drag.armed && (boardChanged || currentChanged))
+        if (g_drag.armed && (force || boardChanged || currentChanged))
         {
             CancelDrag();
             SetStatus(
                 "A squad or queue changed during the drag. Review it and try again.");
         }
 
-        const bool rebuild = force || boardChanged || currentChanged ||
-            g_memberWidgets.size() != g_visibleMemberBindings.size();
+        // Callers use force to request an immediate live refresh after a
+        // mutation. It no longer implies a destructive widget rebuild when
+        // the squad/member layout is unchanged.
+        const bool structureChanged =
+            !SquadWidgetStructureMatchesBoard();
+        const bool rebuild = structureChanged || currentChanged;
         if (rebuild)
         {
             ClearJobHoverHighlight();
@@ -2101,16 +2399,43 @@
         }
         else
         {
+            const bool refreshPresentation = force || boardChanged;
+            if (refreshPresentation)
+            {
+                ClearJobHoverHighlight();
+                RebuildJobHighlightCache();
+                RepairSelection();
+            }
             for (size_t index = 0;
                  index < g_memberWidgets.size(); ++index)
             {
                 const MemberSnapshot* member = GetVisibleMember(index);
-                if (member != NULL && member->loaded &&
-                    !g_memberWidgets[index].portraitBound)
+                if (member == NULL)
+                {
+                    continue;
+                }
+                if (g_memberWidgets[index].appliedRevision !=
+                    member->revision)
+                {
+                    ApplyMemberWidgets(index, false);
+                }
+                else if (member->loaded &&
+                         !g_memberWidgets[index].portraitBound)
                 {
                     ApplyPortrait(
                         g_memberWidgets[index], *member, false);
                 }
+            }
+            const size_t maximumJobCount = GetMaximumJobCount();
+            if (maximumJobCount != g_priorityLabels.size())
+            {
+                RebuildPriorityLabels();
+                UpdateScrollRanges();
+            }
+            if (refreshPresentation)
+            {
+                ApplyCardSelectionStates();
+                ApplyCachedJobHighlightGroups();
             }
         }
 
@@ -2125,6 +2450,10 @@
             TryDrainPendingJobStationCategoriesGuarded();
         }
 
+        // An incremental member refresh can replace its complete card set
+        // without changing either scroll range. Cull those new roots before
+        // MyGUI renders the refreshed board.
+        ApplySquadViewportVisibility();
         UpdateSquadHeading();
         if (g_squad.live && (force || boardChanged || currentChanged))
         {

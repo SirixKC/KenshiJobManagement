@@ -415,7 +415,9 @@
     {
         if (g_window == NULL || g_stationTabActive ||
             g_modal.kind != MODAL_NONE || IsStationDetailOpen() ||
-            g_drag.armed || g_pendingAction.type != ACTION_NONE)
+            g_drag.armed || g_pendingAction.type != ACTION_NONE ||
+            g_pendingGeneralMemberDrop.pending || g_pendingSquadPriority ||
+            HasPendingJobBatchUiAction())
         {
             return;
         }
@@ -435,6 +437,17 @@
             ShowToast("That squad is not available in the current roster.");
             return;
         }
+        if (!SquadRecipientSelectionAvailable(*squad))
+        {
+            ShowToast(
+                "That squad has unavailable job data and cannot be selected yet.");
+            return;
+        }
+
+        // Bottom squad buttons enter recipient mode. Clear job-card
+        // selection first, but keep the existing recipient set intact so a
+        // Ctrl-click can still add or remove this squad.
+        ClearJobSelectionForRecipientInteraction();
 
         MyGUI::InputManager* input = MyGUI::InputManager::getInstancePtr();
         const bool control =

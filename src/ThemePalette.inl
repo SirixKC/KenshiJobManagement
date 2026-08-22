@@ -16,6 +16,8 @@
     const char* const THEME_SETTINGS_SECTION = "Appearance";
     const char* const THEME_DARK_UI_KEY = "DarkUIFriendlyFontColors";
     const char* const THEME_TAG_BACKGROUND = "KJM_ThemeBackground";
+    const char* const THEME_TAG_STATUS_FRAME = "KJM_ThemeStatusFrame";
+    const char* const THEME_TAG_STATUS_TEXT = "KJM_ThemeStatusText";
     const char* const THEME_TAG_STATION_TINT = "KJM_ThemeStationTint";
     const char* const THEME_TINT_STATION_NORMAL = "normal";
     const char* const THEME_TINT_STATION_BLOCKING = "blocking";
@@ -36,6 +38,8 @@
     struct ThemePalette
     {
         MyGUI::Colour background;
+        MyGUI::Colour statusFrame;
+        MyGUI::Colour statusText;
         MyGUI::Colour standardText;
         MyGUI::Colour mutedText;
         MyGUI::Colour buttonText;
@@ -45,6 +49,8 @@
 
         ThemePalette() :
             background(MyGUI::Colour::White),
+            statusFrame(MyGUI::Colour(0.22f, 0.20f, 0.16f)),
+            statusText(MyGUI::Colour(1.0f, 0.96f, 0.84f)),
             standardText(MyGUI::Colour::Black),
             mutedText(MyGUI::Colour::Black),
             buttonText(MyGUI::Colour::Black),
@@ -65,6 +71,8 @@
             // Existing KJM dark treatment.  These are the light colours used
             // by the current job cards, headers, and action buttons.
             palette.background = MyGUI::Colour(0.105f, 0.085f, 0.065f);
+            palette.statusFrame = MyGUI::Colour(0.045f, 0.035f, 0.028f);
+            palette.statusText = MyGUI::Colour(0.96f, 0.93f, 0.84f);
             palette.standardText = MyGUI::Colour(1.0f, 1.0f, 1.0f);
             palette.mutedText = MyGUI::Colour(0.92f, 0.92f, 0.88f);
             palette.buttonText = MyGUI::Colour(1.0f, 0.96f, 0.84f);
@@ -82,6 +90,11 @@
             // standard text is approximately #140806.
             palette.background = MyGUI::Colour(
                 0.686275f, 0.650980f, 0.545098f);
+            // Status messages sit in a compact dark frame so they remain
+            // readable over the warm vanilla-light panel as well as over the
+            // optional dark canvas.
+            palette.statusFrame = MyGUI::Colour(0.30f, 0.27f, 0.21f);
+            palette.statusText = MyGUI::Colour(1.0f, 0.96f, 0.84f);
             palette.standardText = MyGUI::Colour(
                 0.078431f, 0.031373f, 0.023529f);
             palette.mutedText = MyGUI::Colour(0.24f, 0.20f, 0.16f);
@@ -162,7 +175,7 @@
 
     // Returns true when the setting changed.  The palette is rebuilt before
     // returning, so callers can immediately repaint an open manager without
-    // waiting for its next periodic snapshot refresh.
+    // rebuilding its captured squad snapshot.
     bool SetDarkUIFriendlyFontColors(bool enabled)
     {
         LoadThemePaletteSettings();
@@ -189,6 +202,16 @@
     MyGUI::Colour ThemeStandardTextColour()
     {
         return GetThemePalette().standardText;
+    }
+
+    MyGUI::Colour ThemeStatusFrameColour()
+    {
+        return GetThemePalette().statusFrame;
+    }
+
+    MyGUI::Colour ThemeStatusTextColour()
+    {
+        return GetThemePalette().statusText;
     }
 
     MyGUI::Colour ThemeMutedTextColour()
@@ -238,6 +261,15 @@
         widget->setColour(GetThemePalette().background);
     }
 
+    void ApplyThemeStatusFrame(MyGUI::Widget* widget)
+    {
+        if (widget == NULL)
+        {
+            return;
+        }
+        widget->setColour(GetThemePalette().statusFrame);
+    }
+
     void ApplyThemeStationCardTint(
         MyGUI::Widget* widget,
         bool blocking)
@@ -283,6 +315,15 @@
         text->setTextColour(GetThemePalette().mutedText);
     }
 
+    void ApplyThemeStatusText(MyGUI::TextBox* text)
+    {
+        if (text == NULL)
+        {
+            return;
+        }
+        text->setTextColour(GetThemePalette().statusText);
+    }
+
     void ApplyThemeButtonText(MyGUI::Button* button)
     {
         if (button == NULL)
@@ -324,6 +365,21 @@
         }
         widget->setUserString(THEME_TAG_BACKGROUND, "1");
         ApplyThemeBackground(widget);
+    }
+
+    void TagThemeStatusFrame(MyGUI::Widget* widget)
+    {
+        if (widget == NULL)
+        {
+            return;
+        }
+        widget->setUserString(THEME_TAG_STATUS_FRAME, "1");
+        ApplyThemeStatusFrame(widget);
+        // It is created immediately before its sibling label. Keep the
+        // native default depth so it stays above the full-screen backdrop but
+        // below the label in MyGUI's creation order.
+        widget->setAlpha(1.0f);
+        widget->setNeedMouseFocus(false);
     }
 
     void TagThemeStationCardTint(
@@ -375,6 +431,16 @@
         ApplyThemeMutedText(text);
     }
 
+    void TagThemeStatusText(MyGUI::TextBox* text)
+    {
+        if (text == NULL)
+        {
+            return;
+        }
+        text->setUserString(THEME_TAG_STATUS_TEXT, "1");
+        ApplyThemeStatusText(text);
+    }
+
     void TagThemeButtonText(MyGUI::Button* button)
     {
         if (button == NULL)
@@ -383,6 +449,19 @@
         }
         button->setUserString(THEME_TAG_TEXT, THEME_TEXT_BUTTON);
         ApplyThemeButtonText(button);
+    }
+
+    // TextBox children used inside native dark Kenshi buttons need the same
+    // caption colour as the parent button. This is used for the compact
+    // healing-action label and separator around its existing job icons.
+    void TagThemeButtonCaptionText(MyGUI::TextBox* text)
+    {
+        if (text == NULL)
+        {
+            return;
+        }
+        text->setUserString(THEME_TAG_TEXT, THEME_TEXT_BUTTON);
+        text->setTextColour(GetThemePalette().buttonText);
     }
 
     void TagThemeAccentText(MyGUI::TextBox* text)
@@ -427,6 +506,17 @@
             ApplyThemeBackground(root);
         }
 
+        if (root->isUserString(THEME_TAG_STATUS_FRAME))
+        {
+            ApplyThemeStatusFrame(root);
+        }
+
+        if (root->isUserString(THEME_TAG_STATUS_TEXT) &&
+            root->isType<MyGUI::TextBox>())
+        {
+            ApplyThemeStatusText(root->castType<MyGUI::TextBox>(false));
+        }
+
         if (root->isUserString(THEME_TAG_STATION_TINT))
         {
             ApplyThemeStationCardTint(
@@ -441,6 +531,12 @@
             if (role == THEME_TEXT_BUTTON && root->isType<MyGUI::Button>())
             {
                 ApplyThemeButtonText(root->castType<MyGUI::Button>(false));
+            }
+            else if (role == THEME_TEXT_BUTTON &&
+                     root->isType<MyGUI::TextBox>())
+            {
+                root->castType<MyGUI::TextBox>(false)->setTextColour(
+                    GetThemePalette().buttonText);
             }
             else if (role == THEME_TEXT_MUTED &&
                      root->isType<MyGUI::TextBox>())

@@ -15,6 +15,11 @@
     const int HUD_MANAGER_BUTTON_MIN_JOBS_WIDTH = 40;
     const int HUD_MANAGER_BUTTON_MIN_HEIGHT = 16;
     const int HUD_MANAGER_BUTTON_MAX_HEIGHT = 64;
+    // The HUD is rebuilt by Kenshi only occasionally.  Avoid walking the
+    // live MyGUI child tree and rewriting both rectangles on every
+    // PlayerInterface update, while keeping recovery from a load/rebuild
+    // quick enough to be unnoticeable.
+    const DWORD HUD_MANAGER_BUTTON_REVALIDATE_INTERVAL_MS = 400;
 
     struct HudButtonContext
     {
@@ -40,6 +45,7 @@
     MyGUI::IntCoord g_hudOriginalJobsCoord(0, 0, 0, 0);
     MyGUI::IntCoord g_hudSplitJobsCoord(0, 0, 0, 0);
     bool g_hudOriginalJobsCoordValid = false;
+    DWORD g_hudLastValidationTick = 0;
 
     bool SameHudButtonContext(
         const HudButtonContext& context)
@@ -517,12 +523,32 @@
             g_hudOriginalJobsCoordValid)
         {
             // The native root is unchanged.  Reapply only geometry that may
-            // have changed through a responsive layout update; never copy
-            // the native enabled state into the sibling.
+            // have changed through a responsive layout update; skip the
+            // engine calls when both live rectangles already match.  Never
+            // copy the native enabled state into the sibling.
+            MyGUI::IntCoord liveJobsCoord(0, 0, 0, 0);
+            MyGUI::IntCoord liveManagerCoord(0, 0, 0, 0);
+            if (!TryGetHudButtonCoordGuarded(
+                    context.jobsButton, &liveJobsCoord) ||
+                !TryGetHudButtonCoordGuarded(
+                    liveManagerButton, &liveManagerCoord))
+            {
+                return false;
+            }
             PublishHudManagerButtonBinding(
                 context, original, jobsCoord, liveManagerButton);
-            context.jobsButton->setCoord(jobsCoord);
-            liveManagerButton->setCoord(managerCoord);
+            if (!SameHudButtonCoord(liveJobsCoord, jobsCoord) &&
+                !TrySetHudButtonCoordGuarded(
+                    context.jobsButton, jobsCoord))
+            {
+                return false;
+            }
+            if (!SameHudButtonCoord(liveManagerCoord, managerCoord) &&
+                !TrySetHudButtonCoordGuarded(
+                    liveManagerButton, managerCoord))
+            {
+                return false;
+            }
             return true;
         }
 
@@ -583,6 +609,19 @@
         {
             return;
         }
+
+        const DWORD now = GetTickCount();
+        if (g_hudLastValidationTick != 0 &&
+            !HasElapsed(
+                now, g_hudLastValidationTick,
+                HUD_MANAGER_BUTTON_REVALIDATE_INTERVAL_MS))
+        {
+            return;
+        }
+        // Start the interval before any guarded lookup.  A failed lookup
+        // during load/rebuild is retried on the next interval instead of
+        // turning a transient invalid root into a per-frame probe.
+        g_hudLastValidationTick = now;
 
         HudButtonContext context;
         if (!TryReadHudButtonContext(&context))

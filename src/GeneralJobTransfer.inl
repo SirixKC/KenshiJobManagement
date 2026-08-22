@@ -408,6 +408,222 @@
         return true;
     }
 
+    // Imported saves can contain permanent rows that the transfer path must
+    // reject (for example permaJob == 0, a key mismatch, or a non-finite
+    // location). Invalid-job cleanup still needs a complete, exact scalar
+    // fingerprint so it can remove only a proven fixed-target row. This value
+    // is cleanup-only. Never use it to recreate or transfer a job.
+    struct InvalidCleanupJobRowValue
+    {
+        ULONG_PTR taskToken;
+        TaskType taskType;
+        hand subject;
+        HandleIdentity subjectIdentity;
+        Ogre::Vector3 location;
+        taskPriority priority;
+        bool resetsWhenDone;
+        GeneralJobTaskDataValue taskData;
+
+        InvalidCleanupJobRowValue() :
+            taskToken(0), taskType(NULL_TASK),
+            location(0.0f, 0.0f, 0.0f),
+            priority(TP_JUST_ACTION), resetsWhenDone(false)
+        {
+        }
+    };
+
+    struct InvalidCleanupJobQueueValue
+    {
+        HandleIdentity member;
+        std::vector<InvalidCleanupJobRowValue> rows;
+    };
+
+    bool SameInvalidCleanupJobRowFingerprint(
+        const InvalidCleanupJobRowValue& left,
+        const InvalidCleanupJobRowValue& right)
+    {
+        return left.taskToken == right.taskToken &&
+            left.taskType == right.taskType &&
+            SameHandleIdentity(
+                left.subjectIdentity, right.subjectIdentity) &&
+            SameGeneralJobLocation(left.location, right.location) &&
+            left.priority == right.priority &&
+            left.resetsWhenDone == right.resetsWhenDone &&
+            SameGeneralJobTaskData(left.taskData, right.taskData);
+    }
+
+    bool SameInvalidCleanupJobQueueFingerprint(
+        const InvalidCleanupJobQueueValue& left,
+        const InvalidCleanupJobQueueValue& right)
+    {
+        if (!SameHandleIdentity(left.member, right.member) ||
+            left.rows.size() != right.rows.size())
+        {
+            return false;
+        }
+        for (size_t index = 0; index < left.rows.size(); ++index)
+        {
+            if (!SameInvalidCleanupJobRowFingerprint(
+                    left.rows[index], right.rows[index]))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void PublishInvalidCleanupJobQueueNoThrow(
+        InvalidCleanupJobQueueValue* destination,
+        InvalidCleanupJobQueueValue* source)
+    {
+        destination->member = source->member;
+        destination->rows.swap(source->rows);
+    }
+
+    __declspec(noinline) bool CaptureInvalidCleanupJobQueueCppUnchecked(
+        const HandleIdentity& memberIdentity,
+        InvalidCleanupJobQueueValue* queueOut)
+    {
+        if (queueOut == NULL || !memberIdentity.valid ||
+            memberIdentity.type != CHARACTER)
+        {
+            return false;
+        }
+        const hand member = RestoreHandleIdentity(memberIdentity);
+        if (!member || !member.isValid())
+        {
+            return false;
+        }
+        Character* character = member.getCharacter();
+        if (character == NULL || !character->isPlayerCharacter())
+        {
+            return false;
+        }
+        Faction* faction = character->getFaction();
+        if (faction == NULL || !faction->isThePlayer())
+        {
+            return false;
+        }
+        const int count = character->getPermajobCount();
+        if (count < 0 || count > MAX_SAFE_JOB_ROWS)
+        {
+            return false;
+        }
+
+        InvalidCleanupJobQueueValue captured;
+        captured.member = memberIdentity;
+        captured.rows.reserve(static_cast<size_t>(count));
+        for (int slot = 0; slot < count; ++slot)
+        {
+            const Tasker* task = character->getPermajobData(slot);
+            if (task == NULL)
+            {
+                return false;
+            }
+            const unsigned char* taskBytes =
+                reinterpret_cast<const unsigned char*>(task);
+            InvalidCleanupJobRowValue row;
+            row.taskToken = reinterpret_cast<ULONG_PTR>(task);
+            if (row.taskToken == 0)
+            {
+                return false;
+            }
+            for (size_t earlier = 0;
+                 earlier < captured.rows.size(); ++earlier)
+            {
+                if (captured.rows[earlier].taskToken == row.taskToken)
+                {
+                    return false;
+                }
+            }
+            row.taskType = character->getPermajob(slot);
+            if (!TryCopyTaskSubject(task, &row.subject))
+            {
+                return false;
+            }
+            CaptureHandleIdentity(row.subject, &row.subjectIdentity);
+            row.location =
+                *reinterpret_cast<const Ogre::Vector3*>(
+                    taskBytes + GENERAL_TASKER_LOCATION_OFFSET);
+            row.priority = *reinterpret_cast<const taskPriority*>(
+                taskBytes + GENERAL_TASKER_PRIORITY_OFFSET);
+            row.resetsWhenDone = *reinterpret_cast<const bool*>(
+                taskBytes + GENERAL_TASKER_RESETS_OFFSET);
+            const unsigned char* dataBytes =
+                *reinterpret_cast<const unsigned char* const*>(
+                    taskBytes + GENERAL_TASKER_DATA_OFFSET);
+            if (dataBytes == NULL)
+            {
+                return false;
+            }
+            row.taskData.available = true;
+            row.taskData.key = *reinterpret_cast<const TaskType*>(
+                dataBytes + GENERAL_TASK_DATA_KEY_OFFSET);
+            row.taskData.permaJob = *reinterpret_cast<const int*>(
+                dataBytes + GENERAL_TASK_DATA_PERMAJOB_OFFSET);
+            row.taskData.fixedTarget = *reinterpret_cast<const bool*>(
+                dataBytes + GENERAL_TASK_DATA_FIXED_TARGET_OFFSET);
+            row.taskData.associated = *reinterpret_cast<const TaskType*>(
+                dataBytes + GENERAL_TASK_DATA_ASSOCIATED_OFFSET);
+            row.taskData.associatedSecondary =
+                *reinterpret_cast<const TaskType*>(
+                    dataBytes +
+                    GENERAL_TASK_DATA_ASSOCIATED_SECONDARY_OFFSET);
+            row.taskData.needsTarget = *reinterpret_cast<const bool*>(
+                dataBytes + GENERAL_TASK_DATA_NEEDS_TARGET_OFFSET);
+            captured.rows.push_back(row);
+        }
+        PublishInvalidCleanupJobQueueNoThrow(queueOut, &captured);
+        return true;
+    }
+
+    __declspec(noinline) bool CaptureInvalidCleanupJobQueueCpp(
+        const HandleIdentity& memberIdentity,
+        InvalidCleanupJobQueueValue* queueOut)
+    {
+        try
+        {
+            return CaptureInvalidCleanupJobQueueCppUnchecked(
+                memberIdentity, queueOut);
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    __declspec(noinline) bool CaptureInvalidCleanupJobQueueGuarded(
+        const HandleIdentity* member,
+        InvalidCleanupJobQueueValue* queueOut)
+    {
+        __try
+        {
+            return member != NULL &&
+                CaptureInvalidCleanupJobQueueCpp(*member, queueOut);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    bool TryCaptureInvalidCleanupJobQueue(
+        const HandleIdentity& member,
+        InvalidCleanupJobQueueValue* queueOut)
+    {
+        if (queueOut == NULL)
+        {
+            return false;
+        }
+        InvalidCleanupJobQueueValue captured;
+        if (!CaptureInvalidCleanupJobQueueGuarded(&member, &captured))
+        {
+            return false;
+        }
+        PublishInvalidCleanupJobQueueNoThrow(queueOut, &captured);
+        return true;
+    }
+
     __declspec(noinline) bool AddGeneralJobCppUnchecked(
         const HandleIdentity& destination,
         const GeneralJobRowValue& payload)
@@ -428,13 +644,46 @@
             return false;
         }
         Faction* faction = character->getFaction();
-        OrdersReceiver* receiver = character->getOrdersReciever();
-        if (faction == NULL || !faction->isThePlayer() || receiver == NULL)
+        if (faction == NULL || !faction->isThePlayer())
         {
             return false;
         }
-        receiver->addJob(
-            payload.taskType, payload.subject, payload.location, true);
+
+        // Use the same public player-job path as the stable station action.
+        // OrdersReceiver::addJob is a lower-level AI entry point. In the live
+        // game it can decline a permanent append after the receiver has begun
+        // executing jobs, and it rejects the null-subject global jobs used by
+        // the healing batch. Character::addJob owns Kenshi's full permanent
+        // shift-add path (`shift=true`, `addDontClear=true`).
+        //
+        // Resolve a target again immediately before the native call. Never
+        // retain or pass a RootObject pointer beyond this guarded leaf. An
+        // unloaded target therefore fails closed instead of silently changing
+        // the exact target requested by the user.
+        RootObject* subject = NULL;
+        if (payload.subjectIdentity.valid)
+        {
+            const hand restoredSubject =
+                RestoreHandleIdentity(payload.subjectIdentity);
+            if (!restoredSubject || !restoredSubject.isValid())
+            {
+                return false;
+            }
+            HandleIdentity restoredIdentity;
+            CaptureHandleIdentity(restoredSubject, &restoredIdentity);
+            if (!SameHandleIdentity(
+                    restoredIdentity, payload.subjectIdentity))
+            {
+                return false;
+            }
+            subject = restoredSubject.getRootObject();
+            if (subject == NULL)
+            {
+                return false;
+            }
+        }
+        character->addJob(
+            payload.taskType, subject, true, true, payload.location);
         character->reThinkCurrentAIAction();
         return true;
     }
@@ -820,7 +1069,7 @@
             payload.taskType : payload.taskData.associated;
         if (normalizedPrimary != payload.taskType)
         {
-            // OrdersReceiver::addJob substitutes TaskData::associated before
+            // Kenshi's native add path substitutes TaskData::associated before
             // it creates the permanent row. A different type cannot recreate
             // this exact source row, so reject before any mutation.
             return GENERAL_TRANSFER_CAPTURE_FAILED;

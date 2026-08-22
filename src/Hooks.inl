@@ -52,6 +52,11 @@
         OwnershipProbeOnWorldReset();
 #endif
         RestoreHudManagerButton();
+        // A world reset is the explicit lifecycle boundary that bypasses the
+        // steady-state HUD validation throttle. Ordinary binding failures keep
+        // their timestamp so a persistent missing widget cannot become an
+        // every-frame probe.
+        g_hudLastValidationTick = 0;
         g_hudManagerButtonRequest = false;
         DestroyJobWindow(true);
         g_playerInterface = NULL;

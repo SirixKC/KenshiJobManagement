@@ -14,25 +14,12 @@
 
     void ShowToast(const std::string& message)
     {
-        if (g_toastText == NULL || message.empty())
+        if (g_window == NULL || message.empty())
         {
             return;
         }
-        g_toastText->setCaption(message.c_str());
-        g_toastText->setVisible(true);
-        g_toastShownTick = GetTickCount();
-    }
-
-    void TickToast(DWORD now)
-    {
-        if (g_toastText != NULL && g_toastText->getVisible() &&
-            g_toastShownTick != 0 &&
-            HasElapsed(now, g_toastShownTick, TOAST_DURATION_MS))
-        {
-            g_toastText->setVisible(false);
-            g_toastText->setCaption("");
-            g_toastShownTick = 0;
-        }
+        RecordRecentManagerMessage(message);
+        RefreshStatusMessageFrame();
     }
 
     // Keep the player-station and assignment projection fail-closed. Ownership
@@ -436,10 +423,12 @@
         g_priorityCanvas = NULL;
         g_squadText = NULL;
         g_statusText = NULL;
+        g_statusFrame = NULL;
+        g_messageLogScroll = NULL;
         g_background = NULL;
-        g_toastText = NULL;
         g_emptyText = NULL;
         g_removeButton = NULL;
+        g_removeInvalidJobsButton = NULL;
         g_prioritizeCoreJobsButton = NULL;
         g_addHealingJobsButton = NULL;
         g_optionsButton = NULL;
@@ -447,6 +436,10 @@
         g_verticalScroll = NULL;
         g_horizontalScroll = NULL;
         g_insertionLine = NULL;
+        g_dragDestinationOutlineTop = NULL;
+        g_dragDestinationOutlineBottom = NULL;
+        g_dragDestinationOutlineLeft = NULL;
+        g_dragDestinationOutlineRight = NULL;
         g_tooltip = NULL;
         g_tooltipText = NULL;
         ResetSquadSelectorView();
@@ -496,6 +489,11 @@
         RestoreGamePauseState(keepResume);
 
         ResetWindowPointers();
+        if (duringReset)
+        {
+            g_recentStatusMessages.clear();
+            g_lastRecentStatusMessageTick = 0;
+        }
         g_windowModalAdded = false;
         g_memberWidgets.clear();
         g_priorityLabels.clear();
@@ -540,7 +538,6 @@
         g_escapeWasDown = false;
         g_copyHotkeyWasDown = false;
         g_pasteHotkeyWasDown = false;
-        g_toastShownTick = 0;
         g_squadCycleObserved = false;
         g_lastDragTick = 0;
     }
@@ -727,12 +724,26 @@
 
             const int actionTop =
                 squadSelectorTop + SQUAD_SELECTOR_HEIGHT + PAD;
+            const int closeLeft = size.width - PAD - 120;
+            const int invalidButtonLeft = PAD + 616;
+            const int optionsWidth = 110;
+            const int availableInvalidWidth =
+                closeLeft - invalidButtonLeft - PAD - optionsWidth;
+            // Keep the new action beside Prioritize Healing. At compact
+            // resolutions, reduce its width before the Options/Close pair
+            // can collide; the normal layout keeps the requested roomy label.
+            const int invalidButtonWidth = std::max(
+                1, std::min(210, availableInvalidWidth));
+            const int optionsLeft =
+                invalidButtonLeft + invalidButtonWidth + PAD;
             g_removeButton = g_squadTabRoot->createWidget<MyGUI::Button>(
                 "Kenshi_Button1",
                 MyGUI::IntCoord(PAD, actionTop, 190, 40),
                 MyGUI::Align::Left | MyGUI::Align::Bottom,
                 "KJM_RemoveSelected");
-            g_removeButton->setCaption("Remove Selected (0)");
+            g_removeButton->setCaption("Remove Job(s)");
+            g_removeButton->setFontHeight(14);
+            g_removeButton->setTextAlign(MyGUI::Align::Center);
             g_removeButton->setEnabled(false);
             g_removeButton->eventMouseButtonClick += MyGUI::newDelegate(OnRemoveClicked);
             TagThemeButtonText(g_removeButton);
@@ -743,9 +754,14 @@
                     MyGUI::IntCoord(PAD + 202, actionTop, 200, 40),
                     MyGUI::Align::Left | MyGUI::Align::Bottom,
                     "KJM_AddHealingJobs");
-            g_addHealingJobsButton->setCaption("Add Healing Jobs...");
+            // The healing action keeps its descriptive tooltip/callback
+            // (the full action is still named "Add Healing Jobs...") but the
+            // button itself is intentionally compact: "Add" followed by the
+            // existing Medic and Robotics artwork.
+            g_addHealingJobsButton->setCaption("");
             g_addHealingJobsButton->setFontHeight(14);
-            g_addHealingJobsButton->setTextAlign(MyGUI::Align::Center);
+            g_addHealingJobsButton->setTextAlign(
+                MyGUI::Align::Left | MyGUI::Align::VCenter);
             g_addHealingJobsButton->setEnabled(false);
             g_addHealingJobsButton->eventMouseButtonClick +=
                 MyGUI::newDelegate(OnAddHealingJobsClicked);
@@ -765,9 +781,26 @@
             g_prioritizeCoreJobsButton->setEnabled(false);
             TagThemeButtonText(g_prioritizeCoreJobsButton);
 
+            g_removeInvalidJobsButton =
+                g_squadTabRoot->createWidget<MyGUI::Button>(
+                    "Kenshi_Button1",
+                    MyGUI::IntCoord(
+                        invalidButtonLeft, actionTop,
+                        invalidButtonWidth, 40),
+                    MyGUI::Align::Left | MyGUI::Align::Bottom,
+                    "KJM_RemoveInvalidJobs");
+            g_removeInvalidJobsButton->setCaption("Remove Invalid Jobs");
+            g_removeInvalidJobsButton->setFontHeight(
+                invalidButtonWidth < 160 ? 12 : 14);
+            g_removeInvalidJobsButton->setTextAlign(MyGUI::Align::Center);
+            g_removeInvalidJobsButton->setEnabled(false);
+            g_removeInvalidJobsButton->eventMouseButtonClick +=
+                MyGUI::newDelegate(OnRemoveInvalidJobsClicked);
+            TagThemeButtonText(g_removeInvalidJobsButton);
+
             g_optionsButton = client->createWidget<MyGUI::Button>(
                 "Kenshi_Button1",
-                MyGUI::IntCoord(PAD + 616, actionTop, 110, 40),
+                MyGUI::IntCoord(optionsLeft, actionTop, optionsWidth, 40),
                 MyGUI::Align::Left | MyGUI::Align::Bottom,
                 "KJM_Options");
             g_optionsButton->setCaption("Options");
@@ -788,32 +821,53 @@
             // Keep the status channel between Options and Close on normal
             // resolutions. At narrow widths, move it to the second line of
             // the action area so it cannot cover either control.
-            const int closeLeft = size.width - PAD - 120;
-            const int statusLeft = PAD + 738;
+            const int statusLeft = optionsLeft + optionsWidth + PAD;
+            const int inlineStatusWidth = closeLeft - statusLeft;
             const bool narrowActionBar =
-                closeLeft - statusLeft < 120;
+                inlineStatusWidth < 420;
             const int statusWidth = narrowActionBar ?
                 std::max(1, size.width - 2 * PAD) :
                 std::max(120, closeLeft - statusLeft - PAD);
+            const int statusWidgetLeft = narrowActionBar ? PAD : statusLeft;
+            const int statusWidgetWidth = narrowActionBar ?
+                std::max(1, size.width - 2 * PAD) : statusWidth;
             const int statusTop = narrowActionBar ? actionTop + 40 : actionTop;
-            const int statusHeight = narrowActionBar ? 20 : 40;
+            const int statusHeight = narrowActionBar ? 48 : 60;
             const MyGUI::Align statusAlign = narrowActionBar ?
                 (MyGUI::Align::Left | MyGUI::Align::Top |
                  MyGUI::Align::HStretch) :
                 (MyGUI::Align::Bottom | MyGUI::Align::HStretch);
+            g_statusFrame = client->createWidget<MyGUI::Widget>(
+                "WhiteSkin",
+                MyGUI::IntCoord(
+                    statusWidgetLeft, statusTop,
+                    statusWidgetWidth, statusHeight),
+                statusAlign,
+                "KJM_StatusFrame");
+            TagThemeStatusFrame(g_statusFrame);
+            g_statusFrame->setNeedMouseFocus(true);
+            g_statusFrame->eventMouseButtonClick +=
+                MyGUI::newDelegate(OnStatusFrameClicked);
             g_statusText = client->createWidget<MyGUI::TextBox>(
                 "Kenshi_TextboxStandardText_Small",
                 MyGUI::IntCoord(
-                    narrowActionBar ? PAD : statusLeft,
-                    statusTop,
-                    statusWidth,
-                    statusHeight),
+                    statusWidgetLeft + 8,
+                    statusTop + 3,
+                    std::max(1, statusWidgetWidth - 16),
+                    std::max(1, statusHeight - 6)),
                 statusAlign,
                 "KJM_Status");
             g_statusText->setCaption("");
-            g_statusText->setTextAlign(MyGUI::Align::Center);
-            g_statusText->setNeedMouseFocus(false);
-            TagThemeMutedText(g_statusText);
+            g_statusText->setFontHeight(narrowActionBar ? 11 : 13);
+            g_statusText->setTextAlign(
+                MyGUI::Align::Left | MyGUI::Align::Top);
+            g_statusText->setNeedMouseFocus(true);
+            g_statusText->eventMouseButtonClick +=
+                MyGUI::newDelegate(OnStatusFrameClicked);
+            TagThemeStatusText(g_statusText);
+            // Ordinary close/reopen keeps the in-memory session history.
+            // Restore its latest three lines as soon as the new frame exists.
+            RefreshStatusMessageFrame();
 
             g_insertionLine = g_squadTabRoot->createWidget<MyGUI::Widget>(
                 "WhiteSkin",
@@ -823,6 +877,48 @@
             g_insertionLine->setColour(MyGUI::Colour(0.35f, 0.95f, 0.45f));
             g_insertionLine->setNeedMouseFocus(false);
             g_insertionLine->setVisible(false);
+
+            // A drag destination spans the member and job columns. Keep its
+            // four edges on the tab root so it remains visible while the
+            // independently-scrolling canvases move underneath it.
+            const MyGUI::Colour dragOutlineColour(
+                1.0f, 0.84f, 0.24f);
+            g_dragDestinationOutlineTop =
+                g_squadTabRoot->createWidget<MyGUI::Widget>(
+                    "WhiteSkin", MyGUI::IntCoord(0, 0, 1, 3),
+                    MyGUI::Align::Left | MyGUI::Align::Top,
+                    "KJM_DragDestinationOutlineTop");
+            g_dragDestinationOutlineBottom =
+                g_squadTabRoot->createWidget<MyGUI::Widget>(
+                    "WhiteSkin", MyGUI::IntCoord(0, 0, 1, 3),
+                    MyGUI::Align::Left | MyGUI::Align::Top,
+                    "KJM_DragDestinationOutlineBottom");
+            g_dragDestinationOutlineLeft =
+                g_squadTabRoot->createWidget<MyGUI::Widget>(
+                    "WhiteSkin", MyGUI::IntCoord(0, 0, 3, 1),
+                    MyGUI::Align::Left | MyGUI::Align::Top,
+                    "KJM_DragDestinationOutlineLeft");
+            g_dragDestinationOutlineRight =
+                g_squadTabRoot->createWidget<MyGUI::Widget>(
+                    "WhiteSkin", MyGUI::IntCoord(0, 0, 3, 1),
+                    MyGUI::Align::Left | MyGUI::Align::Top,
+                    "KJM_DragDestinationOutlineRight");
+            MyGUI::Widget* dragOutlineWidgets[] =
+            {
+                g_dragDestinationOutlineTop,
+                g_dragDestinationOutlineBottom,
+                g_dragDestinationOutlineLeft,
+                g_dragDestinationOutlineRight
+            };
+            for (size_t index = 0; index < 4; ++index)
+            {
+                dragOutlineWidgets[index]->setColour(dragOutlineColour);
+                dragOutlineWidgets[index]->setAlpha(0.95f);
+                // Lower depth renders above the normal-depth board widgets.
+                dragOutlineWidgets[index]->setDepth(-1);
+                dragOutlineWidgets[index]->setNeedMouseFocus(false);
+                dragOutlineWidgets[index]->setVisible(false);
+            }
 
             CreateStationView(
                 client,
@@ -854,32 +950,10 @@
                 MyGUI::newDelegate(OnStationTabClicked);
             TagThemeButtonText(g_stationTabButton);
 
-            const int toastWidth = std::min(1000, size.width - 40);
-            const int toastTop = PAD + TOP_HEIGHT + 8;
-            g_toastText = client->createWidget<MyGUI::TextBox>(
-                "Kenshi_TextboxStandardText_Large",
-                MyGUI::IntCoord(
-                    (size.width - toastWidth) / 2 + 8,
-                    toastTop + 6,
-                    std::max(1, toastWidth - 16),
-                    60),
-                MyGUI::Align::Top | MyGUI::Align::HCenter,
-                "KJM_Toast");
-            g_toastText->setFontHeight(22);
-            g_toastText->setTextAlign(MyGUI::Align::Center);
-            TagThemeStandardText(g_toastText);
-            g_toastText->setTextShadow(true);
-            g_toastText->setTextShadowColour(
-                MyGUI::Colour(0.0f, 0.0f, 0.0f));
-            g_toastText->setNeedMouseFocus(false);
-            g_toastText->setInheritsAlpha(false);
-            g_toastText->setVisible(false);
-
             MyGUI::InputManager::getInstance().addWidgetModal(g_window);
             g_windowModalAdded = true;
             MyGUI::InputManager::getInstance().setKeyFocusWidget(g_window);
 
-            g_lastRefreshTick = GetTickCount();
             g_squadCycleObserved = false;
             g_escapeWasDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
             const bool controlDown =
@@ -893,6 +967,69 @@
             // guarded helper leaves the text-only fallback intact if Ogre
             // cannot load it.
             TryEnsureStationIconResourcesGuarded();
+            if (g_addHealingJobsButton != NULL)
+            {
+                MyGUI::TextBox* addLabel =
+                    g_addHealingJobsButton->createWidget<MyGUI::TextBox>(
+                        "Kenshi_TextboxStandardText_Small",
+                        MyGUI::IntCoord(22, 0, 48, 40),
+                        MyGUI::Align::Left | MyGUI::Align::VCenter,
+                        "KJM_AddHealingLabel");
+                addLabel->setCaption("Add");
+                addLabel->setFontHeight(14);
+                addLabel->setTextAlign(MyGUI::Align::Center);
+                addLabel->setNeedMouseFocus(false);
+                TagThemeButtonCaptionText(addLabel);
+
+                MyGUI::ImageBox* medicIcon =
+                    g_addHealingJobsButton->createWidget<MyGUI::ImageBox>(
+                        "ImageBox", MyGUI::IntCoord(78, 7, 26, 26),
+                        MyGUI::Align::Left | MyGUI::Align::Top,
+                        "KJM_AddHealingMedicIcon");
+                medicIcon->setNeedMouseFocus(false);
+                medicIcon->setInheritsAlpha(false);
+                medicIcon->setAlpha(0.95f);
+                const bool medicApplied = TrySetJobStationCategoryIcon(
+                    medicIcon, GetGlobalJobIconResource(JOB_MEDIC));
+                medicIcon->setVisible(medicApplied);
+
+                MyGUI::TextBox* separator =
+                    g_addHealingJobsButton->createWidget<MyGUI::TextBox>(
+                        "Kenshi_TextboxStandardText_Small",
+                        MyGUI::IntCoord(105, 0, 14, 40),
+                        MyGUI::Align::Left | MyGUI::Align::VCenter,
+                        "KJM_AddHealingSeparator");
+                separator->setCaption("/");
+                separator->setFontHeight(16);
+                separator->setTextAlign(MyGUI::Align::Center);
+                separator->setNeedMouseFocus(false);
+                TagThemeButtonCaptionText(separator);
+
+                MyGUI::ImageBox* roboticsIcon =
+                    g_addHealingJobsButton->createWidget<MyGUI::ImageBox>(
+                        "ImageBox", MyGUI::IntCoord(121, 7, 26, 26),
+                        MyGUI::Align::Left | MyGUI::Align::Top,
+                        "KJM_AddHealingRoboticsIcon");
+                roboticsIcon->setNeedMouseFocus(false);
+                roboticsIcon->setInheritsAlpha(false);
+                roboticsIcon->setAlpha(0.95f);
+                const bool roboticsApplied = TrySetJobStationCategoryIcon(
+                    roboticsIcon, GetGlobalJobIconResource(JOB_REPAIR_ROBOT));
+                roboticsIcon->setVisible(roboticsApplied);
+                const bool bothIconsApplied =
+                    medicApplied && roboticsApplied;
+                separator->setVisible(bothIconsApplied);
+                if (!bothIconsApplied)
+                {
+                    // Keep a clear action caption if either optional texture
+                    // cannot be created. A lone icon and slash would be more
+                    // confusing than the short text fallback.
+                    medicIcon->setVisible(false);
+                    roboticsIcon->setVisible(false);
+                    addLabel->setCoord(20, 0, 160, 40);
+                    addLabel->setCaption("Add Healing");
+                }
+            }
             RefreshSquadView(true);
             RefreshSquadSelectorRoster(true);
             ApplyThemeToTaggedTree(g_window);
@@ -1009,6 +1146,7 @@
             // as a queued button click. Never perform two squad changes from
             // one manager tick.
             CancelPendingSquadSelectorSelection();
+            ApplyNativeTabSquadCollapseTransition();
             if (!RefreshSquadView(true))
             {
                 HandleIdentity unknownCurrentSquad;
@@ -1036,14 +1174,13 @@
         }
 
         const DWORD now = GetTickCount();
-        TickToast(now);
         TickDragAutoScroll(now);
-        if (HasElapsed(now, g_lastRefreshTick, REFRESH_INTERVAL_MS))
-        {
-            g_lastRefreshTick = now;
-            RefreshSquadView(false);
-            RefreshSquadSelectorRoster(false);
-        }
+        // The manager owns Kenshi's pause while this window is open.  The
+        // initial board and selector snapshot are captured synchronously, and
+        // every manager mutation, tab change, and vanilla TAB transition
+        // requests an explicit refresh.  Do not run a periodic roster/queue
+        // pass here: it recaptures every member and every permanent-job
+        // row while the player is only reading the paused board.
 
         bool stationViewChanged = false;
         bool stationProgressChanged = false;
