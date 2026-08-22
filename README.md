@@ -49,7 +49,7 @@ Alternatively:
 ## Credits and license
 
 Codex generated the code and GUI icons. I wrote the prompts, tested the mod in
-game, took the screenshots, and made the preview art.
+game, took the screenshots, and made the preview art. Codex created the initial version of this readme, I edited and removed about 80% of it because it was dumb LLM fluff.
 
 Kenshi and its assets belong to Lo-Fi Games. RE_Kenshi and KenshiLib are
 separate projects with their own licenses and release notes.
